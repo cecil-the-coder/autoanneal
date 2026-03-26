@@ -1,0 +1,34 @@
+autoanneal has been installed.
+
+{{- if .Values.job.enabled }}
+
+One-off Jobs created:
+{{- range .Values.repos }}
+{{- if or (not $.Values.job.repoFilter) (eq $.Values.job.repoFilter .name) }}
+  - {{ .name }}: {{ .repo }}
+{{- end }}
+{{- end }}
+
+Check status:  kubectl get jobs -l app.kubernetes.io/instance={{ .Release.Name }}
+View logs:     kubectl logs job/{{ include "autoanneal.fullname" . }}-<repo-name>
+
+{{- else }}
+
+CronJobs created:
+{{- range .Values.repos }}
+{{- if .schedule }}
+  - {{ .name }}: {{ .repo }} ({{ .schedule }})
+{{- end }}
+{{- end }}
+
+Check status:  kubectl get cronjobs -l app.kubernetes.io/instance={{ .Release.Name }}
+Trigger now:   kubectl create job --from=cronjob/{{ include "autoanneal.fullname" . }}-<repo-name> <repo-name>-manual
+View logs:     kubectl logs job/<job-name>
+
+{{- end }}
+
+{{- if not .Values.secrets.existingSecret }}
+
+WARNING: Secrets are stored in the chart-managed Secret.
+For production, use secrets.existingSecret with a secrets manager.
+{{- end }}

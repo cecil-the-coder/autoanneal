@@ -1,0 +1,29 @@
+{{- if .Values.job.enabled }}
+{{- range .Values.repos }}
+{{- if or (not $.Values.job.repoFilter) (eq $.Values.job.repoFilter .name) }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "autoanneal.fullname" $ }}-{{ .name }}
+  labels:
+    {{- include "autoanneal.labels" $ | nindent 4 }}
+    autoanneal/repo: {{ .name }}
+spec:
+  backoffLimit: {{ $.Values.cronJob.backoffLimit }}
+  activeDeadlineSeconds: {{ $.Values.cronJob.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ $.Values.cronJob.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "autoanneal.selectorLabels" $ | nindent 8 }}
+        autoanneal/repo: {{ .name }}
+      {{- with $.Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "autoanneal.podSpec" (dict "repo" . "root" $) | nindent 6 }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,108 @@
+# -- Container image
+image:
+  repository: ghcr.io/cecil-the-coder/autoanneal
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# -- Secrets
+# Either provide values here (chart creates the Secret)
+# or set existingSecret to reference a pre-existing one.
+# For production, use existingSecret with a secrets manager.
+secrets:
+  # Use a pre-existing Secret instead of creating one:
+  existingSecret: ""
+  # Only used when existingSecret is empty:
+  anthropicApiKey: ""
+  githubToken: ""
+
+# -- Global defaults (repos can override any of these)
+defaults:
+  maxBudget: "5.00"
+  timeout: "30m"
+  model: "sonnet"
+  maxTasks: 5
+  minSeverity: "minor"
+  logLevel: "info"
+  dryRun: false
+  setupCommand: ""
+
+# -- Optional environment variables (shared across all repos)
+# Uncomment and set as needed.
+env: {}
+  # ANTHROPIC_BASE_URL: ""
+  # ANTHROPIC_AUTH_TOKEN: ""
+  # ANTHROPIC_DEFAULT_SONNET_MODEL: ""
+  # CLAUDE_CODE_SUBAGENT_MODEL: ""
+  # ANTHROPIC_DEFAULT_OPUS_MODEL: ""
+  # ANTHROPIC_DEFAULT_HAIKU_MODEL: ""
+  # AUTOANNEAL_DEBUG_STREAM: "1"
+
+# -- Repos to target
+# Each entry becomes its own CronJob. The `name` field is used in
+# resource names and must be DNS-safe (lowercase, alphanumeric, hyphens).
+repos:
+  - name: my-service
+    repo: "myorg/my-service"
+    schedule: "0 3 * * 1"       # Weekly Monday 3am UTC
+    # Per-repo overrides (optional, fall back to defaults):
+    # maxBudget: "10.00"
+    # timeout: "1h"
+    # model: "opus"
+    # maxTasks: 3
+    # minSeverity: "moderate"
+    # setupCommand: "npm ci"
+    # dryRun: false
+
+# -- One-off Job mode
+# Set job.enabled=true to create Jobs instead of CronJobs.
+# Useful for: helm install --set job.enabled=true
+job:
+  enabled: false
+  # Run only this repo (by name). Empty = all repos.
+  repoFilter: ""
+
+# -- CronJob settings
+cronJob:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  suspend: false
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  ttlSecondsAfterFinished: 86400
+
+# -- Resource limits
+resources:
+  requests:
+    cpu: "1"
+    memory: "2Gi"
+  limits:
+    cpu: "2"
+    memory: "4Gi"
+
+# -- Pod settings
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]
+
+serviceAccount:
+  create: false
+  name: ""
+  annotations: {}
