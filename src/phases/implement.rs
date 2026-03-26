@@ -20,7 +20,7 @@ const MAX_PARALLEL_GROUPS: usize = 5;
 const MAX_PER_TASK_BUDGET: f64 = 1.50;
 
 /// Timeout for a single Claude task invocation.
-const TASK_TIMEOUT: Duration = Duration::from_secs(300);
+const TASK_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub struct ImplementOutput {
     pub results: Vec<TaskResult>,

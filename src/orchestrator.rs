@@ -356,7 +356,7 @@ async fn run_pipeline(
     let implement_budget = *budget_remaining * 0.60;
 
     let implement_output = match tokio::time::timeout(
-        Duration::from_secs(900),
+        Duration::from_secs(1800),
         phases::implement::run(
             clone_path,
             improvements,
