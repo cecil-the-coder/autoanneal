@@ -14,11 +14,8 @@ pub async fn run(repo_slug: &str) -> Result<PreflightOutput> {
     // 1. Validate environment variables.
     validate_env_vars()?;
 
-    // 2. Validate GitHub auth.
+    // 2. Validate GitHub auth by making a real API call.
     let dot = Path::new(".");
-    gh_command(dot, &["auth", "status"])
-        .await
-        .context("GitHub CLI authentication check failed")?;
 
     // 3. Fetch repo metadata.
     let json_fields = "isArchived,defaultBranchRef,diskUsage,name,owner,viewerPermission";
