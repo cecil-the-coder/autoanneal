@@ -952,6 +952,7 @@ async fn run_analysis_pipeline(
     }
 
     // ─── Critic Review ─────────────────────────────────────────────────
+    let mut critic_summary: Option<String> = None;
     let threshold = if is_doc_improvements {
         doc_critic_threshold
     } else {
@@ -991,6 +992,10 @@ async fn run_analysis_pipeline(
                         cost_total,
                     ));
                 }
+                critic_summary = Some(format!(
+                    "## Review\n\nScore: {}/10\n\n{}",
+                    critic_output.score, critic_output.summary
+                ));
             }
             Ok(Err(e)) => {
                 warn!(error = %e, "critic review failed (non-fatal, proceeding)");
@@ -1026,6 +1031,7 @@ async fn run_analysis_pipeline(
             &improvements,
             model,
             plan_budget,
+            critic_summary.as_deref(),
         ),
     )
     .await
