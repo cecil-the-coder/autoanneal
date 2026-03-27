@@ -364,8 +364,21 @@ async fn invoke_once<T: DeserializeOwned>(
         };
 
         stderr_bytes = stderr_buf;
+
+        // Check if we got a result line before proceeding
+        let result_line = match result_line {
+            Some(line) if !line.is_empty() => line,
+            _ => {
+                let stderr_str = String::from_utf8_lossy(&stderr_bytes);
+                bail!(
+                    "Claude streaming mode produced no result line - the process may have crashed or been terminated (exit status: {:?}, stderr: {})",
+                    status.code(),
+                    truncate(&stderr_str, 500)
+                );
+            }
+        };
         // Use the result line as stdout for parsing
-        stdout_bytes = result_line.unwrap_or_default().into_bytes();
+        stdout_bytes = result_line.into_bytes();
 
         if !status.success() {
             let stderr_str = String::from_utf8_lossy(&stderr_bytes);

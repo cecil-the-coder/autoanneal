@@ -1,9 +1,20 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 const MAX_ATTEMPTS: u32 = 3;
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_JITTER_MS: u64 = 500;
+
+/// Generate a small random jitter duration (0-500ms) using system time.
+fn jitter() -> Duration {
+    let millis = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.subsec_millis() as u64)
+        .unwrap_or(0)
+        % MAX_JITTER_MS;
+    Duration::from_millis(millis)
+}
 
 /// Run a gh CLI command with retry and exponential backoff.
 ///
@@ -47,14 +58,16 @@ pub async fn gh_command(repo_dir: &Path, args: &[&str]) -> Result<String> {
         }
 
         if attempt < MAX_ATTEMPTS {
+            let jitter = jitter();
             tracing::warn!(
                 attempt,
                 max_attempts = MAX_ATTEMPTS,
                 backoff_secs = backoff.as_secs(),
+                jitter_ms = jitter.as_millis(),
                 stderr = %stderr,
                 "gh command failed with transient error, retrying",
             );
-            tokio::time::sleep(backoff).await;
+            tokio::time::sleep(backoff + jitter).await;
             backoff *= 2;
         } else {
             bail!(

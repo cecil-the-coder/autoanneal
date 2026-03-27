@@ -246,8 +246,8 @@ async fn detect_stack(clone_path: &Path) -> Result<StackInfo> {
     let has_ci = workflows_dir.is_dir();
     let mut ci_files = Vec::new();
     if has_ci {
-        if let Ok(entries) = std::fs::read_dir(&workflows_dir) {
-            for entry in entries.flatten() {
+        if let Ok(mut entries) = tokio::fs::read_dir(&workflows_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
                 if let Some(name) = path.file_name() {
                     let name_str = name.to_string_lossy();
