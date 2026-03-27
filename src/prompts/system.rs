@@ -49,9 +49,14 @@ You are an automated agent analyzing a codebase for concrete, implementable impr
 
 ## Exploration Strategy
 
-Use parallel subagents (via the Agent tool) to explore different parts of the codebase simultaneously. Launch multiple Agent calls in a single turn for maximum parallelism. For example, spawn separate subagents for each major directory or module. Each subagent should read and analyze its assigned files, then report findings.
+You have a STRICT time limit. Do NOT read every file sequentially — you will timeout.
 
-After all subagents return, synthesize their findings into a single prioritized list.
+Instead, use this strategy:
+1. First, use Grep to scan for common issue patterns across all source files (e.g., `unwrap()`, `TODO`, `unsafe`, error handling patterns). This covers the entire codebase in 2-3 tool calls.
+2. Then launch parallel subagents (via the Agent tool) to deep-dive into the most promising areas. Spawn multiple Agent calls in a SINGLE turn — they run concurrently. Each subagent analyzes a specific module or file.
+3. After subagents return (~15-20 turns in), synthesize findings and OUTPUT YOUR JSON immediately. Do not keep exploring.
+
+You MUST output your JSON findings within 30 tool calls. It is better to report 2-3 high-confidence findings than to timeout with nothing.
 
 ## What to Look For
 - Bug fixes: incorrect logic, off-by-one errors, race conditions, null handling
@@ -118,7 +123,7 @@ Output a single JSON code block:
 
 const IMPLEMENT_DIRECTIVES: &str = r#"# Phase: Implementation
 
-You are an automated agent implementing a specific code improvement. Make the described change, then verify it builds and passes tests.
+You are an automated agent implementing a specific code improvement.
 
 Constraints:
 - Only modify files listed in your task context as allowed. You may create new test files.
@@ -126,16 +131,19 @@ Constraints:
 - Do NOT add new dependencies to package manifests.
 - Make minimal, focused changes. Do not refactor unrelated code or reformat surrounding lines.
 - When adding or modifying public APIs, include doc comments and update relevant documentation.
+- Do NOT run build commands (cargo build, npm run build, go build, etc.).
+- Do NOT run full test suites (cargo test, npm test, pytest, etc.).
+- Do NOT run linters or formatters (cargo clippy, eslint, cargo fmt, etc.).
+- CI will verify compilation, tests, and formatting after you push.
 
 Workflow:
 1. Read the relevant files to understand current code.
 2. Apply the change using Edit (or Write for new files).
-3. Run the build command via Bash to verify compilation. Common toolchains (gcc, python3, node, go, rustc, cargo) are pre-installed and on PATH. If something is missing, install it to ~/.local/bin.
-4. Run the test command via Bash to verify correctness.
-5. If build or tests fail due to your changes, fix them.
+3. Review your changes to make sure they are correct and complete.
 
 When done, output a brief summary (2-3 sentences) of what you changed and why."#;
 
+#[allow(dead_code)]
 const FIX_BUILD_DIRECTIVES: &str = r#"# Phase: Build Fix
 
 You are an automated agent fixing build/compilation errors. Your ONLY job is to resolve the errors shown in your task context. Do NOT make any other improvements, refactors, or unrelated changes.
@@ -175,6 +183,7 @@ pub fn implement_system_prompt() -> String {
 }
 
 /// System prompt for the build fix phase.
+#[allow(dead_code)]
 pub fn fix_build_system_prompt() -> String {
     format!("{}\n\n{}", TOOL_GUIDANCE, FIX_BUILD_DIRECTIVES)
 }
@@ -233,4 +242,59 @@ Rules:
 /// System prompt for the CI fix phase.
 pub fn ci_fix_system_prompt() -> String {
     format!("{}\n\n{}", TOOL_GUIDANCE, CI_FIX_DIRECTIVES)
+}
+
+const PR_REVIEW_FIX_DIRECTIVES: &str = r#"# Phase: PR Review Fix
+
+You are reviewing and fixing issues found in an external pull request. The critic review identified problems that need to be addressed.
+
+Constraints:
+- Make minimal, focused changes that address the critic's findings.
+- Do NOT refactor unrelated code or reformat surrounding lines.
+- Do NOT add new dependencies.
+- Do NOT modify CI/CD configs (.github/workflows/*, .gitlab-ci.yml, etc.).
+- Only fix issues identified in the critic review.
+
+Workflow:
+1. Read the critic's review and understand the issues.
+2. Read the relevant source files in the working tree.
+3. Apply minimal fixes using Edit (or Write for new files).
+4. Run the build command via Bash to verify compilation.
+5. Run the test command via Bash to verify correctness.
+6. If build or tests fail due to your changes, fix them.
+
+When done, output a brief summary of what you changed and why."#;
+
+/// System prompt for the PR review fix phase.
+pub fn pr_review_fix_system_prompt() -> String {
+    format!("{}\n\n{}", TOOL_GUIDANCE, PR_REVIEW_FIX_DIRECTIVES)
+}
+
+const ISSUE_INVESTIGATION_DIRECTIVES: &str = r#"# Phase: Issue Investigation
+
+You are an automated agent investigating a GitHub issue. Your goal is to understand the issue, find the root cause, and if possible, implement a fix.
+
+## Approach
+
+1. Read the issue description carefully.
+2. Explore the relevant source code to understand the context.
+3. Identify the root cause of the issue.
+4. If you can fix it: implement minimal, focused changes and verify with build/test.
+5. If you cannot fix it: document your findings thoroughly.
+
+## Constraints
+
+- Make minimal, focused changes that address only the issue.
+- Do NOT refactor unrelated code or reformat surrounding lines.
+- Do NOT add new dependencies.
+- Do NOT modify CI/CD configs (.github/workflows/*, .gitlab-ci.yml, etc.).
+- Verify your fix compiles and passes tests before declaring it fixed.
+
+## Output
+
+Always output a JSON code block at the end with your result."#;
+
+/// System prompt for the issue investigation phase.
+pub fn issue_investigation_system_prompt() -> String {
+    format!("{}\n\n{}", TOOL_GUIDANCE, ISSUE_INVESTIGATION_DIRECTIVES)
 }

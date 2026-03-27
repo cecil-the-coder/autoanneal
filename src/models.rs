@@ -159,6 +159,7 @@ pub struct InFlightPr {
     pub ci_status: CiStatus,
     pub has_fixing_label: bool,
     pub has_merge_conflicts: bool,
+    pub files: Vec<String>,
 }
 
 /// Status of a single implementation task.
@@ -220,6 +221,26 @@ pub struct CriticResult {
     pub score: u32,
     pub verdict: String,
     pub summary: String,
+}
+
+/// An external (non-autoanneal) PR detected during preflight.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalPr {
+    pub number: u64,
+    pub title: String,
+    pub branch: String,
+    pub author: String,
+    pub updated_at: String,
+    pub labels: Vec<String>,
+}
+
+/// A GitHub issue fetched for investigation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubIssue {
+    pub number: u64,
+    pub title: String,
+    pub body: String,
+    pub labels: Vec<String>,
 }
 
 /// Summary of a single phase for the final report.

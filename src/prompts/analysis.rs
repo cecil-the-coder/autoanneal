@@ -32,6 +32,14 @@ Do NOT suggest:
 
 Each improvement must be implementable by modifying fewer than 500 lines of code. Be specific: name the exact files, functions, and line ranges involved. Prefer high-confidence, low-risk changes where the current behavior is clearly wrong or clearly improvable.
 
+## Time Budget
+
+You have a LIMITED number of turns. Do NOT try to read every file in the project. Instead:
+1. Read the most important files first (entry points, core logic, error handling paths).
+2. Use Grep to search for patterns (unwrap(), TODO, unsafe, etc.) instead of reading files sequentially.
+3. Stop exploring after ~25 turns and output your findings. Better to report 2-3 solid findings than to timeout with 0.
+4. If you're running low on turns, output what you have immediately.
+
 Once you have explored enough, output your findings as a JSON code block:
 
 ```json

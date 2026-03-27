@@ -1,15 +1,68 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 const MAX_ATTEMPTS: u32 = 3;
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 
-/// Run a gh CLI command with retry and exponential backoff.
+/// How often to check rate limits (every N gh commands).
+const RATE_CHECK_INTERVAL: u32 = 10;
+
+/// Start throttling when remaining requests drop below this.
+const RATE_LIMIT_LOW_THRESHOLD: u64 = 200;
+
+/// Sleep this long between calls when throttling.
+const THROTTLE_DELAY: Duration = Duration::from_secs(2);
+
+/// Global counter of gh commands since last rate limit check.
+static CALL_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Cached remaining rate limit (updated every RATE_CHECK_INTERVAL calls).
+static RATE_REMAINING: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// Cached rate limit reset timestamp (unix seconds).
+static RATE_RESET: AtomicU32 = AtomicU32::new(0);
+
+/// Run a gh CLI command with retry, exponential backoff, and rate limit awareness.
 ///
 /// Retries on 5xx errors and rate limits (up to 3 attempts).
 /// Fails immediately on 401 (auth failure).
+/// Periodically checks GitHub rate limits and throttles if running low.
 pub async fn gh_command(repo_dir: &Path, args: &[&str]) -> Result<String> {
+    // Proactive rate limit check every N calls.
+    let count = CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count % RATE_CHECK_INTERVAL == 0 {
+        check_rate_limit().await;
+    }
+
+    // If rate limit is low, add a delay.
+    let remaining = RATE_REMAINING.load(Ordering::Relaxed) as u64;
+    if remaining < RATE_LIMIT_LOW_THRESHOLD && remaining > 0 {
+        tracing::warn!(
+            remaining,
+            "GitHub rate limit is low, throttling"
+        );
+        tokio::time::sleep(THROTTLE_DELAY).await;
+    }
+
+    // If rate limit is exhausted, wait until reset.
+    if remaining == 0 {
+        let reset = RATE_RESET.load(Ordering::Relaxed) as u64;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if reset > now {
+            let wait = reset - now + 1;
+            tracing::warn!(
+                wait_secs = wait,
+                "GitHub rate limit exhausted, waiting for reset"
+            );
+            tokio::time::sleep(Duration::from_secs(wait.min(300))).await;
+        }
+    }
+
     let mut backoff = INITIAL_BACKOFF;
 
     for attempt in 1..=MAX_ATTEMPTS {
@@ -46,6 +99,11 @@ pub async fn gh_command(repo_dir: &Path, args: &[&str]) -> Result<String> {
             bail!("gh command failed: {stderr}");
         }
 
+        // On rate limit errors, force a fresh check.
+        if stderr_lower.contains("rate limit") {
+            check_rate_limit().await;
+        }
+
         if attempt < MAX_ATTEMPTS {
             tracing::warn!(
                 attempt,
@@ -73,4 +131,34 @@ pub async fn gh_json<T: serde::de::DeserializeOwned>(
 ) -> Result<T> {
     let raw = gh_command(repo_dir, args).await?;
     serde_json::from_str(&raw).context("failed to parse gh JSON output")
+}
+
+/// Check the current GitHub API rate limit and update cached values.
+async fn check_rate_limit() {
+    let dot = Path::new(".");
+    let output = tokio::process::Command::new("gh")
+        .args(["api", "rate_limit", "--jq", ".rate | \"\\(.remaining) \\(.reset)\""])
+        .current_dir(dot)
+        .output()
+        .await;
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            let parts: Vec<&str> = s.trim().split_whitespace().collect();
+            if parts.len() >= 2 {
+                if let Ok(remaining) = parts[0].parse::<u32>() {
+                    RATE_REMAINING.store(remaining, Ordering::Relaxed);
+                }
+                if let Ok(reset) = parts[1].parse::<u32>() {
+                    RATE_RESET.store(reset, Ordering::Relaxed);
+                }
+                tracing::debug!(
+                    remaining = parts[0],
+                    reset = parts[1],
+                    "GitHub rate limit check"
+                );
+            }
+        }
+    }
 }

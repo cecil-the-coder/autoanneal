@@ -56,11 +56,12 @@ impl Drop for FixingLabelGuard {
 pub async fn run(
     pr: &InFlightPr,
     repo_slug: &str,
-    work_dir: &Path,
+    worktree_path: &Path,
     model: &str,
     budget: f64,
 ) -> Result<CiFixOutput> {
     let dot = Path::new(".");
+    let clone_dir = worktree_path.to_path_buf();
 
     // 1. Create label (force = idempotent) and add it to the PR.
     let _ = gh_command(
@@ -99,41 +100,7 @@ pub async fn run(
         repo_slug: repo_slug.to_string(),
     };
 
-    // 2. Clone repo at PR branch.
-    let clone_dir = work_dir.join(format!("ci-fix-{}", pr.number));
-    let clone_url = format!("https://github.com/{}.git", repo_slug);
-
-    let output = tokio::process::Command::new("git")
-        .args([
-            "clone",
-            "--depth=50",
-            "--branch",
-            &pr.branch,
-            &clone_url,
-            &clone_dir.to_string_lossy(),
-        ])
-        .output()
-        .await
-        .context("failed to spawn git clone")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git clone failed: {stderr}");
-    }
-
-    // 3. Configure git identity.
-    for (key, val) in [
-        ("user.name", "autoanneal[bot]"),
-        ("user.email", "autoanneal[bot]@users.noreply.github.com"),
-    ] {
-        tokio::process::Command::new("git")
-            .args(["config", key, val])
-            .current_dir(&clone_dir)
-            .output()
-            .await?;
-    }
-
-    // 4. Handle merge conflicts: fetch and merge main first.
+    // 2. Handle merge conflicts: fetch and merge main first.
     if pr.has_merge_conflicts {
         info!(pr_number = pr.number, "PR has merge conflicts, attempting rebase on main");
         let _ = tokio::process::Command::new("git")
@@ -336,7 +303,7 @@ async fn commit_and_push(clone_dir: &PathBuf, branch: &str) -> Result<()> {
 
     // git push
     let output = tokio::process::Command::new("git")
-        .args(["push", "origin", branch])
+        .args(["push", "origin", &format!("HEAD:refs/heads/{branch}")])
         .current_dir(clone_dir)
         .output()
         .await
