@@ -575,10 +575,13 @@ async fn merge_and_push(
 /// Create a git worktree branching from the current HEAD of `repo_dir`.
 /// Returns the absolute path to the new worktree directory.
 async fn create_worktree(repo_dir: &Path, name: &str) -> Result<PathBuf> {
-    let worktree_dir = repo_dir
-        .parent()
-        .unwrap_or(repo_dir)
-        .join(format!(".autoanneal-worktree-{name}"));
+    let parent_dir = repo_dir.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot create worktree: repo_dir '{}' has no parent directory",
+            repo_dir.display()
+        )
+    })?;
+    let worktree_dir = parent_dir.join(format!(".autoanneal-worktree-{name}"));
 
     // Remove stale worktree if it exists.
     if worktree_dir.exists() {

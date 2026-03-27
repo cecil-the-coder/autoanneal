@@ -100,7 +100,7 @@ pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str, investi
 
     // 7. Detect external PRs if review is enabled.
     let external_prs = if review_prs {
-        detect_external_prs(repo_slug, review_filter).await
+        detect_external_prs(repo_slug, review_filter).await?
     } else {
         Vec::new()
     };
@@ -453,23 +453,44 @@ async fn check_newest_commit_age_api(repo_slug: &str) -> u64 {
     .await;
 
     if let Ok(raw) = branches_result {
-        for sha in raw.lines().filter(|s| !s.is_empty()) {
-            let commit_result = gh_command(
-                dot,
-                &[
-                    "api",
-                    &format!("repos/{repo_slug}/commits/{sha}"),
-                    "--jq",
-                    ".commit.committer.date",
-                ],
-            )
-            .await;
-            if let Ok(date_raw) = commit_result {
-                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date_raw.trim()) {
-                    let dt_utc = dt.with_timezone(&chrono::Utc);
-                    if newest_date.is_none() || dt_utc > newest_date.unwrap() {
-                        newest_date = Some(dt_utc);
+        // Collect SHAs first, then fetch commit dates in parallel
+        let shas: Vec<String> = raw
+            .lines()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+
+        // Use JoinSet to run all API calls concurrently
+        let mut tasks: tokio::task::JoinSet<Option<chrono::DateTime<chrono::Utc>>> =
+            tokio::task::JoinSet::new();
+
+        for sha in shas {
+            let repo_slug_owned = repo_slug.to_string();
+            tasks.spawn(async move {
+                let commit_result = gh_command(
+                    Path::new("."),
+                    &[
+                        "api",
+                        &format!("repos/{repo_slug_owned}/commits/{sha}"),
+                        "--jq",
+                        ".commit.committer.date",
+                    ],
+                )
+                .await;
+                if let Ok(date_raw) = commit_result {
+                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date_raw.trim()) {
+                        return Some(dt.with_timezone(&chrono::Utc));
                     }
+                }
+                None
+            });
+        }
+
+        // Collect results as they complete
+        while let Some(res) = tasks.join_next().await {
+            if let Ok(Some(dt_utc)) = res {
+                if newest_date.is_none() || dt_utc > newest_date.unwrap() {
+                    newest_date = Some(dt_utc);
                 }
             }
         }
@@ -486,7 +507,26 @@ async fn check_newest_commit_age_api(repo_slug: &str) -> u64 {
 
 
 /// Detect external (non-autoanneal) open PRs, filtered according to config.
-async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
+///
+/// # Errors
+///
+/// Returns an error if the filter value is not recognized. Valid filters are:
+/// - "all": include all external PRs
+/// - "recent": only include PRs updated in the last 24 hours
+/// - "labeled:<label>": only include PRs with the specified label
+async fn detect_external_prs(repo_slug: &str, filter: &str) -> Result<Vec<ExternalPr>> {
+    // Validate filter upfront to prevent silent fallback to 'all' on typos.
+    if !filter.is_empty()
+        && filter != "all"
+        && filter != "recent"
+        && !filter.starts_with("labeled:")
+    {
+        bail!(
+            "Unknown review_filter value '{}'. Valid options: 'all', 'recent', or 'labeled:<label>'",
+            filter
+        );
+    }
+
     let dot = Path::new(".");
 
     // 1. List all open PRs with relevant fields.
@@ -510,7 +550,7 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
         Ok(raw) => raw,
         Err(e) => {
             warn!(error = %e, "failed to list external PRs (non-fatal)");
-            return Vec::new();
+            return Ok(Vec::new());
         }
     };
 
@@ -518,7 +558,7 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
         Ok(v) => v,
         Err(e) => {
             warn!(error = %e, "failed to parse external PR list JSON");
-            return Vec::new();
+            return Ok(Vec::new());
         }
     };
 
@@ -567,7 +607,7 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
 
         // 4. Apply configured filter.
         match filter {
-            "all" => result.push(external),
+            "all" | "" => result.push(external),
             "recent" => {
                 // Only keep PRs updated in the last 24 hours.
                 if let Ok(updated) = chrono::DateTime::parse_from_rfc3339(&external.updated_at) {
@@ -584,14 +624,13 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
                 }
             }
             _ => {
-                warn!(filter = %filter, "unknown review filter, treating as 'all'");
-                result.push(external);
+                // This branch is unreachable due to upfront validation, but kept for exhaustiveness.
             }
         }
     }
 
     info!(count = result.len(), filter = %filter, "detected external PRs for review");
-    result
+    Ok(result)
 }
 
 /// Fetch open issues matching the given label filter.

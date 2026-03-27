@@ -20,11 +20,13 @@ impl WorktreeManager {
 
     /// Create a worktree from HEAD (same commit as canonical clone).
     pub async fn create_from_head(&self, name: &str) -> Result<PathBuf> {
-        let wt_path = self
-            .repo_dir
-            .parent()
-            .unwrap_or(&self.repo_dir)
-            .join(format!(".worktree-{name}"));
+        let parent_dir = self.repo_dir.parent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "cannot create worktree: repo_dir '{}' has no parent directory",
+                self.repo_dir.display()
+            )
+        })?;
+        let wt_path = parent_dir.join(format!(".worktree-{name}"));
 
         // Remove stale worktree if it exists.
         if wt_path.exists() {
