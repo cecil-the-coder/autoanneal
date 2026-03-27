@@ -19,7 +19,9 @@ const THROTTLE_DELAY: Duration = Duration::from_secs(2);
 static CALL_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Cached remaining rate limit (updated every RATE_CHECK_INTERVAL calls).
-static RATE_REMAINING: AtomicU32 = AtomicU32::new(u32::MAX);
+/// Initialized to 0 to force a rate limit check on first call; if the check fails,
+/// the exhaustion logic will wait rather than allowing unthrottled calls.
+static RATE_REMAINING: AtomicU32 = AtomicU32::new(0);
 
 /// Cached rate limit reset timestamp (unix seconds).
 static RATE_RESET: AtomicU32 = AtomicU32::new(0);

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use tracing::info;
 
 /// Manages git worktrees off a canonical clone directory.
 #[allow(dead_code)]
@@ -69,7 +69,7 @@ impl WorktreeManager {
 
         if !fetch.status.success() {
             let stderr = String::from_utf8_lossy(&fetch.stderr);
-            warn!("git fetch failed: {stderr}");
+            anyhow::bail!("git fetch failed: {stderr}");
         }
 
         // Checkout FETCH_HEAD.

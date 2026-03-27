@@ -156,7 +156,8 @@ pub async fn run(
                 );
                 let pr_title = format!("Fix #{}: {}", issue.number, issue.title);
                 let pr_title = if pr_title.len() > 72 {
-                    format!("{}...", &pr_title[..69])
+                    let truncated: String = pr_title.chars().take(69).collect();
+                    format!("{}...", truncated)
                 } else {
                     pr_title
                 };
