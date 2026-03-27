@@ -29,6 +29,8 @@ defaults:
   setupCommand: ""
   skipAfter: 3          # Skip if no commits in skipAfter × cronInterval minutes
   cronInterval: 10      # Cron interval in minutes (used for staleness calc)
+  fixCi: true           # Fix PRs with failing CI before looking for new improvements
+  fixConflicts: true    # Rebase PRs with merge conflicts
 
 # -- Optional environment variables (shared across all repos)
 # Uncomment and set as needed.

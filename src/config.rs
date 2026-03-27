@@ -57,6 +57,14 @@ pub struct Config {
     /// Cron interval in minutes (used with skip_after to calculate staleness).
     #[arg(long, default_value = "10")]
     pub cron_interval: u64,
+
+    /// Fix PRs with failing CI before looking for new improvements.
+    #[arg(long, default_value = "true")]
+    pub fix_ci: bool,
+
+    /// Rebase PRs with merge conflicts before looking for new improvements.
+    #[arg(long, default_value = "true")]
+    pub fix_conflicts: bool,
 }
 
 impl Config {

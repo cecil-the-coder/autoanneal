@@ -1,7 +1,7 @@
 use crate::cleanup::CleanupGuard;
 use crate::config::Config;
 use crate::logging;
-use crate::models::{OpenPr, PhaseReport, TaskStatus};
+use crate::models::{InFlightPr, OpenPr, PhaseReport, TaskStatus};
 use crate::phases;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -144,11 +144,22 @@ async fn run_pipeline(
         }
     };
 
-    // ─── CI Fix Phase ──────────────────────────────────────────────────
+    // ─── Maintenance Phase: CI Fix + Conflict Rebase ────────────────────
     {
-        let prs_to_fix = preflight_output.prs_needing_fix();
+        let mut prs_to_fix: Vec<&InFlightPr> = Vec::new();
+        if config.fix_ci {
+            prs_to_fix.extend(preflight_output.prs_needing_ci_fix());
+        }
+        if config.fix_conflicts {
+            // Add conflicting PRs that aren't already in the CI fix list
+            for pr in preflight_output.prs_needing_rebase() {
+                if !prs_to_fix.iter().any(|p| p.number == pr.number) {
+                    prs_to_fix.push(pr);
+                }
+            }
+        }
         if !prs_to_fix.is_empty() {
-            info!(count = prs_to_fix.len(), "starting CI fix phase");
+            info!(count = prs_to_fix.len(), "starting maintenance phase (CI fix / rebase)");
             for pr in prs_to_fix {
                 if *budget_remaining <= 0.0 {
                     warn!("budget exhausted before CI fix");

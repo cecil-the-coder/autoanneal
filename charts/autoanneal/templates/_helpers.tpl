@@ -72,6 +72,12 @@ Expects a dict with keys: repo (the repo entry), root (top-level context).
 - {{ ($repo.skipAfter | default $defaults.skipAfter) | quote }}
 - "--cron-interval"
 - {{ ($repo.cronInterval | default $defaults.cronInterval) | quote }}
+{{- $fixCi := ternary $repo.fixCi $defaults.fixCi (hasKey $repo "fixCi") }}
+- "--fix-ci"
+- {{ $fixCi | quote }}
+{{- $fixConflicts := ternary $repo.fixConflicts $defaults.fixConflicts (hasKey $repo "fixConflicts") }}
+- "--fix-conflicts"
+- {{ $fixConflicts | quote }}
 {{- end }}
 
 {{/*

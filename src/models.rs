@@ -158,6 +158,7 @@ pub struct InFlightPr {
     pub branch: String,
     pub ci_status: CiStatus,
     pub has_fixing_label: bool,
+    pub has_merge_conflicts: bool,
 }
 
 /// Status of a single implementation task.

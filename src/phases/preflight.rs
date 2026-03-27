@@ -14,10 +14,17 @@ pub struct PreflightOutput {
 }
 
 impl PreflightOutput {
-    pub fn prs_needing_fix(&self) -> Vec<&InFlightPr> {
+    pub fn prs_needing_ci_fix(&self) -> Vec<&InFlightPr> {
         self.in_flight_prs
             .iter()
             .filter(|pr| pr.ci_status == CiStatus::Failing && !pr.has_fixing_label)
+            .collect()
+    }
+
+    pub fn prs_needing_rebase(&self) -> Vec<&InFlightPr> {
+        self.in_flight_prs
+            .iter()
+            .filter(|pr| pr.has_merge_conflicts && !pr.has_fixing_label)
             .collect()
     }
 }
@@ -149,7 +156,7 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
                 "--state",
                 "open",
                 "--json",
-                "number,title,body",
+                "number,title,body,mergeable",
                 "--limit",
                 "1",
                 "-R",
@@ -205,6 +212,12 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
                             ci_status
                         };
 
+                        // Check merge conflict status
+                        let has_merge_conflicts = pr["mergeable"]
+                            .as_str()
+                            .map(|m| m == "CONFLICTING")
+                            .unwrap_or(false);
+
                         result.push(InFlightPr {
                             number,
                             title,
@@ -212,6 +225,7 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
                             branch: branch.to_string(),
                             ci_status,
                             has_fixing_label,
+                            has_merge_conflicts,
                         });
                     }
                 }
