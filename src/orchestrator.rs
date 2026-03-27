@@ -580,7 +580,7 @@ fn collect_work_items(
     let mut merged_open_prs: Vec<OpenPr> = open_prs.to_vec();
     for ifp in in_flight_prs {
         // Extract file paths from the PR's files field.
-        let files = ifp.files.iter().map(|f| f.clone()).collect();
+        let files = ifp.files.clone();
         merged_open_prs.push(OpenPr {
             number: ifp.number,
             title: ifp.title.clone(),
@@ -664,8 +664,11 @@ async fn run_work_queue(
     let mut outcomes: Vec<WorkItemOutcome> = Vec::new();
 
     // Fill initial slots.
-    while join_set.len() < concurrency && !pending.is_empty() {
-        let item = pending.pop_front().unwrap();
+    while join_set.len() < concurrency {
+        let item = match pending.pop_front() {
+            Some(item) => item,
+            None => break,
+        };
         spawn_work_item(
             &mut join_set,
             item,
