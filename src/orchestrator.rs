@@ -453,14 +453,14 @@ async fn run_pipeline(
                         cleanup_guard.disarm();
                         "OK".to_string()
                     } else if *has_successful_tasks {
+                        // Critic rejected — this is a normal outcome, not an error.
                         cleanup_guard.branch_name = branch_name.clone();
-                        cleanup_guard.has_successful_tasks = true;
-                        exit_code = 1;
-                        "PARTIAL (no PR)".to_string()
+                        cleanup_guard.has_successful_tasks = false; // delete the branch
+                        "REJECTED (critic)".to_string()
                     } else {
+                        // Analysis found nothing or all tasks failed — also normal.
                         cleanup_guard.branch_name = branch_name.clone();
-                        exit_code = 1;
-                        "FAILED".to_string()
+                        "NO_IMPROVEMENTS".to_string()
                     }
                 }
             },
