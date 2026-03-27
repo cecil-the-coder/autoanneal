@@ -253,7 +253,9 @@ async fn run_pipeline(
         || !preflight_output.issues.is_empty();
 
     if config.skip_after > 0 && !has_work {
-        let threshold_secs = config.skip_after as u64 * config.cron_interval * 60;
+        let threshold_secs = (config.skip_after as u64)
+            .saturating_mul(config.cron_interval)
+            .saturating_mul(60);
         if preflight_output.newest_commit_age_secs > threshold_secs {
             info!(
                 age_secs = preflight_output.newest_commit_age_secs,
