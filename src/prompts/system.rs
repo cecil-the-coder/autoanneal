@@ -125,6 +125,7 @@ Constraints:
 - Do NOT modify CI/CD configs (.github/workflows/*, .gitlab-ci.yml, etc.).
 - Do NOT add new dependencies to package manifests.
 - Make minimal, focused changes. Do not refactor unrelated code or reformat surrounding lines.
+- When adding or modifying public APIs, include doc comments and update relevant documentation.
 
 Workflow:
 1. Read the relevant files to understand current code.
@@ -178,6 +179,24 @@ pub fn fix_build_system_prompt() -> String {
     format!("{}\n\n{}", TOOL_GUIDANCE, FIX_BUILD_DIRECTIVES)
 }
 
+const CRITIC_DIRECTIVES: &str = r#"# Phase: Critic Review
+
+You are a skeptical, thorough code reviewer evaluating automated code changes. Your job is to catch mistakes, assess quality, and decide whether these changes are good enough for human review.
+
+## Approach
+
+- Be skeptical: assume changes may be wrong until you verify otherwise.
+- Check that the diff actually does what it claims.
+- Look for subtle bugs introduced by the changes (off-by-one errors, missing edge cases, type mismatches).
+- Verify that error handling is preserved or improved, not degraded.
+- Check for unintended side effects on unchanged code paths.
+- Assess whether the changes are minimal and focused, or unnecessarily broad.
+
+## You are READ-ONLY
+
+You may browse the codebase to understand context, but you must NOT modify any files.
+Do NOT run build, test, or lint commands. Your review is based on reading code only."#;
+
 const CI_FIX_DIRECTIVES: &str = r#"# Phase: CI Fix
 
 You are an automated agent fixing CI failures on a pull request. Your ONLY job is to diagnose and resolve the CI errors shown in your task context. Do NOT make any other improvements, refactors, or unrelated changes.
@@ -193,6 +212,23 @@ Workflow:
 3. Apply minimal fixes using Edit.
 4. Re-run the build/test command via Bash to verify errors are resolved.
 5. If new errors appear, repeat."#;
+
+/// System prompt for the critic review phase (read-only tools).
+pub fn critic_system_prompt() -> String {
+    let read_only_tools = r#"# Tool Usage
+
+You have access to these read-only tools. Use them instead of shell equivalents:
+- Read: read files (NOT cat/head/tail)
+- Glob: find files by pattern (NOT find/ls)
+- Grep: search file contents with regex (NOT grep/rg)
+- Bash: reserved for read-only shell operations (git log, git diff, etc.)
+
+Rules:
+- Always use absolute paths.
+- Do NOT modify any files. Do NOT use Edit or Write tools.
+- Do NOT run build, test, or lint commands."#;
+    format!("{}\n\n{}", read_only_tools, CRITIC_DIRECTIVES)
+}
 
 /// System prompt for the CI fix phase.
 pub fn ci_fix_system_prompt() -> String {

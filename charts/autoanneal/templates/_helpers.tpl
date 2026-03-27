@@ -78,6 +78,13 @@ Expects a dict with keys: repo (the repo entry), root (top-level context).
 {{- $fixConflicts := ternary $repo.fixConflicts $defaults.fixConflicts (hasKey $repo "fixConflicts") }}
 - "--fix-conflicts"
 - {{ $fixConflicts | quote }}
+- "--critic-threshold"
+- {{ ($repo.criticThreshold | default $defaults.criticThreshold) | quote }}
+{{- $improveDocs := ternary $repo.improveDocs $defaults.improveDocs (hasKey $repo "improveDocs") }}
+- "--improve-docs"
+- {{ $improveDocs | quote }}
+- "--doc-critic-threshold"
+- {{ ($repo.docCriticThreshold | default $defaults.docCriticThreshold) | quote }}
 {{- end }}
 
 {{/*

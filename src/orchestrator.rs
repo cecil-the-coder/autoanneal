@@ -374,14 +374,90 @@ async fn run_pipeline(
         }
     };
 
-    let improvements = &analysis_output.improvements;
+    let improvements = analysis_output.improvements;
 
-    // If no improvements found, exit cleanly.
-    if improvements.is_empty() {
+    // Track whether we're doing doc improvements (for critic threshold).
+    let is_doc_improvements;
+
+    // If no improvements found, try doc fallback.
+    let improvements = if improvements.is_empty() && config.improve_docs {
+        info!("no code improvements found, falling back to documentation analysis");
+
+        if *budget_remaining <= 0.0 {
+            warn!("budget exhausted before doc analysis fallback");
+            return Ok(2);
+        }
+
+        let phase_start = Instant::now();
+        let doc_budget = (*budget_remaining * 0.20).max(0.50).min(*budget_remaining);
+
+        let doc_output = match tokio::time::timeout(
+            Duration::from_secs(600),
+            phases::analysis::run_doc_analysis(
+                clone_path,
+                arch_summary,
+                stack_info,
+                &config.model,
+                doc_budget,
+                config.max_tasks,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(output)) => {
+                let cost = output.cost_usd;
+                *budget_remaining -= cost;
+                *total_cost += cost;
+
+                let found_count = output.improvements.len();
+                phases_report.push(PhaseReport {
+                    name: "Doc Analysis".to_string(),
+                    duration: phase_start.elapsed(),
+                    cost_usd: cost,
+                    status: format!("OK (found {} doc improvements)", found_count),
+                });
+                output
+            }
+            Ok(Err(e)) => {
+                error!(error = %e, "doc analysis failed");
+                phases_report.push(PhaseReport {
+                    name: "Doc Analysis".to_string(),
+                    duration: phase_start.elapsed(),
+                    cost_usd: 0.0,
+                    status: format!("FAILED: {e}"),
+                });
+                return Ok(1);
+            }
+            Err(_) => {
+                warn!("doc analysis timed out");
+                phases_report.push(PhaseReport {
+                    name: "Doc Analysis".to_string(),
+                    duration: phase_start.elapsed(),
+                    cost_usd: 0.0,
+                    status: "TIMEOUT".to_string(),
+                });
+                return Ok(2);
+            }
+        };
+
+        if doc_output.improvements.is_empty() {
+            info!("no documentation improvements found either");
+            println!("No actionable improvements found.");
+            return Ok(0);
+        }
+
+        is_doc_improvements = true;
+        doc_output.improvements
+    } else if improvements.is_empty() {
         info!("no actionable improvements found");
         println!("No actionable improvements found.");
         return Ok(0);
-    }
+    } else {
+        is_doc_improvements = false;
+        improvements
+    };
+
+    let improvements = &improvements;
 
     // If dry-run, print improvements as JSON and exit.
     if config.dry_run {
@@ -515,6 +591,96 @@ async fn run_pipeline(
         error!("no implementation tasks succeeded");
         // Cleanup guard will delete the branch on drop (no PR, no successful tasks).
         return Ok(1);
+    }
+
+    // ─── Phase 5b: Critic Review ────────────────────────────────────────
+    let critic_threshold = if is_doc_improvements {
+        config.doc_critic_threshold
+    } else {
+        config.critic_threshold
+    };
+
+    if critic_threshold > 0 {
+        if *budget_remaining <= 0.0 {
+            warn!("budget exhausted before Critic phase");
+            return Ok(2);
+        }
+
+        info!("starting phase: Critic Review");
+        let phase_start = Instant::now();
+        let critic_budget = budget_remaining.min(0.50);
+
+        match tokio::time::timeout(
+            Duration::from_secs(300),
+            phases::critic::run(
+                clone_path,
+                &repo_info.default_branch,
+                &config.model,
+                critic_budget,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(critic_output)) => {
+                let cost = critic_output.cost_usd;
+                *budget_remaining -= cost;
+                *total_cost += cost;
+
+                if critic_output.score < critic_threshold {
+                    info!(
+                        score = critic_output.score,
+                        threshold = critic_threshold,
+                        summary = %critic_output.summary,
+                        "critic rejected changes, skipping PR creation"
+                    );
+                    phases_report.push(PhaseReport {
+                        name: "Critic Review".to_string(),
+                        duration: phase_start.elapsed(),
+                        cost_usd: cost,
+                        status: format!(
+                            "REJECTED (score: {}, threshold: {}): {}",
+                            critic_output.score, critic_threshold, critic_output.summary
+                        ),
+                    });
+                    // Cleanup guard will delete the branch on drop.
+                    return Ok(1);
+                }
+
+                info!(
+                    score = critic_output.score,
+                    verdict = %critic_output.verdict,
+                    summary = %critic_output.summary,
+                    "critic approved changes"
+                );
+                phases_report.push(PhaseReport {
+                    name: "Critic Review".to_string(),
+                    duration: phase_start.elapsed(),
+                    cost_usd: cost,
+                    status: format!(
+                        "OK (score: {}, verdict: {})",
+                        critic_output.score, critic_output.verdict
+                    ),
+                });
+            }
+            Ok(Err(e)) => {
+                warn!(error = %e, "critic review failed (non-fatal, proceeding with PR)");
+                phases_report.push(PhaseReport {
+                    name: "Critic Review".to_string(),
+                    duration: phase_start.elapsed(),
+                    cost_usd: 0.0,
+                    status: format!("FAILED: {e} (proceeding)"),
+                });
+            }
+            Err(_) => {
+                warn!("critic review timed out (non-fatal, proceeding with PR)");
+                phases_report.push(PhaseReport {
+                    name: "Critic Review".to_string(),
+                    duration: phase_start.elapsed(),
+                    cost_usd: 0.0,
+                    status: "TIMEOUT (proceeding)".to_string(),
+                });
+            }
+        }
     }
 
     // ─── Phase 6: PR Creation ───────────────────────────────────────────

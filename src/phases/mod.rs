@@ -4,3 +4,4 @@ pub mod analysis;
 pub mod plan;
 pub mod implement;
 pub mod ci_fix;
+pub mod critic;

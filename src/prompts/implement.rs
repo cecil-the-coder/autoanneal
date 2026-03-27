@@ -13,6 +13,8 @@ pub const IMPLEMENT_PROMPT: &str = r#"You are implementing a specific improvemen
 - Do NOT modify CI/CD configuration files (.github/workflows/*, .gitlab-ci.yml, etc.)
 - Do NOT add new dependencies to package manifests (Cargo.toml, package.json, go.mod, etc.)
 - Make minimal, focused changes. Do not refactor unrelated code, rename unrelated variables, or reformat surrounding lines.
+- If your changes affect public APIs, update relevant documentation (README, doc comments, etc.)
+- Add brief doc comments to any new public functions or structs you create
 - Primary language: {primary_language}
 
 ## Verification

@@ -214,6 +214,14 @@ pub struct ClaudeOutput {
     pub _extra: serde_json::Value,
 }
 
+/// Result of a critic review of code changes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CriticResult {
+    pub score: u32,
+    pub verdict: String,
+    pub summary: String,
+}
+
 /// Summary of a single phase for the final report.
 #[derive(Debug, Clone)]
 pub struct PhaseReport {

@@ -65,6 +65,18 @@ pub struct Config {
     /// Rebase PRs with merge conflicts before looking for new improvements.
     #[arg(long, default_value = "true")]
     pub fix_conflicts: bool,
+
+    /// Minimum critic score (1-10) to create a PR. Set to 0 to disable critic.
+    #[arg(long, default_value = "6")]
+    pub critic_threshold: u32,
+
+    /// Fall back to documentation improvements when no code improvements found.
+    #[arg(long, default_value = "true")]
+    pub improve_docs: bool,
+
+    /// Minimum critic score for documentation changes (higher bar than code).
+    #[arg(long, default_value = "7")]
+    pub doc_critic_threshold: u32,
 }
 
 impl Config {
@@ -194,6 +206,13 @@ mod tests {
             min_severity: "minor".to_string(),
             log_level: "info".to_string(),
             output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 7,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -212,6 +231,13 @@ mod tests {
             min_severity: "minor".to_string(),
             log_level: "info".to_string(),
             output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 7,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -230,6 +256,13 @@ mod tests {
             min_severity: "minor".to_string(),
             log_level: "info".to_string(),
             output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 7,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -248,6 +281,13 @@ mod tests {
             min_severity: "moderate".to_string(),
             log_level: "info".to_string(),
             output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 7,
         };
         assert_eq!(config.min_severity(), Severity::Moderate);
     }
@@ -266,6 +306,13 @@ mod tests {
             min_severity: "unknown".to_string(),
             log_level: "info".to_string(),
             output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 7,
         };
         assert_eq!(config.min_severity(), Severity::Minor);
     }
