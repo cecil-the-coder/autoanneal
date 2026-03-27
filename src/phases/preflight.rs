@@ -29,8 +29,33 @@ impl PreflightOutput {
     }
 }
 
+/// Default staleness threshold in minutes for autoanneal:fixing labels.
+const DEFAULT_FIXING_STALE_MINUTES: i64 = 30;
+
+/// Environment variable name for overriding the staleness threshold.
+const FIXING_STALE_MINUTES_ENV: &str = "AUTOANNEAL_FIXING_STALE_MINUTES";
+
 /// Validate environment and repo, return repo metadata plus in-flight PR info.
+///
+/// The staleness threshold is determined in this order:
+/// 1. `AUTOANNEAL_FIXING_STALE_MINUTES` environment variable (if set and valid)
+/// 2. Default value of 30 minutes
 pub async fn run(repo_slug: &str) -> Result<PreflightOutput> {
+    let stale_threshold = std::env::var(FIXING_STALE_MINUTES_ENV)
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_FIXING_STALE_MINUTES);
+    run_with_stale_threshold(repo_slug, stale_threshold).await
+}
+
+/// Validate environment and repo, return repo metadata plus in-flight PR info.
+///
+/// # Arguments
+/// * `repo_slug` - The repository slug (owner/repo)
+/// * `fixing_stale_minutes` - Staleness threshold in minutes for autoanneal:fixing labels.
+///   Labels on commits older than this are considered stale and will be removed.
+pub async fn run_with_stale_threshold(repo_slug: &str, fixing_stale_minutes: i64) -> Result<PreflightOutput> {
+    let stale_threshold = fixing_stale_minutes;
     // 1. Validate environment variables.
     validate_env_vars()?;
 
@@ -85,7 +110,7 @@ pub async fn run(repo_slug: &str) -> Result<PreflightOutput> {
     };
 
     // 5. Detect in-flight autoanneal branches and their associated PRs.
-    let in_flight_prs = detect_in_flight_prs(repo_slug).await;
+    let in_flight_prs = detect_in_flight_prs(repo_slug, stale_threshold).await;
 
     // 6. Get HEAD SHA.
     let head_sha = get_head_sha(repo_slug, &default_branch).await;
@@ -108,7 +133,11 @@ pub async fn run(repo_slug: &str) -> Result<PreflightOutput> {
 
 /// Fetch existing autoanneal/ branches and check for associated open PRs.
 /// Returns best-effort results; failures are logged but not fatal.
-async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
+///
+/// # Arguments
+/// * `repo_slug` - The repository slug (owner/repo)
+/// * `stale_threshold_minutes` - Staleness threshold in minutes for autoanneal:fixing labels
+async fn detect_in_flight_prs(repo_slug: &str, stale_threshold_minutes: i64) -> Vec<InFlightPr> {
     let dot = Path::new(".");
     let mut result = Vec::new();
 
@@ -182,9 +211,9 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
                         let mut has_fixing_label =
                             check_fixing_label(repo_slug, number).await;
 
-                        // If label present but latest commit >30 min old, remove stale label
+                        // If label present but latest commit > threshold min old, remove stale label
                         if has_fixing_label {
-                            if is_stale_fixing(repo_slug, branch).await {
+                            if is_stale_fixing(repo_slug, branch, stale_threshold_minutes).await {
                                 info!(
                                     pr_number = number,
                                     "removing stale autoanneal:fixing label"
@@ -322,8 +351,13 @@ async fn check_fixing_label(repo_slug: &str, pr_number: u64) -> bool {
     }
 }
 
-/// Check if the fixing label is stale (latest commit >30 min old).
-async fn is_stale_fixing(repo_slug: &str, branch: &str) -> bool {
+/// Check if the fixing label is stale (latest commit older than threshold minutes).
+///
+/// # Arguments
+/// * `repo_slug` - The repository slug (owner/repo)
+/// * `branch` - The branch name to check
+/// * `stale_threshold_minutes` - Age threshold in minutes; commits older than this are considered stale
+async fn is_stale_fixing(repo_slug: &str, branch: &str, stale_threshold_minutes: i64) -> bool {
     let dot = Path::new(".");
     match gh_command(
         dot,
@@ -341,7 +375,7 @@ async fn is_stale_fixing(repo_slug: &str, branch: &str) -> bool {
             // Parse ISO 8601 date
             if let Ok(commit_time) = chrono::DateTime::parse_from_rfc3339(date_str) {
                 let age = chrono::Utc::now().signed_duration_since(commit_time);
-                age.num_minutes() > 30
+                age.num_minutes() > stale_threshold_minutes
             } else {
                 false
             }

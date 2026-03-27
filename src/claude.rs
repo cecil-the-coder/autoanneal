@@ -293,6 +293,7 @@ async fn invoke_once<T: DeserializeOwned>(
         .current_dir(&invocation.working_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .context("failed to spawn claude process — is `claude` on PATH?")?;
 

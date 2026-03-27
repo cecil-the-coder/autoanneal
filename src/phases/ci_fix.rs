@@ -15,6 +15,12 @@ pub struct CiFixOutput {
 }
 
 /// Drop guard that removes the autoanneal:fixing label when dropped.
+///
+/// # Blocking Behavior Warning
+/// The `Drop` implementation spawns a blocking thread to run `gh` commands.
+/// This is necessary because `Drop` cannot be async, and we must avoid blocking
+/// the tokio runtime. The cleanup is performed in a fire-and-forget manner
+/// using `std::thread::spawn`.
 struct FixingLabelGuard {
     pr_number: u64,
     repo_slug: String,
@@ -26,17 +32,24 @@ impl Drop for FixingLabelGuard {
             pr_number = self.pr_number,
             "removing autoanneal:fixing label"
         );
-        let _ = std::process::Command::new("gh")
-            .args([
-                "pr",
-                "edit",
-                &self.pr_number.to_string(),
-                "--remove-label",
-                "autoanneal:fixing",
-                "-R",
-                &self.repo_slug,
-            ])
-            .output();
+        // Spawn a thread to avoid blocking the async tokio runtime.
+        // This is fire-and-forget cleanup since Drop cannot be async.
+        let pr_number = self.pr_number;
+        let repo_slug = self.repo_slug.clone();
+
+        std::thread::spawn(move || {
+            let _ = std::process::Command::new("gh")
+                .args([
+                    "pr",
+                    "edit",
+                    &pr_number.to_string(),
+                    "--remove-label",
+                    "autoanneal:fixing",
+                    "-R",
+                    &repo_slug,
+                ])
+                .output();
+        });
     }
 }
 

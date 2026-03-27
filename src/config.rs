@@ -1,6 +1,12 @@
 use crate::models::Severity;
 use clap::Parser;
 
+/// Maximum allowed value for max_tasks to prevent budget exhaustion
+const MAX_TASKS_LIMIT: usize = 100;
+
+/// Maximum allowed threshold value (scores are 1-10, 0 means disabled)
+const MAX_THRESHOLD_VALUE: u32 = 10;
+
 #[derive(Parser, Debug)]
 #[command(name = "autoanneal", about = "Autonomous code improvement agent")]
 pub struct Config {
@@ -77,6 +83,11 @@ pub struct Config {
     /// Minimum critic score for documentation changes (higher bar than code).
     #[arg(long, default_value = "7")]
     pub doc_critic_threshold: u32,
+
+    /// Staleness threshold in minutes for autoanneal:fixing labels.
+    /// Labels older than this are considered stale and removed.
+    #[arg(long, default_value = "30")]
+    pub fixing_stale_minutes: i64,
 }
 
 impl Config {
@@ -115,6 +126,33 @@ impl Config {
             "major" => Severity::Major,
             _ => Severity::Minor,
         }
+    }
+
+    /// Validate configuration parameters.
+    /// Returns an error if any parameter is out of acceptable bounds.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.critic_threshold > MAX_THRESHOLD_VALUE {
+            return Err(format!(
+                "critic_threshold must be 0-{} (0 = disabled), got {}",
+                MAX_THRESHOLD_VALUE, self.critic_threshold
+            ));
+        }
+
+        if self.doc_critic_threshold > MAX_THRESHOLD_VALUE {
+            return Err(format!(
+                "doc_critic_threshold must be 0-{} (0 = disabled), got {}",
+                MAX_THRESHOLD_VALUE, self.doc_critic_threshold
+            ));
+        }
+
+        if self.max_tasks > MAX_TASKS_LIMIT {
+            return Err(format!(
+                "max_tasks must be at most {}, got {}",
+                MAX_TASKS_LIMIT, self.max_tasks
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -213,6 +251,7 @@ mod tests {
             critic_threshold: 6,
             improve_docs: true,
             doc_critic_threshold: 7,
+            fixing_stale_minutes: 30,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -238,6 +277,7 @@ mod tests {
             critic_threshold: 6,
             improve_docs: true,
             doc_critic_threshold: 7,
+            fixing_stale_minutes: 30,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -263,6 +303,7 @@ mod tests {
             critic_threshold: 6,
             improve_docs: true,
             doc_critic_threshold: 7,
+            fixing_stale_minutes: 30,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -288,6 +329,7 @@ mod tests {
             critic_threshold: 6,
             improve_docs: true,
             doc_critic_threshold: 7,
+            fixing_stale_minutes: 30,
         };
         assert_eq!(config.min_severity(), Severity::Moderate);
     }
@@ -313,7 +355,196 @@ mod tests {
             critic_threshold: 6,
             improve_docs: true,
             doc_critic_threshold: 7,
+            fixing_stale_minutes: 30,
         };
         assert_eq!(config.min_severity(), Severity::Minor);
+    }
+
+    #[test]
+    fn test_validate_default_config_is_valid() {
+        let config = Config {
+            repo: "owner/repo".to_string(),
+            max_budget: 5.0,
+            timeout: "30m".to_string(),
+            model: "sonnet".to_string(),
+            max_tasks: 5,
+            dry_run: false,
+            keep_on_failure: false,
+            setup_command: None,
+            min_severity: "minor".to_string(),
+            log_level: "info".to_string(),
+            output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 7,
+            fixing_stale_minutes: 30,
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_critic_threshold_zero_is_valid() {
+        let config = Config {
+            repo: "owner/repo".to_string(),
+            max_budget: 5.0,
+            timeout: "30m".to_string(),
+            model: "sonnet".to_string(),
+            max_tasks: 5,
+            dry_run: false,
+            keep_on_failure: false,
+            setup_command: None,
+            min_severity: "minor".to_string(),
+            log_level: "info".to_string(),
+            output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 0,
+            improve_docs: true,
+            doc_critic_threshold: 7,
+            fixing_stale_minutes: 30,
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_critic_threshold_too_high() {
+        let config = Config {
+            repo: "owner/repo".to_string(),
+            max_budget: 5.0,
+            timeout: "30m".to_string(),
+            model: "sonnet".to_string(),
+            max_tasks: 5,
+            dry_run: false,
+            keep_on_failure: false,
+            setup_command: None,
+            min_severity: "minor".to_string(),
+            log_level: "info".to_string(),
+            output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 11,
+            improve_docs: true,
+            doc_critic_threshold: 7,
+            fixing_stale_minutes: 30,
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("critic_threshold"));
+    }
+
+    #[test]
+    fn test_validate_doc_critic_threshold_too_high() {
+        let config = Config {
+            repo: "owner/repo".to_string(),
+            max_budget: 5.0,
+            timeout: "30m".to_string(),
+            model: "sonnet".to_string(),
+            max_tasks: 5,
+            dry_run: false,
+            keep_on_failure: false,
+            setup_command: None,
+            min_severity: "minor".to_string(),
+            log_level: "info".to_string(),
+            output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 15,
+            fixing_stale_minutes: 30,
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("doc_critic_threshold"));
+    }
+
+    #[test]
+    fn test_validate_max_tasks_too_high() {
+        let config = Config {
+            repo: "owner/repo".to_string(),
+            max_budget: 5.0,
+            timeout: "30m".to_string(),
+            model: "sonnet".to_string(),
+            max_tasks: 150,
+            dry_run: false,
+            keep_on_failure: false,
+            setup_command: None,
+            min_severity: "minor".to_string(),
+            log_level: "info".to_string(),
+            output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 7,
+            fixing_stale_minutes: 30,
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("max_tasks"));
+    }
+
+    #[test]
+    fn test_validate_max_tasks_at_limit_is_valid() {
+        let config = Config {
+            repo: "owner/repo".to_string(),
+            max_budget: 5.0,
+            timeout: "30m".to_string(),
+            model: "sonnet".to_string(),
+            max_tasks: 100,
+            dry_run: false,
+            keep_on_failure: false,
+            setup_command: None,
+            min_severity: "minor".to_string(),
+            log_level: "info".to_string(),
+            output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 7,
+            fixing_stale_minutes: 30,
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_threshold_at_max_is_valid() {
+        let config = Config {
+            repo: "owner/repo".to_string(),
+            max_budget: 5.0,
+            timeout: "30m".to_string(),
+            model: "sonnet".to_string(),
+            max_tasks: 5,
+            dry_run: false,
+            keep_on_failure: false,
+            setup_command: None,
+            min_severity: "minor".to_string(),
+            log_level: "info".to_string(),
+            output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 10,
+            improve_docs: true,
+            doc_critic_threshold: 10,
+            fixing_stale_minutes: 30,
+        };
+        assert!(config.validate().is_ok());
     }
 }
