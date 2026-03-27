@@ -1043,9 +1043,11 @@ async fn run_analysis_pipeline(
             }
             Ok(Err(e)) => {
                 warn!(error = %e, "critic review failed (non-fatal, proceeding)");
+                critic_summary = Some(format!("## Review\n\nCritic review failed: {e}"));
             }
             Err(_) => {
                 warn!("critic review timed out (non-fatal, proceeding)");
+                critic_summary = Some("## Review\n\nCritic review timed out.".to_string());
             }
         }
     }
