@@ -246,11 +246,33 @@ async fn run_pipeline(
         }
     };
 
-    // ─── Staleness check (before recon to save money) ─────────────────
-    let has_work = !preflight_output.prs_needing_ci_fix().is_empty()
-        || !preflight_output.prs_needing_rebase().is_empty()
-        || !preflight_output.external_prs.is_empty()
-        || !preflight_output.issues.is_empty();
+    // ─── Early exit checks (before recon to save money) ────────────────
+    let has_maintenance = !preflight_output.prs_needing_ci_fix().is_empty()
+        || !preflight_output.prs_needing_rebase().is_empty();
+    let has_reviews = !preflight_output.external_prs.is_empty();
+    let has_issues = !preflight_output.issues.is_empty();
+    let at_pr_limit = config.max_open_prs > 0
+        && preflight_output.in_flight_prs.len() >= config.max_open_prs;
+
+    // If at PR limit and no maintenance/review/issue work, skip everything.
+    if at_pr_limit && !has_maintenance && !has_reviews && !has_issues {
+        info!(
+            open = preflight_output.in_flight_prs.len(),
+            max = config.max_open_prs,
+            "at max open PRs with no maintenance work, skipping"
+        );
+        println!("At max open PRs ({}/{}). No maintenance work. Skipping.",
+            preflight_output.in_flight_prs.len(), config.max_open_prs);
+        phases_report.push(PhaseReport {
+            name: "Skip".to_string(),
+            duration: Duration::ZERO,
+            cost_usd: 0.0,
+            status: format!("SKIPPED (max open PRs: {})", config.max_open_prs),
+        });
+        return Ok(0);
+    }
+
+    let has_work = has_maintenance || has_reviews || has_issues;
 
     if config.skip_after > 0 && !has_work {
         let threshold_secs = config.skip_after as u64 * config.cron_interval * 60;
