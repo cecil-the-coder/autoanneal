@@ -46,6 +46,7 @@ pub async fn run(
     worktree_path: &Path,
     model: &str,
     budget: f64,
+    default_branch: &str,
 ) -> Result<CiFixOutput> {
     let dot = Path::new(".");
     let clone_dir = worktree_path.to_path_buf();
@@ -87,24 +88,24 @@ pub async fn run(
         repo_slug: repo_slug.to_string(),
     };
 
-    // 2. Handle merge conflicts: fetch and merge main first.
+    // 2. Handle merge conflicts: fetch and merge default branch first.
     if pr.has_merge_conflicts {
-        info!(pr_number = pr.number, "PR has merge conflicts, attempting rebase on main");
+        info!(pr_number = pr.number, default_branch, "PR has merge conflicts, attempting rebase on default branch");
         let _ = tokio::process::Command::new("git")
-            .args(["fetch", "origin", "main"])
+            .args(["fetch", "origin", default_branch])
             .current_dir(&clone_dir)
             .output()
             .await;
 
         let merge_output = tokio::process::Command::new("git")
-            .args(["merge", "origin/main", "--no-edit"])
+            .args(["merge", &format!("origin/{default_branch}"), "--no-edit"])
             .current_dir(&clone_dir)
             .output()
             .await;
 
         match merge_output {
             Ok(out) if out.status.success() => {
-                info!(pr_number = pr.number, "merged main successfully, no conflicts remain");
+                info!(pr_number = pr.number, default_branch, "merged default branch successfully, no conflicts remain");
                 // Push the merge commit directly — no Claude needed
                 let push_result = commit_and_push(&clone_dir, &pr.branch).await;
                 return Ok(CiFixOutput {
@@ -143,12 +144,12 @@ pub async fn run(
     // 6. Invoke Claude.
     let prompt = if pr.has_merge_conflicts {
         format!(
-            "Pull request #{} (branch: {}) has merge conflicts with main.\n\n\
+            "Pull request #{} (branch: {}) has merge conflicts with {}.\n\n\
              ## Conflict Diff\n\n```\n{}\n```\n\n\
              ## Instructions\n\n\
              Resolve the merge conflicts. For each conflicted file, choose the correct resolution \
              (keep ours, keep theirs, or combine). After resolving, ensure the code compiles and tests pass.",
-            pr.number, pr.branch, context
+            pr.number, pr.branch, default_branch, context
         )
     } else {
         prompts::ci_fix::CI_FIX_PROMPT

@@ -56,7 +56,7 @@ pub async fn gh_command(repo_dir: &Path, args: &[&str]) -> Result<String> {
             .unwrap_or_default()
             .as_secs();
         if reset > now {
-            let wait = reset - now + 1;
+            let wait = reset.saturating_sub(now).saturating_add(1);
             tracing::warn!(
                 wait_secs = wait,
                 "GitHub rate limit exhausted, waiting for reset"
