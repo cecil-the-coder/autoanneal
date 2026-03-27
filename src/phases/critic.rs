@@ -46,7 +46,7 @@ pub async fn run(
         prompt,
         system_prompt: Some(critic_system_prompt()),
         model: model.to_string(),
-        max_budget_usd: (remaining_budget * 0.4).min(0.30),
+        max_budget_usd: (remaining_budget * 0.4).min(1.00),
         max_turns: 30,
         effort: "high",
         tools: "Read,Glob,Grep",
@@ -79,7 +79,7 @@ pub async fn run(
     // - We have budget remaining
     let should_fix = initial_review.verdict == "needs_work"
         && initial_review.score >= 4
-        && (remaining_budget - total_cost) > 0.20;
+        && (remaining_budget - total_cost) > 0.30;
 
     if !should_fix {
         return Ok(CriticOutput {
@@ -153,7 +153,7 @@ pub async fn run(
                         prompt: re_prompt,
                         system_prompt: Some(critic_system_prompt()),
                         model: model.to_string(),
-                        max_budget_usd: (remaining_budget - total_cost).min(0.20),
+                        max_budget_usd: (remaining_budget - total_cost).min(0.50),
                         max_turns: 15,
                         effort: "high",
                         tools: "Read,Glob,Grep",
