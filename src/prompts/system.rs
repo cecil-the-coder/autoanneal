@@ -206,6 +206,23 @@ You are a skeptical, thorough code reviewer evaluating automated code changes. Y
 You may browse the codebase to understand context, but you must NOT modify any files.
 Do NOT run build, test, or lint commands. Your review is based on reading code only."#;
 
+const CRITIC_FIX_DIRECTIVES: &str = r#"# Phase: Critic Fix
+
+You are addressing issues found during code review of your own PR. Your previous review identified specific problems — fix them now.
+
+Constraints:
+- Only fix what the review identified. Do NOT add new improvements.
+- Do NOT run build, test, or lint commands. CI will verify.
+- Make minimal, focused changes.
+- If the review said a test is missing, add the test.
+- If the review said docs are wrong, fix the docs.
+- If the review said a change is unnecessary, revert it."#;
+
+/// System prompt for the critic fix phase (has Edit/Write tools).
+pub fn critic_fix_system_prompt() -> String {
+    format!("{}\n\n{}", TOOL_GUIDANCE, CRITIC_FIX_DIRECTIVES)
+}
+
 const CI_FIX_DIRECTIVES: &str = r#"# Phase: CI Fix
 
 You are an automated agent fixing CI failures on a pull request. Your ONLY job is to diagnose and resolve the CI errors shown in your task context. Do NOT make any other improvements, refactors, or unrelated changes.
