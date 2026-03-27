@@ -24,16 +24,13 @@ Only if the changes pass the "worth doing" bar, also check:
 
 ## Output
 
-Output a JSON code block:
+Return a JSON object with your review:
 
-```json
-{
-  "score": 7,
-  "verdict": "approve|needs_work|reject",
-  "summary": "Brief review summary"
-}
-```
+- "score": integer from 1-10
+- "verdict": one of "approve", "needs_work", or "reject"
+- "summary": brief review summary
 
+Scoring guide:
 - Score 8-10 + "approve": Valuable changes, ready for human review
 - Score 5-7 + "needs_work": Valuable changes but have fixable issues
 - Score 1-4 + "reject": Not worth doing — trivial, cosmetic, or actively harmful"#;
