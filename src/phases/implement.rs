@@ -170,7 +170,6 @@ async fn run_batch(
             .collect();
         let stack_info = stack_info.clone();
         let model = model.to_string();
-        let _branch_name = branch_name.to_string();
         let shared_cost = Arc::clone(&shared_cost);
 
         join_set.spawn(async move {
@@ -599,14 +598,11 @@ async fn create_worktree(repo_dir: &Path, name: &str) -> Result<PathBuf> {
 
     let head_ref = String::from_utf8_lossy(&head_output.stdout).trim().to_string();
 
+    let worktree_dir_str = worktree_dir
+        .to_str()
+        .context("worktree path contains non-UTF8 characters")?;
     let output = tokio::process::Command::new("git")
-        .args([
-            "worktree",
-            "add",
-            "--detach",
-            &worktree_dir.to_string_lossy(),
-            &head_ref,
-        ])
+        .args(["worktree", "add", "--detach", worktree_dir_str, &head_ref])
         .current_dir(repo_dir)
         .output()
         .await
@@ -623,13 +619,11 @@ async fn create_worktree(repo_dir: &Path, name: &str) -> Result<PathBuf> {
 
 /// Remove a git worktree and its directory.
 async fn remove_worktree(repo_dir: &Path, worktree_path: &Path) -> Result<()> {
+    let worktree_path_str = worktree_path
+        .to_str()
+        .context("worktree path contains non-UTF8 characters")?;
     let output = tokio::process::Command::new("git")
-        .args([
-            "worktree",
-            "remove",
-            "--force",
-            &worktree_path.to_string_lossy(),
-        ])
+        .args(["worktree", "remove", "--force", worktree_path_str])
         .current_dir(repo_dir)
         .output()
         .await

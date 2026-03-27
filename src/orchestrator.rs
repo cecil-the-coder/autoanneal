@@ -28,6 +28,7 @@ struct WorkItem {
 enum WorkItemKind {
     CiFix {
         pr: InFlightPr,
+        default_branch: String,
     },
     PrReview {
         pr: ExternalPr,
@@ -58,7 +59,7 @@ enum WorkItemKind {
 impl WorkItem {
     fn name(&self) -> String {
         match &self.kind {
-            WorkItemKind::CiFix { pr } => format!("CI Fix (PR #{})", pr.number),
+            WorkItemKind::CiFix { pr, .. } => format!("CI Fix (PR #{})", pr.number),
             WorkItemKind::PrReview { pr, .. } => format!("PR Review (PR #{})", pr.number),
             WorkItemKind::IssueInvestigation { issue, .. } => {
                 format!("Issue #{}", issue.number)
@@ -453,14 +454,14 @@ async fn run_pipeline(
                         cleanup_guard.disarm();
                         "OK".to_string()
                     } else if *has_successful_tasks {
+                        // Critic rejected — this is a normal outcome, not an error.
                         cleanup_guard.branch_name = branch_name.clone();
-                        cleanup_guard.has_successful_tasks = true;
-                        exit_code = 1;
-                        "PARTIAL (no PR)".to_string()
+                        cleanup_guard.has_successful_tasks = false; // delete the branch
+                        "REJECTED (critic)".to_string()
                     } else {
+                        // Analysis found nothing or all tasks failed — also normal.
                         cleanup_guard.branch_name = branch_name.clone();
-                        exit_code = 1;
-                        "FAILED".to_string()
+                        "NO_IMPROVEMENTS".to_string()
                     }
                 }
             },
@@ -528,7 +529,10 @@ fn collect_work_items(
             // Note: we don't reserve budget here; actual costs are subtracted
             // when outcomes are processed to avoid double-counting.
             items.push(WorkItem {
-                kind: WorkItemKind::CiFix { pr: pr.clone() },
+                kind: WorkItemKind::CiFix {
+                    pr: pr.clone(),
+                    default_branch: repo_info.default_branch.clone(),
+                },
                 budget_cap: fix_budget,
             });
         }
@@ -711,11 +715,11 @@ fn spawn_work_item(
         info!(item = %item_name, "starting work item");
 
         let result = match item.kind {
-            WorkItemKind::CiFix { pr } => {
+            WorkItemKind::CiFix { pr, default_branch } => {
                 let wt_name = format!("ci-fix-{}", pr.number);
                 match mgr.create_at_branch(&wt_name, &pr.branch).await {
                     Ok(wt) => {
-                        let r = phases::ci_fix::run(&pr, &repo_slug, &wt, &model, budget).await;
+                        let r = phases::ci_fix::run(&pr, &repo_slug, &wt, &model, budget, &default_branch).await;
                         mgr.remove(&wt).await.ok();
                         r.map(|o| (WorkItemResult::CiFix {
                             pr_number: o.pr_number,
