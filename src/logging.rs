@@ -17,12 +17,15 @@ pub fn init(log_level: &str) {
         .init();
 }
 
-/// Format a `Duration` in human-readable form (e.g. "3s", "1m 12s", "2m 31s").
+/// Format a `Duration` in human-readable form (e.g. "3s", "1m 12s", "1h 30m 0s").
 fn fmt_duration(d: Duration) -> String {
     let total_secs = d.as_secs();
-    let mins = total_secs / 60;
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
     let secs = total_secs % 60;
-    if mins > 0 {
+    if hours > 0 {
+        format!("{}h {}m {}s", hours, mins, secs)
+    } else if mins > 0 {
         format!("{}m {}s", mins, secs)
     } else {
         format!("{}s", secs)

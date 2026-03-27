@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 const MAX_ATTEMPTS: u32 = 3;
@@ -16,15 +16,15 @@ const RATE_LIMIT_LOW_THRESHOLD: u64 = 200;
 const THROTTLE_DELAY: Duration = Duration::from_secs(2);
 
 /// Global counter of gh commands since last rate limit check.
-static CALL_COUNT: AtomicU32 = AtomicU32::new(0);
+static CALL_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Cached remaining rate limit (updated every RATE_CHECK_INTERVAL calls).
 /// Initialized to 0 to force a rate limit check on first call; if the check fails,
 /// the exhaustion logic will wait rather than allowing unthrottled calls.
-static RATE_REMAINING: AtomicU32 = AtomicU32::new(0);
+static RATE_REMAINING: AtomicU64 = AtomicU64::new(0);
 
 /// Cached rate limit reset timestamp (unix seconds).
-static RATE_RESET: AtomicU32 = AtomicU32::new(0);
+static RATE_RESET: AtomicU64 = AtomicU64::new(0);
 
 /// Run a gh CLI command with retry, exponential backoff, and rate limit awareness.
 ///
@@ -39,7 +39,7 @@ pub async fn gh_command(repo_dir: &Path, args: &[&str]) -> Result<String> {
     }
 
     // If rate limit is low, add a delay.
-    let remaining = RATE_REMAINING.load(Ordering::Relaxed) as u64;
+    let remaining = RATE_REMAINING.load(Ordering::Relaxed);
     if remaining < RATE_LIMIT_LOW_THRESHOLD && remaining > 0 {
         tracing::warn!(
             remaining,
@@ -50,7 +50,7 @@ pub async fn gh_command(repo_dir: &Path, args: &[&str]) -> Result<String> {
 
     // If rate limit is exhausted, wait until reset.
     if remaining == 0 {
-        let reset = RATE_RESET.load(Ordering::Relaxed) as u64;
+        let reset = RATE_RESET.load(Ordering::Relaxed);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -149,10 +149,10 @@ async fn check_rate_limit() {
             let s = String::from_utf8_lossy(&out.stdout);
             let parts: Vec<&str> = s.trim().split_whitespace().collect();
             if parts.len() >= 2 {
-                if let Ok(remaining) = parts[0].parse::<u32>() {
+                if let Ok(remaining) = parts[0].parse::<u64>() {
                     RATE_REMAINING.store(remaining, Ordering::Relaxed);
                 }
-                if let Ok(reset) = parts[1].parse::<u32>() {
+                if let Ok(reset) = parts[1].parse::<u64>() {
                     RATE_RESET.store(reset, Ordering::Relaxed);
                 }
                 tracing::debug!(

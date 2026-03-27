@@ -132,13 +132,13 @@ pub async fn run(
         match output {
             Ok(out) => {
                 let diff = String::from_utf8_lossy(&out.stdout).to_string();
-                if diff.len() > 50_000 { diff[..50_000].to_string() } else { diff }
+                truncate_to_char_boundary(&diff, 50_000)
             }
             Err(_) => "(could not get conflict diff)".to_string(),
         }
     } else {
         let ci_logs = fetch_ci_logs(repo_slug, &pr.branch).await;
-        if ci_logs.len() > 50_000 { ci_logs[..50_000].to_string() } else { ci_logs }
+        truncate_to_char_boundary(&ci_logs, 50_000)
     };
 
     // 6. Invoke Claude.
@@ -194,6 +194,22 @@ pub async fn run(
         fixed,
         cost_usd,
     })
+}
+
+/// Safely truncates a string at a UTF-8 character boundary near the given byte limit.
+/// This prevents panics when slicing strings that contain multi-byte characters.
+fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        s.to_string()
+    } else {
+        let truncate_at = s
+            .char_indices()
+            .take_while(|(idx, _)| *idx < max_bytes)
+            .last()
+            .map(|(idx, c)| idx + c.len_utf8())
+            .unwrap_or(0);
+        s[..truncate_at].to_string()
+    }
 }
 
 async fn fetch_ci_logs(repo_slug: &str, branch: &str) -> String {

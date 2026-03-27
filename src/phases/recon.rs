@@ -33,8 +33,8 @@ pub async fn run(
     run_git(&clone_path, &["config", "core.hooksPath", "/dev/null"]).await?;
 
     // 3. Configure git identity.
-    run_git(&clone_path, &["config", "user.email", "autoanneal@github.com"]).await?;
-    run_git(&clone_path, &["config", "user.name", "autoanneal"]).await?;
+    run_git(&clone_path, &["config", "user.email", "autoanneal[bot]@users.noreply.github.com"]).await?;
+    run_git(&clone_path, &["config", "user.name", "autoanneal[bot]"]).await?;
 
     // 4. Run setup command if provided.
     if let Some(cmd) = setup_command {
