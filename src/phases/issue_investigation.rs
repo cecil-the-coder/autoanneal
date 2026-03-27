@@ -119,26 +119,57 @@ pub async fn run(
         );
 
         // Create branch and commit.
-        let _ = tokio::process::Command::new("git")
+        let checkout = tokio::process::Command::new("git")
             .args(["checkout", "-b", &branch_name])
             .current_dir(worktree_path)
             .output()
             .await;
 
-        let _ = tokio::process::Command::new("git")
+        let checkout_ok = checkout.as_ref().map(|o| o.status.success()).unwrap_or(false);
+        if !checkout_ok {
+            let stderr = checkout
+                .as_ref()
+                .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+                .unwrap_or_else(|e| e.to_string());
+            warn!(issue = issue.number, branch = %branch_name, error = %stderr, "git checkout failed");
+        }
+
+        let add = tokio::process::Command::new("git")
             .args(["add", "-A"])
             .current_dir(worktree_path)
             .output()
             .await;
 
-        let commit_msg = format!("autoanneal: fix issue #{}\n\n{}", issue.number, summary);
-        let commit = tokio::process::Command::new("git")
-            .args(["commit", "-m", &commit_msg])
-            .current_dir(worktree_path)
-            .output()
-            .await;
+        let add_ok = add.as_ref().map(|o| o.status.success()).unwrap_or(false);
+        if !add_ok {
+            let stderr = add
+                .as_ref()
+                .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+                .unwrap_or_else(|e| e.to_string());
+            warn!(issue = issue.number, error = %stderr, "git add failed");
+        }
 
-        let has_commit = commit.map(|o| o.status.success()).unwrap_or(false);
+        let has_commit = if checkout_ok && add_ok {
+            let commit_msg = format!("autoanneal: fix issue #{}\n\n{}", issue.number, summary);
+            let commit = tokio::process::Command::new("git")
+                .args(["commit", "-m", &commit_msg])
+                .current_dir(worktree_path)
+                .output()
+                .await;
+
+            let commit_ok = commit.as_ref().map(|o| o.status.success()).unwrap_or(false);
+            if !commit_ok {
+                let stderr = commit
+                    .as_ref()
+                    .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+                    .unwrap_or_else(|e| e.to_string());
+                warn!(issue = issue.number, error = %stderr, "git commit failed");
+            }
+            commit_ok
+        } else {
+            warn!(issue = issue.number, checkout_ok, add_ok, "skipping commit due to earlier git failures");
+            false
+        };
 
         if has_commit {
             // Push.
