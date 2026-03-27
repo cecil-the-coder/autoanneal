@@ -77,7 +77,7 @@ pub async fn run(
         prompt,
         system_prompt: Some(system_prompt),
         model: model.to_string(),
-        max_budget_usd: budget.min(3.0),
+        max_budget_usd: budget,
         max_turns: 100,
         effort: "high",
         tools: "Read,Glob,Grep,Bash,Edit,Write",

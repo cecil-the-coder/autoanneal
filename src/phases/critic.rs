@@ -46,7 +46,7 @@ pub async fn run(
         prompt,
         system_prompt: Some(critic_system_prompt()),
         model: model.to_string(),
-        max_budget_usd: (remaining_budget * 0.4).min(1.00),
+        max_budget_usd: remaining_budget * 0.40,
         max_turns: 30,
         effort: "high",
         tools: "Read,Glob,Grep",
@@ -79,7 +79,7 @@ pub async fn run(
     // - We have budget remaining
     let should_fix = initial_review.verdict == "needs_work"
         && initial_review.score >= 4
-        && (remaining_budget - total_cost) > 0.30;
+        && (remaining_budget - total_cost) > budget * 0.15;
 
     if !should_fix {
         return Ok(CriticOutput {
@@ -102,7 +102,7 @@ pub async fn run(
         prompt: fix_prompt,
         system_prompt: Some(critic_fix_system_prompt()),
         model: model.to_string(),
-        max_budget_usd: (remaining_budget - total_cost).min(0.50),
+        max_budget_usd: budget * 0.35,
         max_turns: 50,
         effort: "high",
         tools: "Read,Glob,Grep,Bash,Edit,Write",
@@ -147,13 +147,13 @@ pub async fn run(
 
                 // ─── Pass 3: Re-review ───────────────────────────────
                 let new_diff = get_diff(clone_path, default_branch).await?;
-                if !new_diff.trim().is_empty() && (remaining_budget - total_cost) > 0.10 {
+                if !new_diff.trim().is_empty() && (remaining_budget - total_cost) > budget * 0.05 {
                     let re_prompt = CRITIC_PROMPT.replace("{diff}", &new_diff);
                     let re_invocation = ClaudeInvocation {
                         prompt: re_prompt,
                         system_prompt: Some(critic_system_prompt()),
                         model: model.to_string(),
-                        max_budget_usd: (remaining_budget - total_cost).min(0.50),
+                        max_budget_usd: budget * 0.25,
                         max_turns: 15,
                         effort: "high",
                         tools: "Read,Glob,Grep",

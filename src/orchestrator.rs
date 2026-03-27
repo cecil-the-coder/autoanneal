@@ -307,7 +307,7 @@ async fn run_pipeline(
 
     info!("starting phase: Recon");
     let phase_start = Instant::now();
-    let recon_budget = budget_remaining.min(0.50);
+    let recon_budget = config.max_budget * 0.05;
 
     let recon_output = match tokio::time::timeout(
         Duration::from_secs(300),

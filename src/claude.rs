@@ -305,7 +305,7 @@ pub async fn invoke<T: DeserializeOwned>(
                         prompt: "You're taking longer than expected. If you're almost done, please finish up now. If you're stuck, just summarize what you've accomplished so far and stop.".to_string(),
                         system_prompt: invocation.system_prompt.clone(),
                         model: invocation.model.clone(),
-                        max_budget_usd: 0.25,
+                        max_budget_usd: invocation.max_budget_usd * 0.20,
                         max_turns: 5,
                         effort: invocation.effort,
                         tools: invocation.tools,

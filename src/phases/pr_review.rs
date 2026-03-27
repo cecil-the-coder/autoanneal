@@ -74,7 +74,7 @@ pub async fn run(
 
     // 4. Run critic on the diff.
     let critic_prompt = CRITIC_PROMPT.replace("{diff}", &diff);
-    let critic_budget = budget.min(0.50);
+    let critic_budget = budget * 0.30;
 
     let critic_invocation = ClaudeInvocation {
         prompt: critic_prompt,
@@ -153,7 +153,7 @@ pub async fn run(
         prompt: fix_prompt,
         system_prompt: Some(pr_review_fix_system_prompt()),
         model: model.to_string(),
-        max_budget_usd: remaining_budget.min(2.0),
+        max_budget_usd: remaining_budget,
         max_turns: 100,
         effort: "high",
         tools: "Read,Glob,Grep,Bash,Edit,Write",

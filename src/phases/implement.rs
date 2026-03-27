@@ -15,9 +15,6 @@ use tracing::{info, warn};
 /// Maximum number of worktree groups running in parallel per batch.
 const MAX_PARALLEL_GROUPS: usize = 5;
 
-/// Maximum budget per single task invocation (USD).
-const MAX_PER_TASK_BUDGET: f64 = 1.50;
-
 /// Timeout for a single Claude task invocation.
 const TASK_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -273,7 +270,7 @@ async fn run_group_in_worktree(
     for (idx, improvement) in tasks.iter().enumerate() {
         let remaining_tasks = total_tasks - idx;
         let remaining_budget = group_budget - group_cost;
-        let per_task_budget = (remaining_budget / remaining_tasks as f64).min(MAX_PER_TASK_BUDGET);
+        let per_task_budget = (remaining_budget / remaining_tasks as f64).min(group_budget * 0.30);
 
         if per_task_budget <= 0.0 {
             warn!(task = %improvement.title, "budget exhausted, skipping remaining tasks");
