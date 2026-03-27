@@ -68,6 +68,59 @@ All Claude invocations use `--output-format json`, `--bare`, and a custom `--sys
 
 **Structured output:** No.
 
+### CI fix (`src/prompts/ci_fix.rs`)
+
+**Purpose:** Diagnose and fix CI failures on a pull request.
+
+**Context injected:**
+- PR number and branch name (`{pr_number}`, `{branch_name}`).
+- CI logs (`{ci_logs}`).
+- PR title (`{pr_title}`).
+
+**Structured output:** No. The work is side effects (file edits). Runs the build command after fixing to verify.
+
+### Critic (`src/prompts/critic.rs`)
+
+**Purpose:** Review code changes from a pull request to decide whether they are worth doing and, if so, whether they are correct.
+
+**Constants:**
+- `CRITIC_PROMPT` — Initial review prompt. Injects the diff (`{diff}`).
+- `CRITIC_FIX_PROMPT` — Follow-up prompt to fix issues identified by the critic. Injects the previous score (`{score}`), review summary (`{review_summary}`), and current diff (`{diff}`).
+
+**Structured output:** JSON code block from `CRITIC_PROMPT` with `score` (1–10), `verdict` (`approve|needs_work|reject`), and `summary`. Scores 8–10 + "approve" pass; 5–7 + "needs_work" trigger a fix cycle; 1–4 + "reject" drops the PR.
+
+### PR review fix (`src/prompts/pr_review.rs`)
+
+**Purpose:** Apply fixes based on a critic review that scored the PR as "needs work."
+
+**Context injected:**
+- PR number and branch (`{pr_number}`, `{branch}`).
+- Critic score and summary (`{score}`, `{summary}`).
+- The diff under review (`{diff}`).
+
+**Structured output:** No. Makes minimal, focused changes and verifies the build.
+
+### Issue investigation (`src/prompts/issue_investigation.rs`)
+
+**Purpose:** Investigate a GitHub issue reported by a user, determine the root cause, and optionally implement a fix.
+
+**Context injected:**
+- Issue number, title, and body (`{issue_number}`, `{issue_title}`, `{issue_body}`).
+- Architecture summary (`{arch_summary}`).
+- Build and test commands (`{build_commands}`, `{test_commands}`).
+
+**Structured output:** JSON code block with `fixed` (boolean) and `summary` (description of findings and actions taken).
+
+### Doc analysis (`src/prompts/doc_analysis.rs`)
+
+**Purpose:** Identify documentation improvements such as missing README sections, undocumented public APIs, outdated examples, or missing architecture docs.
+
+**Context injected:**
+- Architecture summary (`{arch_summary}`).
+- Stack info (`{stack_info}`).
+
+**Structured output:** JSON code block with the same `improvements` array format as the analysis prompt.
+
 ## Expected JSON output formats
 
 JSON is requested via prompt instructions (not `--json-schema`). The parser is lenient — it accepts common aliases for enum values.
@@ -120,13 +173,18 @@ The prompt strings live in `src/prompts/` as Rust `const` values:
 
 ```
 src/prompts/
-  mod.rs
-  system.rs         # Per-phase system prompts (replaces Claude Code default)
-  recon.rs          # const RECON_PROMPT
-  analysis.rs       # const ANALYSIS_PROMPT
-  plan.rs           # const PR_BODY_PROMPT
-  implement.rs      # const IMPLEMENT_PROMPT
-  fix_build.rs      # const FIX_BUILD_PROMPT
+  mod.rs                  # Module re-exports
+  system.rs               # Per-phase system prompts (replaces Claude Code default)
+  recon.rs                # const RECON_PROMPT
+  analysis.rs             # const ANALYSIS_PROMPT
+  plan.rs                 # const PR_BODY_PROMPT
+  implement.rs            # const IMPLEMENT_PROMPT
+  fix_build.rs            # const FIX_BUILD_PROMPT
+  ci_fix.rs               # const CI_FIX_PROMPT
+  critic.rs               # const CRITIC_PROMPT, CRITIC_FIX_PROMPT
+  pr_review.rs            # const PR_REVIEW_FIX_PROMPT
+  issue_investigation.rs  # const ISSUE_INVESTIGATION_PROMPT
+  doc_analysis.rs         # const DOC_ANALYSIS_PROMPT
 ```
 
 `system.rs` contains compact system prompts that replace Claude Code's default (which is optimized for interactive use). Each phase gets a system prompt with tool-use guidance and phase-specific directives.

@@ -59,21 +59,43 @@ autoanneal <repo-url> [OPTIONS]
 | `--setup-command <cmd>` | — | Shell command run after clone (e.g. `npm install`) |
 | `--min-severity <level>` | `minor` | Filter threshold: `minor`, `moderate`, `major` |
 | `--log-level <level>` | `info` | `off`, `error`, `warn`, `info`, `debug`, `trace` |
-| `--critic-threshold <score>` | `6` | Min quality score to mark PR ready (v2) |
-| `--ci-retries <N>` | `3` | Max CI fix attempts (v2) |
+| `--critic-threshold <score>` | `6` | Min quality score to mark PR ready |
+| `--ci-retries <N>` | `3` | Max CI fix attempts |
 | `--output <format>` | `text` | Output format: `text` or `json` |
+| `--fix-ci` | `true` | Fix PRs with failing CI before starting new analysis |
+| `--fix-conflicts` | `true` | Rebase PRs with merge conflicts before starting new analysis |
+| `--concurrency <N>` | `3` | Maximum concurrent work items |
+| `--max-open-prs <N>` | `5` | Max open autoanneal PRs before skipping analysis; `0` = unlimited |
+| `--improve-docs` | `true` | Fall back to documentation improvements when no code improvements found |
+| `--doc-critic-threshold <score>` | `7` | Min critic score for documentation changes |
+| `--review-prs` | `false` | Review external (non-autoanneal) open PRs |
+| `--review-filter <filter>` | `all` | PR review filter: `all`, `labeled:<label>`, or `recent` (updated within 24h) |
+| `--review-fix-threshold <score>` | `7` | Auto-fix PR issues when critic score is below this threshold |
+| `--investigate-issues <labels>` | — | Comma-separated issue labels to investigate; empty = disabled |
+| `--max-issues <N>` | `2` | Maximum issues to investigate per run |
+| `--issue-budget <USD>` | `3.00` | Budget per issue investigation |
+| `--skip-after <N>` | `3` | Skip if no commits in N × cron interval; `0` disables |
+| `--cron-interval <MIN>` | `10` | Cron interval in minutes (used with `--skip-after`) |
 
 ## How it works
 
-The tool runs five sequential phases:
+The tool starts with two sequential setup phases, then runs a concurrent work queue using `JoinSet` and git worktrees:
 
-1. **Preflight + Recon** — Validates tokens, clones the repo, detects the tech stack, and asks Claude to produce an architecture summary.
-2. **Analysis** — Claude explores the codebase with read-only tools and returns a ranked list of improvements with severity, risk, and scope estimates.
-3. **Plan + PR** — Creates a branch, generates a PR description from the improvement list, and opens a draft PR.
-4. **Implement** — Iterates through each improvement: Claude makes the changes, guardrails validate scope (file allowlist, line count caps), a build check runs, and the result is committed and pushed.
-5. **Critic + CI** (v2) — Planned: independent review scoring and CI failure auto-fix.
+1. **Preflight** — Validates tokens, checks open PRs, detects issues needing attention, and gathers repo metadata.
+2. **Recon** — Clones the repo, detects the tech stack, and asks Claude to produce an architecture summary.
 
-Each phase has its own budget allocation and timeout. High-risk or oversized changes are automatically skipped.
+The remaining work runs concurrently (configurable via `--concurrency`), each item in its own git worktree:
+
+- **Analysis Pipeline** — The main improvement flow:
+  3. **Analysis** — Claude explores the codebase with read-only tools and returns a ranked list of improvements with severity, risk, and scope estimates.
+  4. **Implement** — Iterates through each improvement: Claude makes the changes, guardrails validate scope (file allowlist, line count caps), a build check runs, and the result is committed.
+  5. **Critic** — An independent Claude review scores the changes (0–10). PRs below the threshold are abandoned automatically.
+  6. **PR Creation** — Pushes the branch and opens a draft PR with a summary and critic review score.
+- **CI Fix** — Detects failing CI on existing autoanneal PRs and attempts automated fixes (up to `--ci-retries` attempts).
+- **PR Review** — Reviews external (non-autoanneal) open PRs, posts feedback, and can auto-fix minor issues.
+- **Issue Investigation** — Picks up GitHub Issues tagged for investigation, analyzes them, and can open fix PRs.
+
+Each phase and work item has its own budget allocation and timeout. High-risk or oversized changes are automatically skipped.
 
 See [docs/architecture.md](docs/architecture.md) for the full phase pipeline, budget allocation, and guardrail details.
 
