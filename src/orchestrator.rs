@@ -246,6 +246,34 @@ async fn run_pipeline(
         }
     };
 
+    // ─── Staleness check (before recon to save money) ─────────────────
+    let has_work = !preflight_output.prs_needing_ci_fix().is_empty()
+        || !preflight_output.prs_needing_rebase().is_empty()
+        || !preflight_output.external_prs.is_empty()
+        || !preflight_output.issues.is_empty();
+
+    if config.skip_after > 0 && !has_work {
+        let threshold_secs = config.skip_after as u64 * config.cron_interval * 60;
+        if preflight_output.newest_commit_age_secs > threshold_secs {
+            info!(
+                age_secs = preflight_output.newest_commit_age_secs,
+                threshold_secs,
+                "no recent commits on any branch, skipping"
+            );
+            println!(
+                "No recent commits (newest is {}s old, threshold {}s). Skipping.",
+                preflight_output.newest_commit_age_secs, threshold_secs
+            );
+            phases_report.push(PhaseReport {
+                name: "Skip".to_string(),
+                duration: Duration::ZERO,
+                cost_usd: 0.0,
+                status: format!("SKIPPED (no commits in {}m)", threshold_secs / 60),
+            });
+            return Ok(0);
+        }
+    }
+
     let repo_info = preflight_output.repo_info;
     let in_flight_prs = preflight_output.in_flight_prs;
 
@@ -311,29 +339,7 @@ async fn run_pipeline(
     let stack_info = recon_output.stack_info.clone();
     let arch_summary = recon_output.arch_summary.clone();
 
-    // ─── Staleness check ──────────────────────────────────────────────
-    if config.skip_after > 0 {
-        let age_secs = phases::preflight::newest_commit_age_secs(&clone_path).await;
-        let threshold_secs = config.skip_after as u64 * config.cron_interval * 60;
-        if age_secs > threshold_secs {
-            info!(
-                age_secs,
-                threshold_secs,
-                "no recent commits on any branch, skipping analysis"
-            );
-            println!(
-                "No recent commits (newest is {}s old, threshold {}s). Skipping.",
-                age_secs, threshold_secs
-            );
-            phases_report.push(PhaseReport {
-                name: "Skip".to_string(),
-                duration: Duration::ZERO,
-                cost_usd: 0.0,
-                status: format!("SKIPPED (no commits in {}m)", threshold_secs / 60),
-            });
-            return Ok(0);
-        }
-    }
+    // Staleness check already done before recon (in preflight).
 
     // ─── Create worktree manager ─────────────────────────────────────────
     let worktree_mgr = Arc::new(WorktreeManager::new(clone_path.clone()));
