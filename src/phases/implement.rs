@@ -706,7 +706,7 @@ async fn create_worktree(repo_dir: &Path, name: &str) -> Result<PathBuf> {
             "worktree",
             "add",
             "--detach",
-            worktree_dir.to_str().unwrap(),
+            &worktree_dir.to_string_lossy(),
             &head_ref,
         ])
         .current_dir(repo_dir)
@@ -730,7 +730,7 @@ async fn remove_worktree(repo_dir: &Path, worktree_path: &Path) -> Result<()> {
             "worktree",
             "remove",
             "--force",
-            worktree_path.to_str().unwrap(),
+            &worktree_path.to_string_lossy(),
         ])
         .current_dir(repo_dir)
         .output()

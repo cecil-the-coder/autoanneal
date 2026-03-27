@@ -34,9 +34,10 @@ pub async fn run(
 
     let mut diff = String::from_utf8_lossy(&diff_output.stdout).to_string();
 
-    // Truncate if too long.
+    // Truncate if too long (use floor_char_boundary to avoid panicking on multi-byte UTF-8).
     if diff.len() > MAX_DIFF_CHARS {
-        diff.truncate(MAX_DIFF_CHARS);
+        let truncate_at = diff.floor_char_boundary(MAX_DIFF_CHARS);
+        diff.truncate(truncate_at);
         diff.push_str("\n\n... (diff truncated) ...");
     }
 
