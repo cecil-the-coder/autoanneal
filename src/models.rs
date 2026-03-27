@@ -159,6 +159,7 @@ pub struct InFlightPr {
     pub ci_status: CiStatus,
     pub has_fixing_label: bool,
     pub has_merge_conflicts: bool,
+    pub files: Vec<String>,
 }
 
 /// Status of a single implementation task.

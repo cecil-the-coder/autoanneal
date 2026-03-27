@@ -386,12 +386,12 @@ async fn invoke_once<T: DeserializeOwned>(
                                             let input_preview = block.get("input")
                                                 .map(|i| truncate(&i.to_string(), 100))
                                                 .unwrap_or_default();
-                                            eprintln!("[turn {turn_count}] tool: {tool} {input_preview}");
+                                            println!("[turn {turn_count}] tool: {tool} {input_preview}");
                                         }
                                         if block.get("type").and_then(|t| t.as_str()) == Some("text") {
                                             if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
                                                 if !text.is_empty() {
-                                                    eprintln!("[turn {turn_count}] text: {}", truncate(text, 200));
+                                                    println!("[turn {turn_count}] text: {}", truncate(text, 200));
                                                 }
                                             }
                                         }

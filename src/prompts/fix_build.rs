@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub const FIX_BUILD_PROMPT: &str = r#"A build or compilation failed after recent changes. Your only job is to fix the build errors. Do NOT make any other improvements, refactors, or unrelated changes.
 
 ## Build Errors

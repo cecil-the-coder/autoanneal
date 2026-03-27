@@ -76,6 +76,7 @@ pub async fn create_pr(
     improvements: &[Improvement],
     model: &str,
     budget: f64,
+    critic_summary: Option<&str>,
 ) -> Result<PrOutput> {
     // 1. Generate PR body via Claude.
     let improvements_text = improvements
@@ -121,7 +122,14 @@ pub async fn create_pr(
 
     let cost_usd = response.cost_usd;
 
-    // 2. Create draft PR.
+    // 2. Append critic review summary to PR body if available.
+    let body = if let Some(summary) = critic_summary {
+        format!("{}\n\n---\n\n{}", pr_body.body, summary)
+    } else {
+        pr_body.body.clone()
+    };
+
+    // 3. Create draft PR.
     let repo_slug = format!("{}/{}", repo_info.owner, repo_info.name);
     let pr_url_raw = gh_command(
         clone_path,
@@ -132,7 +140,7 @@ pub async fn create_pr(
             "--title",
             &pr_body.title,
             "--body",
-            &pr_body.body,
+            &body,
             "--head",
             branch_name,
             "-R",

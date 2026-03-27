@@ -2,7 +2,8 @@ use crate::models::PhaseReport;
 use std::time::Duration;
 
 /// Initialize tracing subscriber based on log level string.
-/// Outputs structured JSON logs to stderr.
+/// Outputs structured JSON logs to stdout (same stream as summary).
+/// Using a single stream prevents log loss in containerized environments.
 pub fn init(log_level: &str) {
     use tracing_subscriber::EnvFilter;
 
@@ -12,6 +13,7 @@ pub fn init(log_level: &str) {
         .with_env_filter(filter)
         .json()
         .with_target(false)
+        .with_writer(std::io::stdout)
         .init();
 }
 

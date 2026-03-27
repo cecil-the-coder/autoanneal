@@ -246,11 +246,33 @@ async fn run_pipeline(
         }
     };
 
-    // ─── Staleness check (before recon to save money) ─────────────────
-    let has_work = !preflight_output.prs_needing_ci_fix().is_empty()
-        || !preflight_output.prs_needing_rebase().is_empty()
-        || !preflight_output.external_prs.is_empty()
-        || !preflight_output.issues.is_empty();
+    // ─── Early exit checks (before recon to save money) ────────────────
+    let has_maintenance = !preflight_output.prs_needing_ci_fix().is_empty()
+        || !preflight_output.prs_needing_rebase().is_empty();
+    let has_reviews = !preflight_output.external_prs.is_empty();
+    let has_issues = !preflight_output.issues.is_empty();
+    let at_pr_limit = config.max_open_prs > 0
+        && preflight_output.in_flight_prs.len() >= config.max_open_prs;
+
+    // If at PR limit and no maintenance/review/issue work, skip everything.
+    if at_pr_limit && !has_maintenance && !has_reviews && !has_issues {
+        info!(
+            open = preflight_output.in_flight_prs.len(),
+            max = config.max_open_prs,
+            "at max open PRs with no maintenance work, skipping"
+        );
+        println!("At max open PRs ({}/{}). No maintenance work. Skipping.",
+            preflight_output.in_flight_prs.len(), config.max_open_prs);
+        phases_report.push(PhaseReport {
+            name: "Skip".to_string(),
+            duration: Duration::ZERO,
+            cost_usd: 0.0,
+            status: format!("SKIPPED (max open PRs: {})", config.max_open_prs),
+        });
+        return Ok(0);
+    }
+
+    let has_work = has_maintenance || has_reviews || has_issues;
 
     if config.skip_after > 0 && !has_work {
         let threshold_secs = config.skip_after as u64 * config.cron_interval * 60;
@@ -550,16 +572,27 @@ fn collect_work_items(
     // Merge open PRs with in-flight autoanneal PRs for analysis overlap avoidance.
     let mut merged_open_prs: Vec<OpenPr> = open_prs.to_vec();
     for ifp in in_flight_prs {
+        // Extract file paths from the PR's files field.
+        let files = ifp.files.iter().map(|f| f.clone()).collect();
         merged_open_prs.push(OpenPr {
             number: ifp.number,
             title: ifp.title.clone(),
             head_ref: ifp.branch.clone(),
-            files: vec![],
+            files,
         });
     }
 
-    // Analysis pipeline item (always included if budget remains).
-    if *budget_remaining > 0.0 && !config.dry_run {
+    // Analysis pipeline item — skip if too many open autoanneal PRs already.
+    let open_autoanneal_count = in_flight_prs.len();
+    let skip_analysis = config.max_open_prs > 0 && open_autoanneal_count >= config.max_open_prs;
+    if skip_analysis {
+        info!(
+            open = open_autoanneal_count,
+            max = config.max_open_prs,
+            "skipping analysis — too many open autoanneal PRs"
+        );
+    }
+    if *budget_remaining > 0.0 && !config.dry_run && !skip_analysis {
         let analysis_budget = *budget_remaining; // analysis gets remaining budget
         *budget_remaining = 0.0; // reserve it all
         items.push(WorkItem {
@@ -952,6 +985,7 @@ async fn run_analysis_pipeline(
     }
 
     // ─── Critic Review ─────────────────────────────────────────────────
+    let mut critic_summary: Option<String> = None;
     let threshold = if is_doc_improvements {
         doc_critic_threshold
     } else {
@@ -981,16 +1015,22 @@ async fn run_analysis_pipeline(
                         threshold,
                         "critic rejected changes"
                     );
+                    // Critic rejected — mark as no successful tasks so
+                    // cleanup deletes the lock branch from GitHub.
                     return Ok((
                         WorkItemResult::AnalysisPipeline {
                             pr_url: None,
                             branch_name: Some(branch_name),
                             pr_number: None,
-                            has_successful_tasks: true,
+                            has_successful_tasks: false,
                         },
                         cost_total,
                     ));
                 }
+                critic_summary = Some(format!(
+                    "## Review\n\nScore: {}/10\n\n{}",
+                    critic_output.score, critic_output.summary
+                ));
             }
             Ok(Err(e)) => {
                 warn!(error = %e, "critic review failed (non-fatal, proceeding)");
@@ -1026,6 +1066,7 @@ async fn run_analysis_pipeline(
             &improvements,
             model,
             plan_budget,
+            critic_summary.as_deref(),
         ),
     )
     .await
