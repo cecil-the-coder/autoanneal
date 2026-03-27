@@ -1007,7 +1007,7 @@ async fn run_analysis_pipeline(
     if threshold > 0 && budget > 0.0 {
         let critic_budget = budget.min(1.50);
         match tokio::time::timeout(
-            Duration::from_secs(300),
+            Duration::from_secs(900),
             phases::critic::run(
                 clone_path,
                 &repo_info.default_branch,
