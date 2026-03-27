@@ -88,7 +88,13 @@ pub async fn run(
 
     // 2. Clone repo at PR branch.
     let clone_dir = work_dir.join(format!("ci-fix-{}", pr.number));
-    let clone_url = format!("https://github.com/{}.git", repo_slug);
+    let gh_token = std::env::var("GH_TOKEN")
+        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+        .context("Neither GH_TOKEN nor GITHUB_TOKEN is set")?;
+    let clone_url = format!(
+        "https://x-access-token:{}@github.com/{}.git",
+        gh_token, repo_slug
+    );
 
     let output = tokio::process::Command::new("git")
         .args([
@@ -113,11 +119,16 @@ pub async fn run(
         ("user.name", "autoanneal[bot]"),
         ("user.email", "autoanneal[bot]@users.noreply.github.com"),
     ] {
-        tokio::process::Command::new("git")
+        let output = tokio::process::Command::new("git")
             .args(["config", key, val])
             .current_dir(&clone_dir)
             .output()
-            .await?;
+            .await
+            .context("failed to spawn git config")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git config {key} failed: {stderr}");
+        }
     }
 
     // 4. Fetch CI logs.

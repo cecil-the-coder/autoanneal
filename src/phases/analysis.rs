@@ -5,7 +5,7 @@ use crate::prompts::system::analysis_system_prompt;
 use anyhow::Result;
 use std::path::Path;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 pub struct AnalysisOutput {
     pub improvements: Vec<Improvement>,
@@ -107,8 +107,11 @@ pub async fn run(
 
     let analysis = response
         .structured
-        .unwrap_or_else(|| AnalysisResult {
-            improvements: Vec::new(),
+        .unwrap_or_else(|| {
+            warn!("Claude analysis returned no structured output; falling back to empty improvements list");
+            AnalysisResult {
+                improvements: Vec::new(),
+            }
         });
 
     let total_found = analysis.improvements.len();
