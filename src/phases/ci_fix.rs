@@ -90,7 +90,7 @@ pub async fn run(
 
     // 2. Handle merge conflicts: fetch and merge default branch first.
     if pr.has_merge_conflicts {
-        info!(pr_number = pr.number, default_branch, "PR has merge conflicts, attempting rebase on default branch");
+        info!(pr_number = pr.number, default_branch = default_branch, "PR has merge conflicts, attempting rebase on default branch");
         let _ = tokio::process::Command::new("git")
             .args(["fetch", "origin", default_branch])
             .current_dir(&clone_dir)
@@ -105,7 +105,7 @@ pub async fn run(
 
         match merge_output {
             Ok(out) if out.status.success() => {
-                info!(pr_number = pr.number, default_branch, "merged default branch successfully, no conflicts remain");
+                info!(pr_number = pr.number, default_branch = default_branch, "merged default branch successfully, no conflicts remain");
                 // Push the merge commit directly — no Claude needed
                 let push_result = commit_and_push(&clone_dir, &pr.branch).await;
                 return Ok(CiFixOutput {
