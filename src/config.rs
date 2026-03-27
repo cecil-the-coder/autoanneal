@@ -58,6 +58,15 @@ impl Config {
             .strip_prefix("https://github.com/")
             .or_else(|| s.strip_prefix("http://github.com/"))
             .or_else(|| s.strip_prefix("github.com/"))
+            .or_else(|| {
+                // Handle SSH URL format: git@github.com:owner/repo.git
+                if let Some(at_pos) = s.find('@') {
+                    let after_at = &s[at_pos + 1..];
+                    after_at.find(':').map(|colon_pos| &after_at[colon_pos + 1..])
+                } else {
+                    None
+                }
+            })
         {
             rest.to_string()
         } else {
@@ -201,6 +210,24 @@ mod tests {
     fn test_repo_slug_with_git_suffix() {
         let config = Config {
             repo: "https://github.com/owner/repo.git".to_string(),
+            max_budget: 5.0,
+            timeout: "30m".to_string(),
+            model: "sonnet".to_string(),
+            max_tasks: 5,
+            dry_run: false,
+            keep_on_failure: false,
+            setup_command: None,
+            min_severity: "minor".to_string(),
+            log_level: "info".to_string(),
+            output: "text".to_string(),
+        };
+        assert_eq!(config.repo_slug(), "owner/repo");
+    }
+
+    #[test]
+    fn test_repo_slug_ssh_url() {
+        let config = Config {
+            repo: "git@github.com:owner/repo.git".to_string(),
             max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),

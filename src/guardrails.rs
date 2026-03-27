@@ -34,6 +34,13 @@ pub fn validate_diff(
         .output()
         .map_err(|e| GuardrailViolation::IoError(format!("git diff --numstat: {e}")))?;
 
+    if !numstat_output.status.success() {
+        let stderr = String::from_utf8_lossy(&numstat_output.stderr);
+        return Err(GuardrailViolation::IoError(format!(
+            "git diff --numstat failed: {stderr}"
+        )));
+    }
+
     let numstat_stdout = String::from_utf8_lossy(&numstat_output.stdout);
 
     let mut files_changed: Vec<String> = Vec::new();
@@ -102,6 +109,13 @@ pub fn validate_diff(
             .current_dir(repo_dir)
             .output()
             .map_err(|e| GuardrailViolation::IoError(format!("git diff --name-status: {e}")))?;
+
+        if !status_output.status.success() {
+            let stderr = String::from_utf8_lossy(&status_output.stderr);
+            return Err(GuardrailViolation::IoError(format!(
+                "git diff --name-status failed: {stderr}"
+            )));
+        }
 
         let status_stdout = String::from_utf8_lossy(&status_output.stdout);
         let deleted_files: Vec<String> = status_stdout

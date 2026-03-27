@@ -4,7 +4,7 @@ use crate::models::{Category, Improvement, StackInfo, TaskResult, TaskStatus};
 use crate::prompts::fix_build::FIX_BUILD_PROMPT;
 use crate::prompts::implement::IMPLEMENT_PROMPT;
 use crate::prompts::system::{fix_build_system_prompt, implement_system_prompt};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -240,7 +240,7 @@ async fn run_batch(
         all_results.extend(output.results);
     }
 
-    // Sort results by original task index for deterministic output.
+    // Sort results by title for deterministic output.
     all_results.sort_by_key(|r| r.title.clone());
 
     Ok(BatchOutput {
@@ -805,7 +805,7 @@ async fn stage_all(dir: &Path) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!(stderr = %stderr, "git add -A returned non-zero");
+        bail!("git add -A failed: {}", stderr);
     }
 
     Ok(())
