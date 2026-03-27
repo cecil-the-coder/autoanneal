@@ -68,6 +68,57 @@ All Claude invocations use `--output-format json`, `--bare`, and a custom `--sys
 
 **Structured output:** No.
 
+### CI fix (`src/prompts/ci_fix.rs`)
+
+**Purpose:** Diagnose and fix CI failures (or merge conflicts) on pull requests.
+
+**Context injected:**
+- PR number and branch name.
+- Failed CI logs (fetched via `gh run view --log-failed`), truncated to 50 000 characters.
+- PR title. For merge conflicts, a conflict diff is injected instead of CI logs.
+
+**Configuration:** High effort, 100 max turns, uses caller-provided budget. Full tool access — `Read`, `Glob`, `Grep`, `Bash`, `Edit`, `Write`.
+
+**Structured output:** No. Side effects are file edits that are automatically committed and pushed to the PR branch.
+
+### PR review fix (`src/prompts/pr_review.rs`)
+
+**Purpose:** Fix issues identified by the critic when reviewing external pull requests.
+
+**Context injected:**
+- PR number and branch name.
+- Critic score and summary from the initial read-only review.
+- The full diff under review (truncated to 50 000 characters).
+
+**Configuration:** High effort, 100 max turns, remaining budget after the critic review pass. Full tool access — `Read`, `Glob`, `Grep`, `Bash`, `Edit`, `Write`.
+
+**Structured output:** No. Side effects are file edits that are committed and pushed to the PR branch. If the push succeeds, a comment summarizing the fixes is left on the PR.
+
+### Issue investigation (`src/prompts/issue_investigation.rs`)
+
+**Purpose:** Investigate a GitHub issue, find the root cause, and implement a fix if possible.
+
+**Context injected:**
+- Issue number, title, and body.
+- Architecture summary from recon.
+- Build and test commands from recon.
+
+**Configuration:** High effort, 100 max turns, uses caller-provided budget. Full tool access — `Read`, `Glob`, `Grep`, `Bash`, `Edit`, `Write`.
+
+**Structured output:** Yes — JSON code block with `fixed` (boolean) and `summary` (string). If `fixed` is true, the changes are committed, pushed to a new branch, and a PR is created. If false, an investigation summary is posted as an issue comment.
+
+### Doc analysis (`src/prompts/doc_analysis.rs`)
+
+**Purpose:** Identify documentation improvements as a fallback when no code improvements are found.
+
+**Context injected:**
+- Architecture summary from recon.
+- Stack info (language, build/test/lint commands).
+
+**Configuration:** Prompt-only — no dedicated phase runner. Invoked as part of the analysis pipeline when the primary analysis returns no results.
+
+**Structured output:** Yes — JSON code block with `improvements` array, same schema as the analysis output.
+
 ## Expected JSON output formats
 
 JSON is requested via prompt instructions (not `--json-schema`). The parser is lenient — it accepts common aliases for enum values.
@@ -120,13 +171,18 @@ The prompt strings live in `src/prompts/` as Rust `const` values:
 
 ```
 src/prompts/
-  mod.rs
-  system.rs         # Per-phase system prompts (replaces Claude Code default)
-  recon.rs          # const RECON_PROMPT
-  analysis.rs       # const ANALYSIS_PROMPT
-  plan.rs           # const PR_BODY_PROMPT
-  implement.rs      # const IMPLEMENT_PROMPT
-  fix_build.rs      # const FIX_BUILD_PROMPT
+  mod.rs                   # Module re-exports
+  system.rs                # Per-phase system prompts (replaces Claude Code default)
+  recon.rs                 # const RECON_PROMPT
+  analysis.rs              # const ANALYSIS_PROMPT
+  plan.rs                  # const PR_BODY_PROMPT
+  implement.rs             # const IMPLEMENT_PROMPT
+  fix_build.rs             # const FIX_BUILD_PROMPT
+  ci_fix.rs                # const CI_FIX_PROMPT
+  critic.rs                # const CRITIC_PROMPT, CRITIC_FIX_PROMPT
+  pr_review.rs             # const PR_REVIEW_FIX_PROMPT
+  issue_investigation.rs   # const ISSUE_INVESTIGATION_PROMPT
+  doc_analysis.rs          # const DOC_ANALYSIS_PROMPT
 ```
 
 `system.rs` contains compact system prompts that replace Claude Code's default (which is optimized for interactive use). Each phase gets a system prompt with tool-use guidance and phase-specific directives.
