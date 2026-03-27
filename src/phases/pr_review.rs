@@ -47,7 +47,14 @@ pub async fn run(
     {
         Ok(raw) => {
             if raw.len() > MAX_DIFF_CHARS {
-                let mut truncated = raw[..MAX_DIFF_CHARS].to_string();
+                // Find a valid UTF-8 character boundary at or before MAX_DIFF_CHARS
+                let boundary = raw
+                    .char_indices()
+                    .map(|(i, _)| i)
+                    .take_while(|&i| i <= MAX_DIFF_CHARS)
+                    .last()
+                    .unwrap_or(0);
+                let mut truncated = raw[..boundary].to_string();
                 truncated.push_str("\n\n... (diff truncated) ...");
                 truncated
             } else {

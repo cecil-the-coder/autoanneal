@@ -7,6 +7,21 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{info, warn};
 
+/// Truncate a string to at most `max_len` bytes without breaking UTF-8 characters.
+/// Returns the truncated string without any ellipsis suffix.
+fn truncate_bytes(s: String, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s
+    } else {
+        let boundary = s.char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i < max_len)
+            .last()
+            .unwrap_or(0);
+        s[..boundary].to_string()
+    }
+}
+
 #[allow(dead_code)]
 pub struct CiFixOutput {
     pub pr_number: u64,
@@ -131,13 +146,13 @@ pub async fn run(
         match output {
             Ok(out) => {
                 let diff = String::from_utf8_lossy(&out.stdout).to_string();
-                if diff.len() > 50_000 { diff[..50_000].to_string() } else { diff }
+                truncate_bytes(diff, 50_000)
             }
             Err(_) => "(could not get conflict diff)".to_string(),
         }
     } else {
         let ci_logs = fetch_ci_logs(repo_slug, &pr.branch).await;
-        if ci_logs.len() > 50_000 { ci_logs[..50_000].to_string() } else { ci_logs }
+        truncate_bytes(ci_logs, 50_000)
     };
 
     // 6. Invoke Claude.
