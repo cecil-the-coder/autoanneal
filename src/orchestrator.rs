@@ -560,8 +560,17 @@ fn collect_work_items(
         });
     }
 
-    // Analysis pipeline item (always included if budget remains).
-    if *budget_remaining > 0.0 && !config.dry_run {
+    // Analysis pipeline item — skip if too many open autoanneal PRs already.
+    let open_autoanneal_count = in_flight_prs.len();
+    let skip_analysis = config.max_open_prs > 0 && open_autoanneal_count >= config.max_open_prs;
+    if skip_analysis {
+        info!(
+            open = open_autoanneal_count,
+            max = config.max_open_prs,
+            "skipping analysis — too many open autoanneal PRs"
+        );
+    }
+    if *budget_remaining > 0.0 && !config.dry_run && !skip_analysis {
         let analysis_budget = *budget_remaining; // analysis gets remaining budget
         *budget_remaining = 0.0; // reserve it all
         items.push(WorkItem {

@@ -94,6 +94,10 @@ pub struct Config {
     #[arg(long, default_value = "3")]
     pub concurrency: usize,
 
+    /// Maximum open autoanneal PRs before skipping new analysis. 0 = unlimited.
+    #[arg(long, default_value = "5")]
+    pub max_open_prs: usize,
+
     /// Investigate open GitHub issues with this label (comma-separated). Empty = disabled.
     #[arg(long, default_value = "")]
     pub investigate_issues: String,
@@ -248,6 +252,7 @@ mod tests {
             investigate_issues: "".to_string(),
             max_issues: 2,
             issue_budget: 3.0,
+            max_open_prs: 5,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -280,6 +285,7 @@ mod tests {
             investigate_issues: "".to_string(),
             max_issues: 2,
             issue_budget: 3.0,
+            max_open_prs: 5,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -312,6 +318,7 @@ mod tests {
             investigate_issues: "".to_string(),
             max_issues: 2,
             issue_budget: 3.0,
+            max_open_prs: 5,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -344,6 +351,7 @@ mod tests {
             investigate_issues: "".to_string(),
             max_issues: 2,
             issue_budget: 3.0,
+            max_open_prs: 5,
         };
         assert_eq!(config.min_severity(), Severity::Moderate);
     }
@@ -376,6 +384,7 @@ mod tests {
             investigate_issues: "".to_string(),
             max_issues: 2,
             issue_budget: 3.0,
+            max_open_prs: 5,
         };
         assert_eq!(config.min_severity(), Severity::Minor);
     }

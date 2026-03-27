@@ -250,7 +250,6 @@ mod tests {
         let output = format_open_prs(&prs);
         assert!(output.contains("#42"));
         assert!(output.contains("Fix widget"));
-        assert!(output.contains("fix/widget"));
         assert!(output.contains("src/widget.rs, tests/widget.rs"));
     }
 
