@@ -1001,6 +1001,20 @@ async fn run_analysis_pipeline(
         }
     }
 
+    // ─── Push (only after critic approves) ─────────────────────────────
+    let push_output = tokio::process::Command::new("git")
+        .args(["push", "-u", "origin", &branch_name, "--force-with-lease"])
+        .current_dir(clone_path)
+        .output()
+        .await
+        .context("failed to push")?;
+
+    if !push_output.status.success() {
+        let stderr = String::from_utf8_lossy(&push_output.stderr);
+        anyhow::bail!("git push failed after critic approval: {stderr}");
+    }
+    info!(branch = %branch_name, "pushed changes to origin");
+
     // ─── PR Creation ───────────────────────────────────────────────────
     let plan_budget = budget.min(0.10);
     let pr_output = tokio::time::timeout(

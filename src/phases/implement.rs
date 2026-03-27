@@ -670,23 +670,7 @@ async fn merge_and_push(
         return Err(anyhow::anyhow!("git commit failed: {stderr}"));
     }
 
-    info!("committed merged changes");
-
-    // Push.
-    let push_output = tokio::process::Command::new("git")
-        .args(["push", "origin", branch_name, "--force-with-lease"])
-        .current_dir(clone_path)
-        .output()
-        .await
-        .context("failed to run git push")?;
-
-    if !push_output.status.success() {
-        let stderr = String::from_utf8_lossy(&push_output.stderr);
-        warn!(stderr = %stderr, "git push failed");
-        return Err(anyhow::anyhow!("git push failed: {stderr}"));
-    }
-
-    info!(branch = %branch_name, "pushed merged changes to origin");
+    info!(branch = %branch_name, "committed merged changes (push deferred until after review)");
     Ok(())
 }
 
