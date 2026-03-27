@@ -239,8 +239,11 @@ async fn get_diff(clone_path: &Path, default_branch: &str) -> Result<String> {
         .context("failed to run git diff for critic review")?;
 
     let mut diff = String::from_utf8_lossy(&diff_output.stdout).to_string();
-    if diff.len() > MAX_DIFF_CHARS {
-        diff.truncate(MAX_DIFF_CHARS);
+    if diff.chars().count() > MAX_DIFF_CHARS {
+        // Truncate at a character boundary to avoid splitting multi-byte UTF-8
+        if let Some((byte_idx, _)) = diff.char_indices().nth(MAX_DIFF_CHARS) {
+            diff.truncate(byte_idx);
+        }
         diff.push_str("\n\n... (diff truncated) ...");
     }
     Ok(diff)

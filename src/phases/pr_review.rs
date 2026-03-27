@@ -46,8 +46,11 @@ pub async fn run(
     .await
     {
         Ok(raw) => {
-            if raw.chars().count() > MAX_DIFF_CHARS {
-                // Find safe UTF-8 boundary at MAX_DIFF_CHARS characters
+            // Quick byte-length check (O(1)) to avoid expensive char iteration for small diffs.
+            // Byte length >= char count, so if bytes <= MAX_DIFF_CHARS, we're safe.
+            if raw.len() > MAX_DIFF_CHARS {
+                // Find safe UTF-8 boundary at MAX_DIFF_CHARS characters.
+                // This iterates only up to MAX_DIFF_CHARS, not the whole string.
                 let truncate_at = raw
                     .char_indices()
                     .nth(MAX_DIFF_CHARS)
