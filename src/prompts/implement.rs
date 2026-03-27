@@ -1,4 +1,4 @@
-pub const IMPLEMENT_PROMPT: &str = r#"You are implementing a specific improvement to a codebase. Make the change described below, then verify it compiles and passes tests.
+pub const IMPLEMENT_PROMPT: &str = r#"You are implementing a specific improvement to a codebase.
 
 ## Task
 
@@ -13,16 +13,10 @@ pub const IMPLEMENT_PROMPT: &str = r#"You are implementing a specific improvemen
 - Do NOT modify CI/CD configuration files (.github/workflows/*, .gitlab-ci.yml, etc.)
 - Do NOT add new dependencies to package manifests (Cargo.toml, package.json, go.mod, etc.)
 - Make minimal, focused changes. Do not refactor unrelated code, rename unrelated variables, or reformat surrounding lines.
+- If your changes affect public APIs, update relevant documentation (README, doc comments, etc.)
+- Add brief doc comments to any new public functions or structs you create
+- Do NOT run build, test, lint, or format commands. CI will verify everything after push.
 - Primary language: {primary_language}
-
-## Verification
-
-After making your changes, run the build and test commands to verify nothing is broken:
-
-- Build: `{build_command}`
-- Test: `{test_command}`
-
-If the build or tests fail due to your changes, fix the issues before finishing.
 
 ## When Done
 

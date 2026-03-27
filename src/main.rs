@@ -8,6 +8,7 @@ mod orchestrator;
 mod phases;
 mod prompts;
 mod retry;
+mod worktree;
 
 use clap::Parser;
 use config::Config;

@@ -1,7 +1,7 @@
 use crate::models::ClaudeOutput;
 use anyhow::{bail, Context, Result};
 use serde::de::DeserializeOwned;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
@@ -208,6 +208,47 @@ fn parse_response<T: DeserializeOwned>(
     })
 }
 
+/// Generate a compact working directory context string.
+/// Uses `find` with depth limit, excludes common noise directories,
+/// and truncates to avoid wasting tokens.
+async fn get_dir_context(working_dir: &Path) -> String {
+    let output = tokio::process::Command::new("find")
+        .args([
+            ".",
+            "-maxdepth", "3",
+            "-not", "-path", "./.git/*",
+            "-not", "-path", "./node_modules/*",
+            "-not", "-path", "./target/*",
+            "-not", "-path", "./.venv/*",
+            "-not", "-path", "./vendor/*",
+            "-not", "-path", "./__pycache__/*",
+        ])
+        .current_dir(working_dir)
+        .output()
+        .await;
+
+    let tree = match output {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).to_string()
+        }
+        _ => return String::new(),
+    };
+
+    // Truncate to ~200 lines to keep it compact.
+    let lines: Vec<&str> = tree.lines().collect();
+    let truncated = if lines.len() > 200 {
+        format!("{}\n... ({} more files)", lines[..200].join("\n"), lines.len() - 200)
+    } else {
+        lines.join("\n")
+    };
+
+    format!(
+        "## Working Directory: {}\n\n```\n{}\n```",
+        working_dir.display(),
+        truncated
+    )
+}
+
 /// Invoke the Claude CLI as a subprocess and parse its JSON response.
 ///
 /// Supports structured output via `--json-schema` (deserialized into `T`),
@@ -216,6 +257,23 @@ pub async fn invoke<T: DeserializeOwned>(
     invocation: &ClaudeInvocation,
     timeout: Duration,
 ) -> Result<ClaudeResponse<T>> {
+    // Prepend working directory context to the prompt.
+    let dir_context = get_dir_context(&invocation.working_dir).await;
+    let augmented = ClaudeInvocation {
+        prompt: format!("{dir_context}\n\n{}", invocation.prompt),
+        system_prompt: invocation.system_prompt.clone(),
+        model: invocation.model.clone(),
+        max_budget_usd: invocation.max_budget_usd,
+        max_turns: invocation.max_turns,
+        effort: invocation.effort,
+        tools: invocation.tools,
+        json_schema: invocation.json_schema.clone(),
+        working_dir: invocation.working_dir.clone(),
+        session_id: invocation.session_id.clone(),
+        resume_session_id: invocation.resume_session_id.clone(),
+    };
+    let invocation = &augmented;
+
     let prompt_summary = truncate(&invocation.prompt, 80);
     info!(
         prompt = %prompt_summary,

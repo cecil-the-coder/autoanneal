@@ -1,6 +1,7 @@
 use crate::claude::{self, ClaudeInvocation};
 use crate::models::{AnalysisResult, Improvement, OpenPr, Risk, Severity, StackInfo};
 use crate::prompts::analysis::ANALYSIS_PROMPT;
+use crate::prompts::doc_analysis::DOC_ANALYSIS_PROMPT;
 use crate::prompts::system::analysis_system_prompt;
 use anyhow::Result;
 use std::path::Path;
@@ -59,12 +60,16 @@ fn format_open_prs(prs: &[OpenPr]) -> String {
     }
     prs.iter()
         .map(|pr| {
+            let files = if pr.files.is_empty() {
+                "(unknown)".to_string()
+            } else {
+                pr.files.join(", ")
+            };
             format!(
-                "- #{}: {} (branch: {}, files: {})",
+                "- #{}: {} (files: {})",
                 pr.number,
                 pr.title,
-                pr.head_ref,
-                pr.files.join(", "),
+                files,
             )
         })
         .collect::<Vec<_>>()
@@ -95,7 +100,7 @@ pub async fn run(
         max_budget_usd: budget,
         max_turns: 50,
         effort: "high",
-        tools: "Read,Glob,Grep,Bash,Agent",
+        tools: "Read,Glob,Grep,Agent",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
         session_id: None,
@@ -147,6 +152,77 @@ pub async fn run(
     })
 }
 
+/// Run documentation-focused analysis as a fallback when no code improvements are found.
+pub async fn run_doc_analysis(
+    clone_path: &Path,
+    arch_summary: &str,
+    stack_info: &StackInfo,
+    model: &str,
+    budget: f64,
+    max_tasks: usize,
+) -> Result<AnalysisOutput> {
+    // 1. Build the doc-specific prompt.
+    let prompt = DOC_ANALYSIS_PROMPT
+        .replace("{arch_summary}", arch_summary)
+        .replace("{stack_info}", &format_stack_info(stack_info));
+
+    // 2. Build the invocation.
+    let invocation = ClaudeInvocation {
+        prompt,
+        system_prompt: Some(analysis_system_prompt()),
+        model: model.to_string(),
+        max_budget_usd: budget,
+        max_turns: 50,
+        effort: "high",
+        tools: "Read,Glob,Grep,Agent",
+        json_schema: None,
+        working_dir: clone_path.to_path_buf(),
+        session_id: None,
+        resume_session_id: None,
+    };
+
+    // 3. Invoke Claude.
+    let response = claude::invoke::<AnalysisResult>(&invocation, Duration::from_secs(600)).await?;
+
+    let analysis = response
+        .structured
+        .unwrap_or_else(|| AnalysisResult {
+            improvements: Vec::new(),
+        });
+
+    let total_found = analysis.improvements.len();
+    info!(total_found, "doc analysis phase: raw improvements from Claude");
+
+    // 4. Post-process: lighter filtering for docs (no severity filter, allow docs category).
+    let mut filtered: Vec<Improvement> = analysis
+        .improvements
+        .into_iter()
+        .filter(|imp| imp.risk != Risk::High)
+        .filter(|imp| imp.estimated_lines_changed <= 500)
+        .collect();
+
+    // Sort by severity descending, then risk ascending.
+    filtered.sort_by(|a, b| {
+        severity_rank(&b.severity)
+            .cmp(&severity_rank(&a.severity))
+            .then_with(|| risk_rank(&a.risk).cmp(&risk_rank(&b.risk)))
+    });
+
+    // Truncate to max_tasks.
+    filtered.truncate(max_tasks);
+
+    info!(
+        total_found,
+        after_filtering = filtered.len(),
+        "doc analysis phase: improvements after filtering"
+    );
+
+    Ok(AnalysisOutput {
+        improvements: filtered,
+        cost_usd: response.cost_usd,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,7 +250,6 @@ mod tests {
         let output = format_open_prs(&prs);
         assert!(output.contains("#42"));
         assert!(output.contains("Fix widget"));
-        assert!(output.contains("fix/widget"));
         assert!(output.contains("src/widget.rs, tests/widget.rs"));
     }
 
