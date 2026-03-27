@@ -72,26 +72,32 @@ Expects a dict with keys: repo (the repo entry), root (top-level context).
 - {{ ($repo.skipAfter | default $defaults.skipAfter) | quote }}
 - "--cron-interval"
 - {{ ($repo.cronInterval | default $defaults.cronInterval) | quote }}
-{{- $fixCi := ternary $repo.fixCi $defaults.fixCi (hasKey $repo "fixCi") }}
 - "--fix-ci"
-- {{ $fixCi | quote }}
-{{- $fixConflicts := ternary $repo.fixConflicts $defaults.fixConflicts (hasKey $repo "fixConflicts") }}
+- {{ (ternary $repo.fixCi $defaults.fixCi (hasKey $repo "fixCi")) | quote }}
 - "--fix-conflicts"
-- {{ $fixConflicts | quote }}
+- {{ (ternary $repo.fixConflicts $defaults.fixConflicts (hasKey $repo "fixConflicts")) | quote }}
 - "--critic-threshold"
 - {{ ($repo.criticThreshold | default $defaults.criticThreshold) | quote }}
-{{- $improveDocs := ternary $repo.improveDocs $defaults.improveDocs (hasKey $repo "improveDocs") }}
 - "--improve-docs"
-- {{ $improveDocs | quote }}
+- {{ (ternary $repo.improveDocs $defaults.improveDocs (hasKey $repo "improveDocs")) | quote }}
 - "--doc-critic-threshold"
 - {{ ($repo.docCriticThreshold | default $defaults.docCriticThreshold) | quote }}
-{{- $reviewPrs := ternary $repo.reviewPrs $defaults.reviewPrs (hasKey $repo "reviewPrs") }}
 - "--review-prs"
-- {{ $reviewPrs | quote }}
+- {{ (ternary $repo.reviewPrs $defaults.reviewPrs (hasKey $repo "reviewPrs")) | quote }}
 - "--review-filter"
 - {{ ($repo.reviewFilter | default $defaults.reviewFilter) | quote }}
 - "--review-fix-threshold"
 - {{ ($repo.reviewFixThreshold | default $defaults.reviewFixThreshold) | quote }}
+- "--concurrency"
+- {{ ($repo.concurrency | default $defaults.concurrency) | quote }}
+{{- if or $repo.investigateIssues $defaults.investigateIssues }}
+- "--investigate-issues"
+- {{ ($repo.investigateIssues | default $defaults.investigateIssues) | quote }}
+{{- end }}
+- "--max-issues"
+- {{ ($repo.maxIssues | default $defaults.maxIssues) | quote }}
+- "--issue-budget"
+- {{ ($repo.issueBudget | default $defaults.issueBudget) | quote }}
 {{- end }}
 
 {{/*

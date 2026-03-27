@@ -37,6 +37,10 @@ defaults:
   reviewPrs: false       # Review external PRs (not created by autoanneal)
   reviewFilter: "all"    # Filter for external PRs: "all", "labeled:<label>", or "recent"
   reviewFixThreshold: 7  # If critic score is below this, attempt to fix instead of just commenting
+  concurrency: 3         # Maximum concurrent work items
+  investigateIssues: ""  # Investigate open GitHub issues with this label (comma-separated). Empty = disabled.
+  maxIssues: 2           # Maximum issues to investigate per run
+  issueBudget: "3.00"    # Budget per issue investigation (USD)
 
 # -- Optional environment variables (shared across all repos)
 # Uncomment and set as needed.

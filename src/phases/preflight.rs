@@ -1,4 +1,4 @@
-use crate::models::{CiStatus, ExternalPr, InFlightPr, RepoInfo};
+use crate::models::{CiStatus, ExternalPr, GithubIssue, InFlightPr, RepoInfo};
 use crate::retry::gh_command;
 use anyhow::{bail, Context, Result};
 use std::path::Path;
@@ -13,9 +13,12 @@ pub struct PreflightOutput {
     pub analysis_runs_since_last_commit: usize,
     /// External (non-autoanneal) PRs detected during preflight.
     pub external_prs: Vec<ExternalPr>,
+    /// GitHub issues fetched for investigation.
+    pub issues: Vec<GithubIssue>,
 }
 
 impl PreflightOutput {
+    #[allow(dead_code)]
     pub fn prs_needing_ci_fix(&self) -> Vec<&InFlightPr> {
         self.in_flight_prs
             .iter()
@@ -23,6 +26,7 @@ impl PreflightOutput {
             .collect()
     }
 
+    #[allow(dead_code)]
     pub fn prs_needing_rebase(&self) -> Vec<&InFlightPr> {
         self.in_flight_prs
             .iter()
@@ -32,7 +36,7 @@ impl PreflightOutput {
 }
 
 /// Validate environment and repo, return repo metadata plus in-flight PR info.
-pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str) -> Result<PreflightOutput> {
+pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str, investigate_issues: &str) -> Result<PreflightOutput> {
     // 1. Validate environment variables.
     validate_env_vars()?;
 
@@ -99,9 +103,17 @@ pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str) -> Resu
         Vec::new()
     };
 
+    // 8. Fetch issues if investigation is enabled.
+    let issues = if !investigate_issues.is_empty() {
+        fetch_issues(repo_slug, investigate_issues).await
+    } else {
+        Vec::new()
+    };
+
     info!(
         in_flight = in_flight_prs.len(),
         external = external_prs.len(),
+        issues = issues.len(),
         "Preflight passed: {}/{}, default branch: {}",
         owner,
         name,
@@ -114,6 +126,7 @@ pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str) -> Resu
         head_sha,
         analysis_runs_since_last_commit: 0, // computed after clone in orchestrator
         external_prs,
+        issues,
     })
 }
 
@@ -526,6 +539,82 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
     }
 
     info!(count = result.len(), filter = %filter, "detected external PRs for review");
+    result
+}
+
+/// Fetch open issues matching the given label filter.
+/// Excludes issues already labeled autoanneal:investigating or autoanneal:attempted.
+async fn fetch_issues(repo_slug: &str, label_filter: &str) -> Vec<GithubIssue> {
+    let dot = Path::new(".");
+
+    // Build label arg: comma-separated labels from the filter.
+    let raw = match gh_command(
+        dot,
+        &[
+            "issue",
+            "list",
+            "--label",
+            label_filter,
+            "--state",
+            "open",
+            "--json",
+            "number,title,body,labels",
+            "--limit",
+            "20",
+            "-R",
+            repo_slug,
+        ],
+    )
+    .await
+    {
+        Ok(raw) => raw,
+        Err(e) => {
+            warn!(error = %e, "failed to fetch issues (non-fatal)");
+            return Vec::new();
+        }
+    };
+
+    let issues: Vec<serde_json::Value> = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "failed to parse issue list JSON");
+            return Vec::new();
+        }
+    };
+
+    let mut result = Vec::new();
+    for issue in issues {
+        let labels: Vec<String> = issue["labels"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l["name"].as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Skip issues already being investigated or attempted.
+        if labels
+            .iter()
+            .any(|l| l == "autoanneal:investigating" || l == "autoanneal:attempted")
+        {
+            continue;
+        }
+
+        let number = issue["number"].as_u64().unwrap_or(0);
+        if number == 0 {
+            continue;
+        }
+
+        result.push(GithubIssue {
+            number,
+            title: issue["title"].as_str().unwrap_or("").to_string(),
+            body: issue["body"].as_str().unwrap_or("").to_string(),
+            labels,
+        });
+    }
+
+    info!(count = result.len(), label_filter = %label_filter, "fetched issues for investigation");
     result
 }
 

@@ -233,6 +233,15 @@ pub struct ExternalPr {
     pub labels: Vec<String>,
 }
 
+/// A GitHub issue fetched for investigation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubIssue {
+    pub number: u64,
+    pub title: String,
+    pub body: String,
+    pub labels: Vec<String>,
+}
+
 /// Summary of a single phase for the final report.
 #[derive(Debug, Clone)]
 pub struct PhaseReport {

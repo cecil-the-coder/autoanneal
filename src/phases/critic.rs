@@ -10,6 +10,7 @@ use tracing::info;
 /// Maximum diff length (in characters) sent to the critic.
 const MAX_DIFF_CHARS: usize = 50_000;
 
+#[allow(dead_code)]
 pub struct CriticOutput {
     pub score: u32,
     pub verdict: String,

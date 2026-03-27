@@ -24,48 +24,15 @@ pub struct PrReviewOutput {
 pub async fn run(
     pr: &ExternalPr,
     repo_slug: &str,
-    work_dir: &Path,
+    worktree_path: &Path,
     model: &str,
     budget: f64,
     fix_threshold: u32,
 ) -> Result<PrReviewOutput> {
     let dot = Path::new(".");
+    let clone_dir = worktree_path.to_path_buf();
 
-    // 1. Clone the repo at the PR branch.
-    let clone_dir = work_dir.join(format!("review-{}", pr.number));
-    let clone_url = format!("https://github.com/{}.git", repo_slug);
-
-    let output = tokio::process::Command::new("git")
-        .args([
-            "clone",
-            "--depth=50",
-            "--branch",
-            &pr.branch,
-            &clone_url,
-            &clone_dir.to_string_lossy().as_ref(),
-        ])
-        .output()
-        .await
-        .context("failed to spawn git clone for PR review")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git clone failed for PR #{}: {stderr}", pr.number);
-    }
-
-    // 2. Configure git identity.
-    for (key, val) in [
-        ("user.name", "autoanneal[bot]"),
-        ("user.email", "autoanneal[bot]@users.noreply.github.com"),
-    ] {
-        tokio::process::Command::new("git")
-            .args(["config", key, val])
-            .current_dir(&clone_dir)
-            .output()
-            .await?;
-    }
-
-    // 3. Get the diff using gh pr diff.
+    // 1. Get the diff using gh pr diff.
     let diff = match gh_command(
         dot,
         &[

@@ -265,3 +265,32 @@ When done, output a brief summary of what you changed and why."#;
 pub fn pr_review_fix_system_prompt() -> String {
     format!("{}\n\n{}", TOOL_GUIDANCE, PR_REVIEW_FIX_DIRECTIVES)
 }
+
+const ISSUE_INVESTIGATION_DIRECTIVES: &str = r#"# Phase: Issue Investigation
+
+You are an automated agent investigating a GitHub issue. Your goal is to understand the issue, find the root cause, and if possible, implement a fix.
+
+## Approach
+
+1. Read the issue description carefully.
+2. Explore the relevant source code to understand the context.
+3. Identify the root cause of the issue.
+4. If you can fix it: implement minimal, focused changes and verify with build/test.
+5. If you cannot fix it: document your findings thoroughly.
+
+## Constraints
+
+- Make minimal, focused changes that address only the issue.
+- Do NOT refactor unrelated code or reformat surrounding lines.
+- Do NOT add new dependencies.
+- Do NOT modify CI/CD configs (.github/workflows/*, .gitlab-ci.yml, etc.).
+- Verify your fix compiles and passes tests before declaring it fixed.
+
+## Output
+
+Always output a JSON code block at the end with your result."#;
+
+/// System prompt for the issue investigation phase.
+pub fn issue_investigation_system_prompt() -> String {
+    format!("{}\n\n{}", TOOL_GUIDANCE, ISSUE_INVESTIGATION_DIRECTIVES)
+}
