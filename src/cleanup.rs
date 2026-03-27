@@ -149,9 +149,9 @@ impl CleanupGuard {
 
         // Try to use spawn_blocking if we're in a tokio context to avoid blocking the async runtime
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            if let Err(e) = handle.spawn_blocking(cleanup_fn) {
-                tracing::warn!(error = %e, "Failed to spawn blocking cleanup task");
-            }
+            // Use block_in_place to run blocking code without blocking the async runtime
+            // This is safe to call from within a tokio runtime and allows the cleanup to complete
+            tokio::task::block_in_place(cleanup_fn);
         } else {
             // No tokio runtime available, run blocking (e.g., in tests or non-async context)
             cleanup_fn();

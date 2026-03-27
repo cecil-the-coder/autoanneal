@@ -125,9 +125,10 @@ pub async fn run(
             .output()
             .await;
 
-        let checkout_ok = checkout.map(|o| o.status.success()).unwrap_or(false);
+        let checkout_ok = checkout.as_ref().map(|o| o.status.success()).unwrap_or(false);
         if !checkout_ok {
             let stderr = checkout
+                .as_ref()
                 .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
                 .unwrap_or_else(|e| e.to_string());
             warn!(issue = issue.number, branch = %branch_name, error = %stderr, "git checkout failed");
@@ -139,9 +140,10 @@ pub async fn run(
             .output()
             .await;
 
-        let add_ok = add.map(|o| o.status.success()).unwrap_or(false);
+        let add_ok = add.as_ref().map(|o| o.status.success()).unwrap_or(false);
         if !add_ok {
             let stderr = add
+                .as_ref()
                 .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
                 .unwrap_or_else(|e| e.to_string());
             warn!(issue = issue.number, error = %stderr, "git add failed");
@@ -155,9 +157,10 @@ pub async fn run(
                 .output()
                 .await;
 
-            let commit_ok = commit.map(|o| o.status.success()).unwrap_or(false);
+            let commit_ok = commit.as_ref().map(|o| o.status.success()).unwrap_or(false);
             if !commit_ok {
                 let stderr = commit
+                    .as_ref()
                     .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
                     .unwrap_or_else(|e| e.to_string());
                 warn!(issue = issue.number, error = %stderr, "git commit failed");

@@ -315,7 +315,7 @@ async fn run_group_in_worktree(
             Err(e) => {
                 warn!(task = %improvement.title, error = %e, "task execution failed");
                 // Discard changes from this failed task, but continue with the rest.
-                let _ = guardrails::discard_changes(worktree_path);
+                let _ = guardrails::discard_changes(worktree_path).await;
                 results.push(TaskResult {
                     title: improvement.title.clone(),
                     status: TaskStatus::Failed(format!("task error: {e}")),
@@ -356,7 +356,7 @@ async fn run_single_task(
     let status_str = String::from_utf8_lossy(&status_output.stdout);
     if !status_str.trim().is_empty() {
         warn!(task = %improvement.title, "working tree not clean before task, discarding stale changes");
-        guardrails::discard_changes(working_dir)?;
+        guardrails::discard_changes(working_dir).await?;
     }
 
     // Step 2: Build implementation prompt.
@@ -415,7 +415,7 @@ async fn run_single_task(
                     error = %e,
                     "claude invocation failed, skipping task"
                 );
-                guardrails::discard_changes(working_dir)?;
+                guardrails::discard_changes(working_dir).await?;
                 return Ok(TaskResult {
                     title: improvement.title.clone(),
                     status: TaskStatus::Failed(format!("claude invocation failed: {e}")),
@@ -429,7 +429,7 @@ async fn run_single_task(
 
     // Step 4: Validate scope via guardrails.
     info!(task = %improvement.title, "validating diff against guardrails");
-    match guardrails::validate_diff(working_dir, &improvement.files_to_modify, 500, false) {
+    match guardrails::validate_diff(working_dir, &improvement.files_to_modify, 500, false).await {
         Ok(diff_report) => {
             info!(
                 task = %improvement.title,
@@ -455,7 +455,7 @@ async fn run_single_task(
                 violation = %violation,
                 "guardrail violation, discarding changes and skipping task"
             );
-            guardrails::discard_changes(working_dir)?;
+            guardrails::discard_changes(working_dir).await?;
             Ok(TaskResult {
                 title: improvement.title.clone(),
                 status: TaskStatus::Skipped(format!("guardrail violation: {violation}")),
