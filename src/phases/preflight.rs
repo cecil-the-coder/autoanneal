@@ -1,4 +1,4 @@
-use crate::models::{CiStatus, InFlightPr, RepoInfo};
+use crate::models::{CiStatus, ExternalPr, InFlightPr, RepoInfo};
 use crate::retry::gh_command;
 use anyhow::{bail, Context, Result};
 use std::path::Path;
@@ -11,6 +11,8 @@ pub struct PreflightOutput {
     pub head_sha: String,
     /// Number of autoanneal runs since the last commit on the default branch.
     pub analysis_runs_since_last_commit: usize,
+    /// External (non-autoanneal) PRs detected during preflight.
+    pub external_prs: Vec<ExternalPr>,
 }
 
 impl PreflightOutput {
@@ -30,7 +32,7 @@ impl PreflightOutput {
 }
 
 /// Validate environment and repo, return repo metadata plus in-flight PR info.
-pub async fn run(repo_slug: &str) -> Result<PreflightOutput> {
+pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str) -> Result<PreflightOutput> {
     // 1. Validate environment variables.
     validate_env_vars()?;
 
@@ -90,8 +92,16 @@ pub async fn run(repo_slug: &str) -> Result<PreflightOutput> {
     // 6. Get HEAD SHA.
     let head_sha = get_head_sha(repo_slug, &default_branch).await;
 
+    // 7. Detect external PRs if review is enabled.
+    let external_prs = if review_prs {
+        detect_external_prs(repo_slug, review_filter).await
+    } else {
+        Vec::new()
+    };
+
     info!(
         in_flight = in_flight_prs.len(),
+        external = external_prs.len(),
         "Preflight passed: {}/{}, default branch: {}",
         owner,
         name,
@@ -103,6 +113,7 @@ pub async fn run(repo_slug: &str) -> Result<PreflightOutput> {
         in_flight_prs,
         head_sha,
         analysis_runs_since_last_commit: 0, // computed after clone in orchestrator
+        external_prs,
     })
 }
 
@@ -407,6 +418,115 @@ pub async fn newest_commit_age_secs(clone_path: &std::path::Path) -> u64 {
         .as_secs();
 
     now.saturating_sub(timestamp)
+}
+
+/// Detect external (non-autoanneal) open PRs, filtered according to config.
+async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
+    let dot = Path::new(".");
+
+    // 1. List all open PRs with relevant fields.
+    let raw = match gh_command(
+        dot,
+        &[
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,title,headRefName,author,updatedAt,labels",
+            "--limit",
+            "50",
+            "-R",
+            repo_slug,
+        ],
+    )
+    .await
+    {
+        Ok(raw) => raw,
+        Err(e) => {
+            warn!(error = %e, "failed to list external PRs (non-fatal)");
+            return Vec::new();
+        }
+    };
+
+    let prs: Vec<serde_json::Value> = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "failed to parse external PR list JSON");
+            return Vec::new();
+        }
+    };
+
+    let mut result = Vec::new();
+
+    for pr in prs {
+        let branch = pr["headRefName"].as_str().unwrap_or("").to_string();
+
+        // 2. Filter OUT autoanneal/ branches (those are ours).
+        if branch.starts_with("autoanneal/") {
+            continue;
+        }
+
+        // 3. Collect labels.
+        let labels: Vec<String> = pr["labels"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l["name"].as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Filter OUT PRs already reviewed by autoanneal.
+        if labels.iter().any(|l| l == "autoanneal:reviewed") {
+            continue;
+        }
+
+        let number = pr["number"].as_u64().unwrap_or(0);
+        if number == 0 {
+            continue;
+        }
+
+        let title = pr["title"].as_str().unwrap_or("").to_string();
+        let author = pr["author"]["login"].as_str().unwrap_or("").to_string();
+        let updated_at = pr["updatedAt"].as_str().unwrap_or("").to_string();
+
+        let external = ExternalPr {
+            number,
+            title,
+            branch,
+            author,
+            updated_at,
+            labels,
+        };
+
+        // 4. Apply configured filter.
+        match filter {
+            "all" => result.push(external),
+            "recent" => {
+                // Only keep PRs updated in the last 24 hours.
+                if let Ok(updated) = chrono::DateTime::parse_from_rfc3339(&external.updated_at) {
+                    let age = chrono::Utc::now().signed_duration_since(updated);
+                    if age.num_hours() <= 24 {
+                        result.push(external);
+                    }
+                }
+            }
+            f if f.starts_with("labeled:") => {
+                let target_label = &f["labeled:".len()..];
+                if external.labels.iter().any(|l| l == target_label) {
+                    result.push(external);
+                }
+            }
+            _ => {
+                warn!(filter = %filter, "unknown review filter, treating as 'all'");
+                result.push(external);
+            }
+        }
+    }
+
+    info!(count = result.len(), filter = %filter, "detected external PRs for review");
+    result
 }
 
 /// Check that required environment variables are set and non-empty.

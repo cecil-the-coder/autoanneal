@@ -49,9 +49,14 @@ You are an automated agent analyzing a codebase for concrete, implementable impr
 
 ## Exploration Strategy
 
-Use parallel subagents (via the Agent tool) to explore different parts of the codebase simultaneously. Launch multiple Agent calls in a single turn for maximum parallelism. For example, spawn separate subagents for each major directory or module. Each subagent should read and analyze its assigned files, then report findings.
+You have a STRICT time limit. Do NOT read every file sequentially — you will timeout.
 
-After all subagents return, synthesize their findings into a single prioritized list.
+Instead, use this strategy:
+1. First, use Grep to scan for common issue patterns across all source files (e.g., `unwrap()`, `TODO`, `unsafe`, error handling patterns). This covers the entire codebase in 2-3 tool calls.
+2. Then launch parallel subagents (via the Agent tool) to deep-dive into the most promising areas. Spawn multiple Agent calls in a SINGLE turn — they run concurrently. Each subagent analyzes a specific module or file.
+3. After subagents return (~15-20 turns in), synthesize findings and OUTPUT YOUR JSON immediately. Do not keep exploring.
+
+You MUST output your JSON findings within 30 tool calls. It is better to report 2-3 high-confidence findings than to timeout with nothing.
 
 ## What to Look For
 - Bug fixes: incorrect logic, off-by-one errors, race conditions, null handling
@@ -233,4 +238,30 @@ Rules:
 /// System prompt for the CI fix phase.
 pub fn ci_fix_system_prompt() -> String {
     format!("{}\n\n{}", TOOL_GUIDANCE, CI_FIX_DIRECTIVES)
+}
+
+const PR_REVIEW_FIX_DIRECTIVES: &str = r#"# Phase: PR Review Fix
+
+You are reviewing and fixing issues found in an external pull request. The critic review identified problems that need to be addressed.
+
+Constraints:
+- Make minimal, focused changes that address the critic's findings.
+- Do NOT refactor unrelated code or reformat surrounding lines.
+- Do NOT add new dependencies.
+- Do NOT modify CI/CD configs (.github/workflows/*, .gitlab-ci.yml, etc.).
+- Only fix issues identified in the critic review.
+
+Workflow:
+1. Read the critic's review and understand the issues.
+2. Read the relevant source files in the working tree.
+3. Apply minimal fixes using Edit (or Write for new files).
+4. Run the build command via Bash to verify compilation.
+5. Run the test command via Bash to verify correctness.
+6. If build or tests fail due to your changes, fix them.
+
+When done, output a brief summary of what you changed and why."#;
+
+/// System prompt for the PR review fix phase.
+pub fn pr_review_fix_system_prompt() -> String {
+    format!("{}\n\n{}", TOOL_GUIDANCE, PR_REVIEW_FIX_DIRECTIVES)
 }

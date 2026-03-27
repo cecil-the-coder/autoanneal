@@ -77,6 +77,18 @@ pub struct Config {
     /// Minimum critic score for documentation changes (higher bar than code).
     #[arg(long, default_value = "7")]
     pub doc_critic_threshold: u32,
+
+    /// Review external PRs (not created by autoanneal).
+    #[arg(long, default_value = "false")]
+    pub review_prs: bool,
+
+    /// Only review PRs matching this filter: "all", "labeled:<label>", or "recent" (updated in last 24h).
+    #[arg(long, default_value = "all")]
+    pub review_filter: String,
+
+    /// If critic score is below this threshold, attempt to fix issues instead of just commenting.
+    #[arg(long, default_value = "7")]
+    pub review_fix_threshold: u32,
 }
 
 impl Config {
@@ -213,6 +225,9 @@ mod tests {
             critic_threshold: 6,
             improve_docs: true,
             doc_critic_threshold: 7,
+            review_prs: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -238,6 +253,9 @@ mod tests {
             critic_threshold: 6,
             improve_docs: true,
             doc_critic_threshold: 7,
+            review_prs: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -263,6 +281,9 @@ mod tests {
             critic_threshold: 6,
             improve_docs: true,
             doc_critic_threshold: 7,
+            review_prs: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -288,6 +309,9 @@ mod tests {
             critic_threshold: 6,
             improve_docs: true,
             doc_critic_threshold: 7,
+            review_prs: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
         };
         assert_eq!(config.min_severity(), Severity::Moderate);
     }
@@ -313,6 +337,9 @@ mod tests {
             critic_threshold: 6,
             improve_docs: true,
             doc_critic_threshold: 7,
+            review_prs: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
         };
         assert_eq!(config.min_severity(), Severity::Minor);
     }

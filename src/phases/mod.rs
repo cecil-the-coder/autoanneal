@@ -5,3 +5,4 @@ pub mod plan;
 pub mod implement;
 pub mod ci_fix;
 pub mod critic;
+pub mod pr_review;

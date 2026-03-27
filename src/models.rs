@@ -222,6 +222,17 @@ pub struct CriticResult {
     pub summary: String,
 }
 
+/// An external (non-autoanneal) PR detected during preflight.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalPr {
+    pub number: u64,
+    pub title: String,
+    pub branch: String,
+    pub author: String,
+    pub updated_at: String,
+    pub labels: Vec<String>,
+}
+
 /// Summary of a single phase for the final report.
 #[derive(Debug, Clone)]
 pub struct PhaseReport {

@@ -7,3 +7,4 @@ pub mod ci_fix;
 pub mod critic;
 pub mod doc_analysis;
 pub mod system;
+pub mod pr_review;

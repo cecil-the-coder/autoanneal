@@ -85,6 +85,13 @@ Expects a dict with keys: repo (the repo entry), root (top-level context).
 - {{ $improveDocs | quote }}
 - "--doc-critic-threshold"
 - {{ ($repo.docCriticThreshold | default $defaults.docCriticThreshold) | quote }}
+{{- $reviewPrs := ternary $repo.reviewPrs $defaults.reviewPrs (hasKey $repo "reviewPrs") }}
+- "--review-prs"
+- {{ $reviewPrs | quote }}
+- "--review-filter"
+- {{ ($repo.reviewFilter | default $defaults.reviewFilter) | quote }}
+- "--review-fix-threshold"
+- {{ ($repo.reviewFixThreshold | default $defaults.reviewFixThreshold) | quote }}
 {{- end }}
 
 {{/*

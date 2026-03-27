@@ -1,7 +1,7 @@
 use crate::cleanup::CleanupGuard;
 use crate::config::Config;
 use crate::logging;
-use crate::models::{InFlightPr, OpenPr, PhaseReport, TaskStatus};
+use crate::models::{InFlightPr, OpenPr, PhaseReport, TaskStatus, ExternalPr};
 use crate::phases;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -109,7 +109,7 @@ async fn run_pipeline(
 
     let preflight_output = match tokio::time::timeout(
         Duration::from_secs(60),
-        phases::preflight::run(repo_slug),
+        phases::preflight::run(repo_slug, config.review_prs, &config.review_filter),
     )
     .await
     {
@@ -206,6 +206,74 @@ async fn run_pipeline(
                             status: "TIMEOUT".to_string(),
                         });
                     }
+                }
+            }
+        }
+    }
+
+    // ─── External PR Review ──────────────────────────────────────────────
+    if config.review_prs && !preflight_output.external_prs.is_empty() {
+        let prs_to_review: Vec<&ExternalPr> = preflight_output
+            .external_prs
+            .iter()
+            .take(3) // Limit to 3 PRs per run to avoid burning all budget
+            .collect();
+        info!(count = prs_to_review.len(), "starting external PR review phase");
+        for pr in prs_to_review {
+            if *budget_remaining <= 0.5 {
+                warn!("budget too low for PR review");
+                break;
+            }
+            let phase_start = Instant::now();
+            let review_budget = budget_remaining.min(2.0);
+
+            match tokio::time::timeout(
+                Duration::from_secs(600),
+                phases::pr_review::run(
+                    pr,
+                    repo_slug,
+                    work_dir,
+                    &config.model,
+                    review_budget,
+                    config.review_fix_threshold,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(output)) => {
+                    *budget_remaining -= output.cost_usd;
+                    *total_cost += output.cost_usd;
+                    let status = if output.fixed {
+                        "FIXED".to_string()
+                    } else if output.commented {
+                        "COMMENTED".to_string()
+                    } else {
+                        format!("OK (score: {})", output.score)
+                    };
+                    phases_report.push(PhaseReport {
+                        name: format!("PR Review (PR #{})", output.pr_number),
+                        duration: phase_start.elapsed(),
+                        cost_usd: output.cost_usd,
+                        status,
+                    });
+                }
+                Ok(Err(e)) => {
+                    warn!(pr_number = pr.number, error = %e, "PR review failed (non-fatal)");
+                    phases_report.push(PhaseReport {
+                        name: format!("PR Review (PR #{})", pr.number),
+                        duration: phase_start.elapsed(),
+                        cost_usd: 0.0,
+                        status: format!("FAILED: {e}"),
+                    });
+                }
+                Err(_) => {
+                    warn!(pr_number = pr.number, "PR review timed out");
+                    phases_report.push(PhaseReport {
+                        name: format!("PR Review (PR #{})", pr.number),
+                        duration: phase_start.elapsed(),
+                        cost_usd: 0.0,
+                        status: "TIMEOUT".to_string(),
+                    });
                 }
             }
         }
