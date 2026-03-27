@@ -1,4 +1,4 @@
-use crate::models::{CiStatus, InFlightPr, RepoInfo};
+use crate::models::{CiStatus, ExternalPr, GithubIssue, InFlightPr, RepoInfo};
 use crate::retry::gh_command;
 use anyhow::{bail, Context, Result};
 use std::path::Path;
@@ -11,19 +11,34 @@ pub struct PreflightOutput {
     pub head_sha: String,
     /// Number of autoanneal runs since the last commit on the default branch.
     pub analysis_runs_since_last_commit: usize,
+    /// Age of the newest commit across all branches (seconds), computed via API.
+    pub newest_commit_age_secs: u64,
+    /// External (non-autoanneal) PRs detected during preflight.
+    pub external_prs: Vec<ExternalPr>,
+    /// GitHub issues fetched for investigation.
+    pub issues: Vec<GithubIssue>,
 }
 
 impl PreflightOutput {
-    pub fn prs_needing_fix(&self) -> Vec<&InFlightPr> {
+    #[allow(dead_code)]
+    pub fn prs_needing_ci_fix(&self) -> Vec<&InFlightPr> {
         self.in_flight_prs
             .iter()
             .filter(|pr| pr.ci_status == CiStatus::Failing && !pr.has_fixing_label)
             .collect()
     }
+
+    #[allow(dead_code)]
+    pub fn prs_needing_rebase(&self) -> Vec<&InFlightPr> {
+        self.in_flight_prs
+            .iter()
+            .filter(|pr| pr.has_merge_conflicts && !pr.has_fixing_label)
+            .collect()
+    }
 }
 
 /// Validate environment and repo, return repo metadata plus in-flight PR info.
-pub async fn run(repo_slug: &str) -> Result<PreflightOutput> {
+pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str, investigate_issues: &str) -> Result<PreflightOutput> {
     // 1. Validate environment variables.
     validate_env_vars()?;
 
@@ -83,8 +98,28 @@ pub async fn run(repo_slug: &str) -> Result<PreflightOutput> {
     // 6. Get HEAD SHA.
     let head_sha = get_head_sha(repo_slug, &default_branch).await;
 
+    // 7. Detect external PRs if review is enabled.
+    let external_prs = if review_prs {
+        detect_external_prs(repo_slug, review_filter).await
+    } else {
+        Vec::new()
+    };
+
+    // 8. Fetch issues if investigation is enabled.
+    let issues = if !investigate_issues.is_empty() {
+        fetch_issues(repo_slug, investigate_issues).await
+    } else {
+        Vec::new()
+    };
+
+    // 9. Check staleness via API (no clone needed).
+    let newest_commit_age = check_newest_commit_age_api(repo_slug).await;
+
     info!(
         in_flight = in_flight_prs.len(),
+        external = external_prs.len(),
+        issues = issues.len(),
+        newest_commit_age_secs = newest_commit_age,
         "Preflight passed: {}/{}, default branch: {}",
         owner,
         name,
@@ -95,7 +130,10 @@ pub async fn run(repo_slug: &str) -> Result<PreflightOutput> {
         repo_info: info,
         in_flight_prs,
         head_sha,
-        analysis_runs_since_last_commit: 0, // computed after clone in orchestrator
+        analysis_runs_since_last_commit: 0,
+        newest_commit_age_secs: newest_commit_age,
+        external_prs,
+        issues,
     })
 }
 
@@ -149,7 +187,7 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
                 "--state",
                 "open",
                 "--json",
-                "number,title,body",
+                "number,title,body,mergeable,files",
                 "--limit",
                 "1",
                 "-R",
@@ -205,6 +243,22 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
                             ci_status
                         };
 
+                        // Check merge conflict status
+                        let has_merge_conflicts = pr["mergeable"]
+                            .as_str()
+                            .map(|m| m == "CONFLICTING")
+                            .unwrap_or(false);
+
+                        // Extract changed file paths from PR.
+                        let files: Vec<String> = pr["files"]
+                            .as_array()
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|f| f["path"].as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
                         result.push(InFlightPr {
                             number,
                             title,
@@ -212,6 +266,8 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
                             branch: branch.to_string(),
                             ci_status,
                             has_fixing_label,
+                            has_merge_conflicts,
+                            files,
                         });
                     }
                 }
@@ -236,7 +292,7 @@ async fn check_ci_status(repo_slug: &str, pr_number: u64) -> CiStatus {
             "checks",
             &pr_number.to_string(),
             "--json",
-            "name,state,conclusion",
+            "name,state,bucket",
             "-R",
             repo_slug,
         ],
@@ -252,12 +308,12 @@ async fn check_ci_status(repo_slug: &str, pr_number: u64) -> CiStatus {
                 return CiStatus::Pending;
             }
             let any_failing = checks.iter().any(|c| {
-                let conclusion = c["conclusion"].as_str().unwrap_or("");
-                conclusion == "FAILURE" || conclusion == "failure"
+                let bucket = c["bucket"].as_str().unwrap_or("");
+                bucket == "fail"
             });
             let all_complete = checks.iter().all(|c| {
-                let state = c["state"].as_str().unwrap_or("");
-                state == "COMPLETED" || state == "completed"
+                let bucket = c["bucket"].as_str().unwrap_or("");
+                bucket == "pass" || bucket == "fail"  // not "pending"
             });
             if any_failing {
                 CiStatus::Failing
@@ -358,41 +414,260 @@ async fn get_head_sha(repo_slug: &str, default_branch: &str) -> String {
     }
 }
 
-/// Check the most recent commit across ALL branches (including autoanneal/ branches).
-/// Returns the age in seconds of the newest commit found.
-/// This runs after clone so it has access to the git repo.
-pub async fn newest_commit_age_secs(clone_path: &std::path::Path) -> u64 {
-    // Get the most recent commit timestamp across all remote branches
-    let output = tokio::process::Command::new("git")
-        .args([
-            "log",
-            "--all",
-            "--remotes",
-            "-1",
-            "--format=%ct", // unix timestamp
-        ])
-        .current_dir(clone_path)
-        .output()
-        .await;
+/// Check newest commit age via GitHub API (no clone needed).
+/// Checks the default branch and all autoanneal/ branches.
+/// Returns age in seconds, or 0 if unable to determine (don't skip).
+async fn check_newest_commit_age_api(repo_slug: &str) -> u64 {
+    let dot = Path::new(".");
 
-    let timestamp: u64 = match output {
-        Ok(out) if out.status.success() => {
-            let s = String::from_utf8_lossy(&out.stdout);
-            s.trim().parse().unwrap_or(0)
+    // Get latest commit on default branch
+    let result = gh_command(
+        dot,
+        &[
+            "api",
+            &format!("repos/{repo_slug}/commits?per_page=1"),
+            "--jq",
+            ".[0].commit.committer.date",
+        ],
+    )
+    .await;
+
+    let mut newest_date: Option<chrono::DateTime<chrono::Utc>> = None;
+
+    if let Ok(raw) = result {
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw.trim()) {
+            newest_date = Some(dt.with_timezone(&chrono::Utc));
         }
-        _ => return 0, // can't determine, don't skip
-    };
-
-    if timestamp == 0 {
-        return 0;
     }
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    // Also check autoanneal/ branches for recent commits
+    let branches_result = gh_command(
+        dot,
+        &[
+            "api",
+            &format!("repos/{repo_slug}/branches?per_page=100"),
+            "--jq",
+            r#"[.[] | select(.name | startswith("autoanneal/"))] | .[].commit.sha"#,
+        ],
+    )
+    .await;
 
-    now.saturating_sub(timestamp)
+    if let Ok(raw) = branches_result {
+        for sha in raw.lines().filter(|s| !s.is_empty()) {
+            let commit_result = gh_command(
+                dot,
+                &[
+                    "api",
+                    &format!("repos/{repo_slug}/commits/{sha}"),
+                    "--jq",
+                    ".commit.committer.date",
+                ],
+            )
+            .await;
+            if let Ok(date_raw) = commit_result {
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date_raw.trim()) {
+                    let dt_utc = dt.with_timezone(&chrono::Utc);
+                    if newest_date.is_none() || dt_utc > newest_date.unwrap() {
+                        newest_date = Some(dt_utc);
+                    }
+                }
+            }
+        }
+    }
+
+    match newest_date {
+        Some(dt) => {
+            let age = chrono::Utc::now().signed_duration_since(dt);
+            age.num_seconds().max(0) as u64
+        }
+        None => 0, // can't determine, don't skip
+    }
+}
+
+
+/// Detect external (non-autoanneal) open PRs, filtered according to config.
+async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
+    let dot = Path::new(".");
+
+    // 1. List all open PRs with relevant fields.
+    let raw = match gh_command(
+        dot,
+        &[
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,title,headRefName,author,updatedAt,labels",
+            "--limit",
+            "50",
+            "-R",
+            repo_slug,
+        ],
+    )
+    .await
+    {
+        Ok(raw) => raw,
+        Err(e) => {
+            warn!(error = %e, "failed to list external PRs (non-fatal)");
+            return Vec::new();
+        }
+    };
+
+    let prs: Vec<serde_json::Value> = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "failed to parse external PR list JSON");
+            return Vec::new();
+        }
+    };
+
+    let mut result = Vec::new();
+
+    for pr in prs {
+        let branch = pr["headRefName"].as_str().unwrap_or("").to_string();
+
+        // 2. Filter OUT autoanneal/ branches (those are ours).
+        if branch.starts_with("autoanneal/") {
+            continue;
+        }
+
+        // 3. Collect labels.
+        let labels: Vec<String> = pr["labels"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l["name"].as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Filter OUT PRs already reviewed by autoanneal.
+        if labels.iter().any(|l| l == "autoanneal:reviewed") {
+            continue;
+        }
+
+        let number = pr["number"].as_u64().unwrap_or(0);
+        if number == 0 {
+            continue;
+        }
+
+        let title = pr["title"].as_str().unwrap_or("").to_string();
+        let author = pr["author"]["login"].as_str().unwrap_or("").to_string();
+        let updated_at = pr["updatedAt"].as_str().unwrap_or("").to_string();
+
+        let external = ExternalPr {
+            number,
+            title,
+            branch,
+            author,
+            updated_at,
+            labels,
+        };
+
+        // 4. Apply configured filter.
+        match filter {
+            "all" => result.push(external),
+            "recent" => {
+                // Only keep PRs updated in the last 24 hours.
+                if let Ok(updated) = chrono::DateTime::parse_from_rfc3339(&external.updated_at) {
+                    let age = chrono::Utc::now().signed_duration_since(updated);
+                    if age.num_hours() <= 24 {
+                        result.push(external);
+                    }
+                }
+            }
+            f if f.starts_with("labeled:") => {
+                let target_label = &f["labeled:".len()..];
+                if external.labels.iter().any(|l| l == target_label) {
+                    result.push(external);
+                }
+            }
+            _ => {
+                warn!(filter = %filter, "unknown review filter, treating as 'all'");
+                result.push(external);
+            }
+        }
+    }
+
+    info!(count = result.len(), filter = %filter, "detected external PRs for review");
+    result
+}
+
+/// Fetch open issues matching the given label filter.
+/// Excludes issues already labeled autoanneal:investigating or autoanneal:attempted.
+async fn fetch_issues(repo_slug: &str, label_filter: &str) -> Vec<GithubIssue> {
+    let dot = Path::new(".");
+
+    // Build label arg: comma-separated labels from the filter.
+    let raw = match gh_command(
+        dot,
+        &[
+            "issue",
+            "list",
+            "--label",
+            label_filter,
+            "--state",
+            "open",
+            "--json",
+            "number,title,body,labels",
+            "--limit",
+            "20",
+            "-R",
+            repo_slug,
+        ],
+    )
+    .await
+    {
+        Ok(raw) => raw,
+        Err(e) => {
+            warn!(error = %e, "failed to fetch issues (non-fatal)");
+            return Vec::new();
+        }
+    };
+
+    let issues: Vec<serde_json::Value> = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "failed to parse issue list JSON");
+            return Vec::new();
+        }
+    };
+
+    let mut result = Vec::new();
+    for issue in issues {
+        let labels: Vec<String> = issue["labels"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l["name"].as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Skip issues already being investigated or attempted.
+        if labels
+            .iter()
+            .any(|l| l == "autoanneal:investigating" || l == "autoanneal:attempted")
+        {
+            continue;
+        }
+
+        let number = issue["number"].as_u64().unwrap_or(0);
+        if number == 0 {
+            continue;
+        }
+
+        result.push(GithubIssue {
+            number,
+            title: issue["title"].as_str().unwrap_or("").to_string(),
+            body: issue["body"].as_str().unwrap_or("").to_string(),
+            labels,
+        });
+    }
+
+    info!(count = result.len(), label_filter = %label_filter, "fetched issues for investigation");
+    result
 }
 
 /// Check that required environment variables are set and non-empty.

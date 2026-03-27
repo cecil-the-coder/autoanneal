@@ -43,7 +43,7 @@ impl Drop for FixingLabelGuard {
 pub async fn run(
     pr: &InFlightPr,
     repo_slug: &str,
-    work_dir: &Path,
+    worktree_path: &Path,
     model: &str,
     budget: f64,
 ) -> Result<CiFixOutput> {
@@ -87,7 +87,7 @@ pub async fn run(
     };
 
     // 2. Clone repo at PR branch.
-    let clone_dir = work_dir.join(format!("ci-fix-{}", pr.number));
+    let clone_dir = worktree_path.join(format!("ci-fix-{}", pr.number));
     let gh_token = std::env::var("GH_TOKEN")
         .or_else(|_| std::env::var("GITHUB_TOKEN"))
         .context("Neither GH_TOKEN nor GITHUB_TOKEN is set")?;
@@ -131,20 +131,76 @@ pub async fn run(
         }
     }
 
-    // 4. Fetch CI logs.
-    let ci_logs = fetch_ci_logs(repo_slug, &pr.branch).await;
-    let ci_logs = if ci_logs.len() > 50_000 {
-        ci_logs[..50_000].to_string()
+    // 4. Handle merge conflicts: fetch and merge main first.
+    if pr.has_merge_conflicts {
+        info!(pr_number = pr.number, "PR has merge conflicts, attempting rebase on main");
+        let _ = tokio::process::Command::new("git")
+            .args(["fetch", "origin", "main"])
+            .current_dir(&clone_dir)
+            .output()
+            .await;
+
+        let merge_output = tokio::process::Command::new("git")
+            .args(["merge", "origin/main", "--no-edit"])
+            .current_dir(&clone_dir)
+            .output()
+            .await;
+
+        match merge_output {
+            Ok(out) if out.status.success() => {
+                info!(pr_number = pr.number, "merged main successfully, no conflicts remain");
+                // Push the merge commit directly — no Claude needed
+                let push_result = commit_and_push(&clone_dir, &pr.branch).await;
+                return Ok(CiFixOutput {
+                    pr_number: pr.number,
+                    fixed: push_result.is_ok(),
+                    cost_usd: 0.0,
+                });
+            }
+            _ => {
+                // Merge has conflicts — let Claude resolve them
+                info!(pr_number = pr.number, "merge conflicts detected, invoking Claude to resolve");
+            }
+        }
+    }
+
+    // 5. Fetch CI logs (for CI failures) or conflict markers (for merge conflicts).
+    let context = if pr.has_merge_conflicts {
+        // Get conflict markers from working tree
+        let output = tokio::process::Command::new("git")
+            .args(["diff"])
+            .current_dir(&clone_dir)
+            .output()
+            .await;
+        match output {
+            Ok(out) => {
+                let diff = String::from_utf8_lossy(&out.stdout).to_string();
+                if diff.len() > 50_000 { diff[..50_000].to_string() } else { diff }
+            }
+            Err(_) => "(could not get conflict diff)".to_string(),
+        }
     } else {
-        ci_logs
+        let ci_logs = fetch_ci_logs(repo_slug, &pr.branch).await;
+        if ci_logs.len() > 50_000 { ci_logs[..50_000].to_string() } else { ci_logs }
     };
 
-    // 5. Invoke Claude with CI fix prompt.
-    let prompt = prompts::ci_fix::CI_FIX_PROMPT
-        .replace("{pr_number}", &pr.number.to_string())
-        .replace("{branch_name}", &pr.branch)
-        .replace("{ci_logs}", &ci_logs)
-        .replace("{pr_title}", &pr.title);
+    // 6. Invoke Claude.
+    let prompt = if pr.has_merge_conflicts {
+        format!(
+            "Pull request #{} (branch: {}) has merge conflicts with main.\n\n\
+             ## Conflict Diff\n\n```\n{}\n```\n\n\
+             ## Instructions\n\n\
+             Resolve the merge conflicts. For each conflicted file, choose the correct resolution \
+             (keep ours, keep theirs, or combine). After resolving, ensure the code compiles and tests pass.",
+            pr.number, pr.branch, context
+        )
+    } else {
+        prompts::ci_fix::CI_FIX_PROMPT
+            .replace("{pr_number}", &pr.number.to_string())
+            .replace("{branch_name}", &pr.branch)
+            .replace("{ci_logs}", &context)
+            .replace("{pr_title}", &pr.title)
+    };
 
     let system_prompt = prompts::system::ci_fix_system_prompt();
     let session_id = generate_session_id();
@@ -278,7 +334,7 @@ async fn commit_and_push(clone_dir: &PathBuf, branch: &str) -> Result<()> {
 
     // git push
     let output = tokio::process::Command::new("git")
-        .args(["push", "origin", branch])
+        .args(["push", "origin", &format!("HEAD:refs/heads/{branch}")])
         .current_dir(clone_dir)
         .output()
         .await

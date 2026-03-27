@@ -57,6 +57,58 @@ pub struct Config {
     /// Cron interval in minutes (used with skip_after to calculate staleness).
     #[arg(long, default_value = "10")]
     pub cron_interval: u64,
+
+    /// Fix PRs with failing CI before looking for new improvements.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub fix_ci: bool,
+
+    /// Rebase PRs with merge conflicts before looking for new improvements.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub fix_conflicts: bool,
+
+    /// Minimum critic score (1-10) to create a PR. Set to 0 to disable critic.
+    #[arg(long, default_value = "6")]
+    pub critic_threshold: u32,
+
+    /// Fall back to documentation improvements when no code improvements found.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub improve_docs: bool,
+
+    /// Minimum critic score for documentation changes (higher bar than code).
+    #[arg(long, default_value = "7")]
+    pub doc_critic_threshold: u32,
+
+    /// Review external PRs (not created by autoanneal).
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    pub review_prs: bool,
+
+    /// Only review PRs matching this filter: "all", "labeled:<label>", or "recent" (updated in last 24h).
+    #[arg(long, default_value = "all")]
+    pub review_filter: String,
+
+    /// If critic score is below this threshold, attempt to fix issues instead of just commenting.
+    #[arg(long, default_value = "7")]
+    pub review_fix_threshold: u32,
+
+    /// Maximum concurrent work items.
+    #[arg(long, default_value = "3")]
+    pub concurrency: usize,
+
+    /// Maximum open autoanneal PRs before skipping new analysis. 0 = unlimited.
+    #[arg(long, default_value = "5")]
+    pub max_open_prs: usize,
+
+    /// Investigate open GitHub issues with this label (comma-separated). Empty = disabled.
+    #[arg(long, default_value = "")]
+    pub investigate_issues: String,
+
+    /// Maximum issues to investigate per run.
+    #[arg(long, default_value = "2")]
+    pub max_issues: usize,
+
+    /// Budget per issue investigation (USD).
+    #[arg(long, default_value = "3.00")]
+    pub issue_budget: f64,
 }
 
 impl Config {
@@ -186,6 +238,21 @@ mod tests {
             min_severity: "minor".to_string(),
             log_level: "info".to_string(),
             output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 7,
+            review_prs: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
+            concurrency: 3,
+            investigate_issues: "".to_string(),
+            max_issues: 2,
+            issue_budget: 3.0,
+            max_open_prs: 5,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -204,6 +271,21 @@ mod tests {
             min_severity: "minor".to_string(),
             log_level: "info".to_string(),
             output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 7,
+            review_prs: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
+            concurrency: 3,
+            investigate_issues: "".to_string(),
+            max_issues: 2,
+            issue_budget: 3.0,
+            max_open_prs: 5,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -222,6 +304,21 @@ mod tests {
             min_severity: "minor".to_string(),
             log_level: "info".to_string(),
             output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 7,
+            review_prs: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
+            concurrency: 3,
+            investigate_issues: "".to_string(),
+            max_issues: 2,
+            issue_budget: 3.0,
+            max_open_prs: 5,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -240,6 +337,21 @@ mod tests {
             min_severity: "moderate".to_string(),
             log_level: "info".to_string(),
             output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 7,
+            review_prs: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
+            concurrency: 3,
+            investigate_issues: "".to_string(),
+            max_issues: 2,
+            issue_budget: 3.0,
+            max_open_prs: 5,
         };
         assert_eq!(config.min_severity(), Severity::Moderate);
     }
@@ -258,6 +370,21 @@ mod tests {
             min_severity: "unknown".to_string(),
             log_level: "info".to_string(),
             output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 7,
+            review_prs: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
+            concurrency: 3,
+            investigate_issues: "".to_string(),
+            max_issues: 2,
+            issue_budget: 3.0,
+            max_open_prs: 5,
         };
         assert_eq!(config.min_severity(), Severity::Minor);
     }

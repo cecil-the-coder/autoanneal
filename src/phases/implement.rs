@@ -1,9 +1,8 @@
 use crate::claude::{self, ClaudeInvocation, ClaudeResponse};
 use crate::guardrails;
 use crate::models::{Category, Improvement, StackInfo, TaskResult, TaskStatus};
-use crate::prompts::fix_build::FIX_BUILD_PROMPT;
 use crate::prompts::implement::IMPLEMENT_PROMPT;
-use crate::prompts::system::{fix_build_system_prompt, implement_system_prompt};
+use crate::prompts::system::implement_system_prompt;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -45,9 +44,6 @@ pub async fn run(
             total_cost_usd: 0.0,
         });
     }
-
-    // Install build toolchain once before parallel execution.
-    install_toolchain(clone_path, stack_info, model).await;
 
     let groups = partition_tasks(improvements);
     info!(
@@ -447,105 +443,7 @@ async fn run_single_task(
                 "diff validation passed"
             );
 
-            // Step 5: Build check.
-            if !stack_info.build_commands.is_empty() {
-                let build_cmd = &stack_info.build_commands[0];
-                info!(task = %improvement.title, command = %build_cmd, "running build check");
-
-                if !run_build_check(working_dir, build_cmd).await? {
-                    // Attempt fix, up to 2 times.
-                    let mut fixed = false;
-                    let mut extra_cost = 0.0;
-                    for fix_attempt in 1..=2 {
-                        info!(
-                            task = %improvement.title,
-                            attempt = fix_attempt,
-                            "build failed, attempting fix"
-                        );
-
-                        let build_errors = get_build_errors(working_dir, build_cmd).await?;
-                        let fix_prompt = FIX_BUILD_PROMPT
-                            .replace("{build_errors}", &build_errors)
-                            .replace("{allowed_files}", &allowed_files);
-
-                        let fix_invocation = ClaudeInvocation {
-                            prompt: fix_prompt,
-                            system_prompt: Some(fix_build_system_prompt()),
-                            model: model.to_string(),
-                            max_budget_usd: 0.50,
-                            max_turns: 50,
-                            effort: "high",
-                            tools: "Read,Glob,Grep,Bash,Edit,Write",
-                            json_schema: None,
-                            working_dir: working_dir.to_path_buf(),
-                            session_id: Some(claude::generate_session_id()),
-                            resume_session_id: None,
-                        };
-
-                        match claude::invoke::<serde_json::Value>(
-                            &fix_invocation,
-                            TASK_TIMEOUT,
-                        )
-                        .await
-                        {
-                            Ok(fix_resp) => {
-                                extra_cost += fix_resp.cost_usd;
-                            }
-                            Err(e) => {
-                                warn!(
-                                    task = %improvement.title,
-                                    attempt = fix_attempt,
-                                    error = %e,
-                                    "fix invocation failed"
-                                );
-                                continue;
-                            }
-                        }
-
-                        if run_build_check(working_dir, build_cmd).await? {
-                            info!(
-                                task = %improvement.title,
-                                attempt = fix_attempt,
-                                "build fix succeeded"
-                            );
-                            fixed = true;
-                            break;
-                        }
-                    }
-
-                    let total_task_cost = task_cost + extra_cost;
-
-                    if !fixed {
-                        warn!(
-                            task = %improvement.title,
-                            "build still failing after 2 fix attempts, discarding changes"
-                        );
-                        guardrails::discard_changes(working_dir)?;
-                        return Ok(TaskResult {
-                            title: improvement.title.clone(),
-                            status: TaskStatus::Failed(
-                                "build failed after 2 fix attempts".to_string(),
-                            ),
-                            cost_usd: total_task_cost,
-                            files_changed: vec![],
-                        });
-                    }
-
-                    // Stage all changes so they appear in the worktree diff.
-                    stage_all(working_dir).await?;
-
-                    return Ok(TaskResult {
-                        title: improvement.title.clone(),
-                        status: TaskStatus::Success,
-                        cost_usd: total_task_cost,
-                        files_changed: diff_report.files_changed,
-                    });
-                } else {
-                    info!(task = %improvement.title, "build check passed");
-                }
-            }
-
-            // Stage all changes (no commit -- changes accumulate in worktree).
+            // Stage all changes (no build check -- CI will verify after push).
             stage_all(working_dir).await?;
 
             Ok(TaskResult {
@@ -670,23 +568,7 @@ async fn merge_and_push(
         return Err(anyhow::anyhow!("git commit failed: {stderr}"));
     }
 
-    info!("committed merged changes");
-
-    // Push.
-    let push_output = tokio::process::Command::new("git")
-        .args(["push", "origin", branch_name, "--force-with-lease"])
-        .current_dir(clone_path)
-        .output()
-        .await
-        .context("failed to run git push")?;
-
-    if !push_output.status.success() {
-        let stderr = String::from_utf8_lossy(&push_output.stderr);
-        warn!(stderr = %stderr, "git push failed");
-        return Err(anyhow::anyhow!("git push failed: {stderr}"));
-    }
-
-    info!(branch = %branch_name, "pushed merged changes to origin");
+    info!(branch = %branch_name, "committed merged changes (push deferred until after review)");
     Ok(())
 }
 
@@ -811,97 +693,3 @@ async fn stage_all(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Run the build command and return true if it succeeds.
-async fn run_build_check(repo_dir: &Path, build_command: &str) -> Result<bool> {
-    let output = tokio::time::timeout(
-        Duration::from_secs(120),
-        tokio::process::Command::new("sh")
-            .args(["-c", build_command])
-            .current_dir(repo_dir)
-            .output(),
-    )
-    .await
-    .context("build command timed out after 2 minutes")?
-    .context("failed to run build command")?;
-
-    Ok(output.status.success())
-}
-
-/// Run the build command and capture stderr for error diagnostics.
-async fn get_build_errors(repo_dir: &Path, build_command: &str) -> Result<String> {
-    let output = tokio::time::timeout(
-        Duration::from_secs(120),
-        tokio::process::Command::new("sh")
-            .args(["-c", build_command])
-            .current_dir(repo_dir)
-            .output(),
-    )
-    .await
-    .context("build command timed out after 2 minutes")?
-    .context("failed to run build command")?;
-
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-
-    // Combine stderr and stdout — some tools print errors to stdout.
-    if stderr.is_empty() {
-        Ok(stdout)
-    } else {
-        Ok(format!("{stderr}\n{stdout}"))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Toolchain installation (runs once before parallel tasks)
-// ---------------------------------------------------------------------------
-
-/// Use Claude to install whatever toolchain the project needs.
-/// Runs once so parallel workers share the installed tools.
-async fn install_toolchain(clone_path: &Path, stack_info: &StackInfo, model: &str) {
-    info!(
-        language = %stack_info.primary_language,
-        "pre-implementation: installing project toolchain via Claude"
-    );
-
-    let prompt = format!(
-        r#"This is a {} project. Verify the build toolchain works and install any missing dependencies.
-
-Build commands: {}
-Test commands: {}
-
-Pre-installed tools: gcc, g++, make, pkg-config, python3, pip, node, npm, go, rustc, cargo. These are already on PATH.
-
-Check if the build command works. If it needs additional dependencies (e.g., npm install, pip install, cargo fetch), run them now. If any tool is missing, install it to ~/.local/bin (which is on PATH).
-
-Do NOT modify any project source files. Only install dependencies and verify the build works."#,
-        stack_info.primary_language,
-        stack_info.build_commands.join(", "),
-        stack_info.test_commands.join(", "),
-    );
-
-    let invocation = ClaudeInvocation {
-        prompt,
-        system_prompt: Some("You are a DevOps agent setting up a build environment. Install the required toolchain and dependencies. Be efficient — install only what's needed.".to_string()),
-        model: model.to_string(),
-        max_budget_usd: 0.50,
-        max_turns: 20,
-        effort: "low",
-        tools: "Bash,Read,Glob",
-        json_schema: None,
-        working_dir: clone_path.to_path_buf(),
-        session_id: None,
-        resume_session_id: None,
-    };
-
-    match claude::invoke::<serde_json::Value>(&invocation, Duration::from_secs(300)).await {
-        Ok(response) => {
-            info!(
-                cost_usd = response.cost_usd,
-                "toolchain installation complete"
-            );
-        }
-        Err(e) => {
-            warn!("toolchain installation failed (non-fatal): {e}");
-        }
-    }
-}
