@@ -7,7 +7,7 @@ const MAX_ATTEMPTS: u32 = 3;
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 
 /// How often to check rate limits (every N gh commands).
-const RATE_CHECK_INTERVAL: u32 = 10;
+const RATE_CHECK_INTERVAL: u64 = 10;
 
 /// Start throttling when remaining requests drop below this.
 const RATE_LIMIT_LOW_THRESHOLD: u64 = 200;
