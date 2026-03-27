@@ -60,12 +60,16 @@ fn format_open_prs(prs: &[OpenPr]) -> String {
     }
     prs.iter()
         .map(|pr| {
+            let files = if pr.files.is_empty() {
+                "(unknown)".to_string()
+            } else {
+                pr.files.join(", ")
+            };
             format!(
-                "- #{}: {} (branch: {}, files: {})",
+                "- #{}: {} (files: {})",
                 pr.number,
                 pr.title,
-                pr.head_ref,
-                pr.files.join(", "),
+                files,
             )
         })
         .collect::<Vec<_>>()

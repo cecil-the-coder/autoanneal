@@ -187,7 +187,7 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
                 "--state",
                 "open",
                 "--json",
-                "number,title,body,mergeable",
+                "number,title,body,mergeable,files",
                 "--limit",
                 "1",
                 "-R",
@@ -249,6 +249,16 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
                             .map(|m| m == "CONFLICTING")
                             .unwrap_or(false);
 
+                        // Extract changed file paths from PR.
+                        let files: Vec<String> = pr["files"]
+                            .as_array()
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|f| f["path"].as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
                         result.push(InFlightPr {
                             number,
                             title,
@@ -257,6 +267,7 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
                             ci_status,
                             has_fixing_label,
                             has_merge_conflicts,
+                            files,
                         });
                     }
                 }

@@ -550,11 +550,13 @@ fn collect_work_items(
     // Merge open PRs with in-flight autoanneal PRs for analysis overlap avoidance.
     let mut merged_open_prs: Vec<OpenPr> = open_prs.to_vec();
     for ifp in in_flight_prs {
+        // Extract file paths from the PR's files field.
+        let files = ifp.files.iter().map(|f| f.clone()).collect();
         merged_open_prs.push(OpenPr {
             number: ifp.number,
             title: ifp.title.clone(),
             head_ref: ifp.branch.clone(),
-            files: vec![],
+            files,
         });
     }
 
