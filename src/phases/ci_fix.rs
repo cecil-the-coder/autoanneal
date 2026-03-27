@@ -22,21 +22,28 @@ struct FixingLabelGuard {
 
 impl Drop for FixingLabelGuard {
     fn drop(&mut self) {
-        info!(
-            pr_number = self.pr_number,
-            "removing autoanneal:fixing label"
-        );
-        let _ = std::process::Command::new("gh")
-            .args([
-                "pr",
-                "edit",
-                &self.pr_number.to_string(),
-                "--remove-label",
-                "autoanneal:fixing",
-                "-R",
-                &self.repo_slug,
-            ])
-            .output();
+        let pr_number = self.pr_number;
+        let repo_slug = self.repo_slug.clone();
+        // Spawn a separate thread to avoid blocking the async runtime.
+        // The Drop trait cannot be async, so we use std::thread::spawn for
+        // fire-and-forget cleanup of the label.
+        std::thread::spawn(move || {
+            info!(
+                pr_number = pr_number,
+                "removing autoanneal:fixing label"
+            );
+            let _ = std::process::Command::new("gh")
+                .args([
+                    "pr",
+                    "edit",
+                    &pr_number.to_string(),
+                    "--remove-label",
+                    "autoanneal:fixing",
+                    "-R",
+                    &repo_slug,
+                ])
+                .output();
+        });
     }
 }
 

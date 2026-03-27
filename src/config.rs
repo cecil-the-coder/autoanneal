@@ -1,6 +1,10 @@
 use crate::models::Severity;
 use clap::Parser;
 
+/// Maximum valid value for critic threshold configurations.
+/// The critic system scores improvements on a scale of 0-10.
+const MAX_CRITIC_SCORE: u32 = 10;
+
 #[derive(Parser, Debug)]
 #[command(name = "autoanneal", about = "Autonomous code improvement agent")]
 pub struct Config {
@@ -156,6 +160,24 @@ impl Config {
             "major" => Severity::Major,
             _ => Severity::Minor,
         }
+    }
+
+    /// Validate configuration values.
+    /// Returns an error if any configuration value is out of the valid range.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.critic_threshold > MAX_CRITIC_SCORE {
+            return Err(format!(
+                "critic_threshold must be 0-{}, got {}",
+                MAX_CRITIC_SCORE, self.critic_threshold
+            ));
+        }
+        if self.doc_critic_threshold > MAX_CRITIC_SCORE {
+            return Err(format!(
+                "doc_critic_threshold must be 0-{}, got {}",
+                MAX_CRITIC_SCORE, self.doc_critic_threshold
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -429,5 +451,108 @@ mod tests {
             max_open_prs: 5,
         };
         assert_eq!(config.min_severity(), Severity::Minor);
+    }
+
+    #[test]
+    fn test_validate_critic_threshold_valid() {
+        let config = Config {
+            repo: "owner/repo".to_string(),
+            max_budget: 5.0,
+            timeout: "30m".to_string(),
+            model: "sonnet".to_string(),
+            max_tasks: 5,
+            dry_run: false,
+            keep_on_failure: false,
+            setup_command: None,
+            min_severity: "minor".to_string(),
+            log_level: "info".to_string(),
+            output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 0, // minimum valid value
+            improve_docs: true,
+            doc_critic_threshold: 10, // maximum valid value
+            review_prs: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
+            concurrency: 3,
+            investigate_issues: "".to_string(),
+            max_issues: 2,
+            issue_budget: 3.0,
+            max_open_prs: 5,
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_critic_threshold_too_high() {
+        let config = Config {
+            repo: "owner/repo".to_string(),
+            max_budget: 5.0,
+            timeout: "30m".to_string(),
+            model: "sonnet".to_string(),
+            max_tasks: 5,
+            dry_run: false,
+            keep_on_failure: false,
+            setup_command: None,
+            min_severity: "minor".to_string(),
+            log_level: "info".to_string(),
+            output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 100, // invalid
+            improve_docs: true,
+            doc_critic_threshold: 7,
+            review_prs: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
+            concurrency: 3,
+            investigate_issues: "".to_string(),
+            max_issues: 2,
+            issue_budget: 3.0,
+            max_open_prs: 5,
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("critic_threshold"));
+        assert!(err.contains("100"));
+    }
+
+    #[test]
+    fn test_validate_doc_critic_threshold_too_high() {
+        let config = Config {
+            repo: "owner/repo".to_string(),
+            max_budget: 5.0,
+            timeout: "30m".to_string(),
+            model: "sonnet".to_string(),
+            max_tasks: 5,
+            dry_run: false,
+            keep_on_failure: false,
+            setup_command: None,
+            min_severity: "minor".to_string(),
+            log_level: "info".to_string(),
+            output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            improve_docs: true,
+            doc_critic_threshold: 11, // invalid
+            review_prs: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
+            concurrency: 3,
+            investigate_issues: "".to_string(),
+            max_issues: 2,
+            issue_budget: 3.0,
+            max_open_prs: 5,
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("doc_critic_threshold"));
+        assert!(err.contains("11"));
     }
 }

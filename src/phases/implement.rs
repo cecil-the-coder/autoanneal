@@ -304,7 +304,10 @@ async fn run_group_in_worktree(
             Ok(result) => {
                 let cost = result.cost_usd;
                 // Track cost in the shared atomic counter (stored as microdollars).
-                let microdollars = (cost * 1_000_000.0) as u64;
+                // Use round() for accurate conversion and saturating arithmetic to prevent overflow.
+                let microdollars = (cost * 1_000_000.0)
+                    .round()
+                    .min(u64::MAX as f64) as u64;
                 shared_cost.fetch_add(microdollars, Ordering::Relaxed);
                 group_cost += cost;
 
@@ -601,7 +604,7 @@ async fn create_worktree(repo_dir: &Path, name: &str) -> Result<PathBuf> {
             "worktree",
             "add",
             "--detach",
-            worktree_dir.to_str().unwrap(),
+            &worktree_dir.to_string_lossy(),
             &head_ref,
         ])
         .current_dir(repo_dir)
@@ -625,7 +628,7 @@ async fn remove_worktree(repo_dir: &Path, worktree_path: &Path) -> Result<()> {
             "worktree",
             "remove",
             "--force",
-            worktree_path.to_str().unwrap(),
+            &worktree_path.to_string_lossy(),
         ])
         .current_dir(repo_dir)
         .output()
