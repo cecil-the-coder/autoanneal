@@ -469,15 +469,19 @@ async fn invoke_once<T: DeserializeOwned>(
 }
 
 /// Truncate a string to at most `max_len` characters, appending "..." if truncated.
+/// Properly handles multi-byte UTF-8 characters by using char boundaries.
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
+    } else if max_len <= 3 {
+        "...".chars().take(max_len).collect()
     } else {
+        // Reserve 3 chars for "...", take (max_len - 3) chars from string
+        let chars_to_take = max_len - 3;
         let boundary = s.char_indices()
+            .nth(chars_to_take)
             .map(|(i, _)| i)
-            .take_while(|&i| i <= max_len)
-            .last()
-            .unwrap_or(0);
+            .unwrap_or(s.len());
         format!("{}...", &s[..boundary])
     }
 }
@@ -626,7 +630,17 @@ mod tests {
 
     #[test]
     fn test_truncate() {
+        // No truncation needed
         assert_eq!(truncate("hello", 10), "hello");
-        assert_eq!(truncate("hello world", 5), "hello...");
+        // Truncation with room for "..."
+        assert_eq!(truncate("hello world", 5), "he...");
+        // Edge case: max_len <= 3
+        assert_eq!(truncate("hello world", 3), "...");
+        assert_eq!(truncate("hello world", 2), "..");
+        assert_eq!(truncate("hello world", 1), ".");
+        assert_eq!(truncate("hello world", 0), "");
+        // Multi-byte UTF-8 characters
+        assert_eq!(truncate("héllo", 5), "héllo"); // 5 chars, no truncation
+        assert_eq!(truncate("héllo world", 5), "hé...");
     }
 }

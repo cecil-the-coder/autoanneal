@@ -276,7 +276,9 @@ async fn run_pipeline(
     let has_work = has_maintenance || has_reviews || has_issues;
 
     if config.skip_after > 0 && !has_work {
-        let threshold_secs = config.skip_after as u64 * config.cron_interval * 60;
+        let threshold_secs = (config.skip_after as u64)
+            .saturating_mul(config.cron_interval)
+            .saturating_mul(60);
         if preflight_output.newest_commit_age_secs > threshold_secs {
             info!(
                 age_secs = preflight_output.newest_commit_age_secs,
@@ -988,7 +990,7 @@ async fn run_analysis_pipeline(
     if threshold > 0 && budget > 0.0 {
         let critic_budget = budget.min(1.50);
         match tokio::time::timeout(
-            Duration::from_secs(300),
+            Duration::from_secs(900),
             phases::critic::run(
                 clone_path,
                 &repo_info.default_branch,

@@ -238,10 +238,24 @@ async fn get_diff(clone_path: &Path, default_branch: &str) -> Result<String> {
         .await
         .context("failed to run git diff for critic review")?;
 
-    let mut diff = String::from_utf8_lossy(&diff_output.stdout).to_string();
-    if diff.len() > MAX_DIFF_CHARS {
-        diff.truncate(MAX_DIFF_CHARS);
-        diff.push_str("\n\n... (diff truncated) ...");
+    let diff = String::from_utf8_lossy(&diff_output.stdout).to_string();
+    Ok(truncate_to_char_boundary(&diff, MAX_DIFF_CHARS))
+}
+
+/// Safely truncates a string at a UTF-8 character boundary near the given byte limit.
+/// This prevents panics when truncating strings that contain multi-byte characters.
+fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        s.to_string()
+    } else {
+        let truncate_at = s
+            .char_indices()
+            .take_while(|(idx, _)| *idx < max_bytes)
+            .last()
+            .map(|(idx, c)| idx + c.len_utf8())
+            .unwrap_or(0);
+        let mut truncated = s[..truncate_at].to_string();
+        truncated.push_str("\n\n... (diff truncated) ...");
+        truncated
     }
-    Ok(diff)
 }
