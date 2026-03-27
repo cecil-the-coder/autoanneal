@@ -449,35 +449,41 @@ async fn check_newest_commit_age_api(repo_slug: &str) -> u64 {
         }
     }
 
-    // Also check autoanneal/ branches for recent commits
-    let branches_result = gh_command(
-        dot,
-        &[
-            "api",
-            &format!("repos/{repo_slug}/branches?per_page=100"),
-            "--jq",
-            r#"[.[] | select(.name | startswith("autoanneal/"))] | .[].commit.sha"#,
-        ],
-    )
-    .await;
+    // Use a single GraphQL query to fetch all branch tip-commit dates at once,
+    // eliminating the previous N+1 pattern (list branches + per-SHA commit lookup).
+    let mut slug_parts = repo_slug.splitn(2, '/');
+    let owner = slug_parts.next().unwrap_or("");
+    let repo_name = slug_parts.next().unwrap_or("");
 
-    if let Ok(raw) = branches_result {
-        for sha in raw.lines().filter(|s| !s.is_empty()) {
-            let commit_result = gh_command(
-                dot,
-                &[
-                    "api",
-                    &format!("repos/{repo_slug}/commits/{sha}"),
-                    "--jq",
-                    ".commit.committer.date",
-                ],
-            )
-            .await;
-            if let Ok(date_raw) = commit_result {
-                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date_raw.trim()) {
-                    let dt_utc = dt.with_timezone(&chrono::Utc);
-                    if newest_date.is_none() || dt_utc > newest_date.unwrap() {
-                        newest_date = Some(dt_utc);
+    if !owner.is_empty() && !repo_name.is_empty() {
+        let query = format!(
+            "{{ repository(owner: \"{owner}\", name: \"{repo_name}\") {{ \
+               refs(refPrefix: \"refs/heads/\", first: 100) {{ \
+                 nodes {{ name target {{ ... on Commit {{ committedDate }} }} }} \
+               }} \
+             }} }}"
+        );
+        if let Ok(raw) = gh_command(
+            dot,
+            &["api", "graphql", "-f", &format!("query={query}")],
+        )
+        .await
+        {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(nodes) = v["data"]["repository"]["refs"]["nodes"].as_array() {
+                    for node in nodes {
+                        let name = node["name"].as_str().unwrap_or("");
+                        if !name.starts_with("autoanneal/") {
+                            continue;
+                        }
+                        if let Some(date_str) = node["target"]["committedDate"].as_str() {
+                            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date_str) {
+                                let dt_utc = dt.with_timezone(&chrono::Utc);
+                                if newest_date.is_none() || dt_utc > newest_date.unwrap() {
+                                    newest_date = Some(dt_utc);
+                                }
+                            }
+                        }
                     }
                 }
             }

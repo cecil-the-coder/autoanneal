@@ -178,9 +178,9 @@ fn parse_duration(s: &str) -> Option<std::time::Duration> {
             current_num.clear();
 
             match c {
-                'h' | 'H' => total_secs += n * 3600,
-                'm' | 'M' => total_secs += n * 60,
-                's' | 'S' => total_secs += n,
+                'h' | 'H' => total_secs = total_secs.checked_add(n.checked_mul(3600)?)?,
+                'm' | 'M' => total_secs = total_secs.checked_add(n.checked_mul(60)?)?,
+                's' | 'S' => total_secs = total_secs.checked_add(n)?,
                 _ => return None,
             }
         }
@@ -189,7 +189,7 @@ fn parse_duration(s: &str) -> Option<std::time::Duration> {
     // Handle bare number (no suffix) — treat as seconds
     if !current_num.is_empty() {
         let n: u64 = current_num.parse().ok()?;
-        total_secs += n;
+        total_secs = total_secs.checked_add(n)?;
     }
 
     if total_secs == 0 {
@@ -231,6 +231,21 @@ mod tests {
     #[test]
     fn test_parse_duration_empty() {
         assert_eq!(parse_duration(""), None);
+    }
+
+    #[test]
+    fn test_parse_duration_overflow_hours() {
+        assert_eq!(parse_duration("9999999999999999h"), None);
+    }
+
+    #[test]
+    fn test_parse_duration_overflow_minutes() {
+        assert_eq!(parse_duration("9999999999999999m"), None);
+    }
+
+    #[test]
+    fn test_parse_duration_overflow_accumulation() {
+        assert_eq!(parse_duration("9999999999999h9999999999999m"), None);
     }
 
     #[test]

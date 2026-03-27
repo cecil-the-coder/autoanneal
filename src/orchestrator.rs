@@ -620,7 +620,7 @@ fn collect_work_items(
             },
             budget_cap: analysis_budget,
         });
-    } else if config.dry_run && budget_remaining > 0.0 {
+    } else if config.dry_run && budget_remaining > 0.0 && !skip_analysis {
         // For dry-run, still run analysis but it will just print and return.
         let analysis_budget = budget_remaining;
         // Note: we don't reserve budget here; actual costs are subtracted

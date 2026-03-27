@@ -5,8 +5,9 @@ use std::path::PathBuf;
 /// Call [`CleanupGuard::disarm`] on successful completion to prevent cleanup.
 /// If `keep_on_failure` is set, cleanup is also skipped.
 ///
-/// The cleanup is performed using `spawn_blocking` to avoid blocking the async runtime.
-/// If no tokio runtime is available, cleanup falls back to blocking execution.
+/// The cleanup is performed using blocking `std::process::Command` calls directly.
+/// This avoids panics that `tokio::task::block_in_place` would cause in a
+/// `current_thread` tokio runtime.
 pub struct CleanupGuard {
     pub repo_dir: PathBuf,
     pub branch_name: Option<String>,
@@ -36,7 +37,7 @@ impl CleanupGuard {
     }
 
     /// Best-effort cleanup of GitHub resources. Never panics.
-    /// Uses `spawn_blocking` to avoid blocking the async runtime when available.
+    /// Runs blocking `std::process::Command` calls directly.
     fn cleanup(&self) {
         // Clone values needed for the closure since it may outlive self
         let pr_number = self.pr_number;
@@ -147,15 +148,11 @@ impl CleanupGuard {
             }
         };
 
-        // Try to use spawn_blocking if we're in a tokio context to avoid blocking the async runtime
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            // Use block_in_place to run blocking code without blocking the async runtime
-            // This is safe to call from within a tokio runtime and allows the cleanup to complete
-            tokio::task::block_in_place(cleanup_fn);
-        } else {
-            // No tokio runtime available, run blocking (e.g., in tests or non-async context)
-            cleanup_fn();
-        }
+        // The closure uses blocking std::process::Command calls, so we run it directly.
+        // Previously tokio::task::block_in_place was used here, but it panics inside
+        // a current_thread runtime (e.g. #[tokio::test(flavor = "current_thread")]).
+        // Since the closure is already blocking, block_in_place added no value.
+        cleanup_fn();
     }
 }
 
