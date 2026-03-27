@@ -599,30 +599,11 @@ fn collect_work_items(
             "skipping analysis — too many open autoanneal PRs"
         );
     }
-    if budget_remaining > 0.0 && !config.dry_run && !skip_analysis {
+    // Run analysis when there is budget and either we're not skipping (normal
+    // mode) or we're in dry-run mode (dry-run doesn't create PRs, so the
+    // open-PR cap doesn't apply).
+    if budget_remaining > 0.0 && (!skip_analysis || config.dry_run) {
         let analysis_budget = budget_remaining; // analysis gets remaining budget
-        // Note: we don't reserve budget here; actual costs are subtracted
-        // when outcomes are processed to avoid double-counting.
-        items.push(WorkItem {
-            kind: WorkItemKind::Analysis {
-                clone_path: clone_path.clone(),
-                repo_info: repo_info.clone(),
-                arch_summary: arch_summary.to_string(),
-                stack_info: stack_info.clone(),
-                open_prs: merged_open_prs,
-                model: config.model.clone(),
-                max_tasks: config.max_tasks,
-                min_severity: *min_severity,
-                improve_docs: config.improve_docs,
-                dry_run: config.dry_run,
-                critic_threshold: config.critic_threshold,
-                doc_critic_threshold: config.doc_critic_threshold,
-            },
-            budget_cap: analysis_budget,
-        });
-    } else if config.dry_run && budget_remaining > 0.0 {
-        // For dry-run, still run analysis but it will just print and return.
-        let analysis_budget = budget_remaining;
         // Note: we don't reserve budget here; actual costs are subtracted
         // when outcomes are processed to avoid double-counting.
         items.push(WorkItem {
