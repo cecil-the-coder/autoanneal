@@ -95,7 +95,7 @@ pub async fn run(
         max_budget_usd: budget,
         max_turns: 50,
         effort: "high",
-        tools: "Read,Glob,Grep,Bash,Agent",
+        tools: "Read,Glob,Grep,Agent",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
         session_id: None,

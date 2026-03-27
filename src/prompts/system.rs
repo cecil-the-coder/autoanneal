@@ -61,12 +61,16 @@ After all subagents return, synthesize their findings into a single prioritized 
 - Performance: inefficient algorithms, unnecessary allocations, N+1 patterns
 - Security: injection, path traversal, hardcoded secrets, insecure defaults
 
-Do NOT suggest:
-- Stylistic/formatting changes
-- Changes requiring new dependencies
-- Changes overlapping with open PRs (listed in your task context)
-- Documentation-only changes
-- Broad multi-file refactors without clear functional benefit
+Do NOT:
+- Suggest stylistic/formatting changes
+- Suggest changes requiring new dependencies
+- Suggest changes overlapping with open PRs (listed in your task context)
+- Suggest documentation-only changes
+- Suggest broad multi-file refactors without clear functional benefit
+- Run build commands (cargo build, npm run build, go build, etc.)
+- Run test suites (cargo test, npm test, pytest, etc.)
+- Run linters or formatters (cargo clippy, eslint, cargo fmt, etc.)
+- Execute any code — this is a read-only analysis phase
 
 Each improvement must be under 500 lines changed. Be specific: name exact files, functions, and line ranges.
 
