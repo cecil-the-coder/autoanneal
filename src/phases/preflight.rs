@@ -143,31 +143,40 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
     let dot = Path::new(".");
     let mut result = Vec::new();
 
-    // List remote branches matching autoanneal/*.
+    // List all remote branches (paginate first, then filter in Rust to avoid
+    // missing branches that may be split across pages when using --jq with --paginate).
     let branches_raw = match gh_command(
         dot,
         &[
             "api",
             &format!("repos/{repo_slug}/branches"),
             "--paginate",
-            "--jq",
-            r#".[].name | select(startswith("autoanneal/"))"#,
         ],
     )
     .await
     {
         Ok(raw) => raw,
         Err(e) => {
-            warn!(error = %e, "failed to list autoanneal branches (non-fatal)");
+            warn!(error = %e, "failed to list branches (non-fatal)");
             return result;
         }
     };
 
-    let branches: Vec<&str> = branches_raw
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .collect();
+    // Parse the JSON and filter for autoanneal/ branches in Rust.
+    let branches: Vec<String> = match serde_json::from_str::<Vec<serde_json::Value>>(&branches_raw)
+    {
+        Ok(all_branches) => all_branches
+            .into_iter()
+            .filter_map(|b| b["name"].as_str().map(|s| s.to_string()))
+            .filter(|name| name.starts_with("autoanneal/"))
+            .collect(),
+        Err(e) => {
+            warn!(error = %e, "failed to parse branches JSON (non-fatal)");
+            return result;
+        }
+    };
+
+    let branches: Vec<&str> = branches.iter().map(|s| s.as_str()).collect();
 
     if branches.is_empty() {
         return result;

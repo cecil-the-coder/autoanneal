@@ -1,6 +1,6 @@
 use crate::models::DiffReport;
 use std::path::Path;
-use std::process::Command;
+use tokio::process::Command;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -21,7 +21,7 @@ pub enum GuardrailViolation {
 /// 1. Total lines changed (added + removed) does not exceed `max_lines`.
 /// 2. Extra files (not in `allowed_files`) do not exceed `max(2, allowed_files.len() / 5)`.
 /// 3. If `!allow_deletions`, no files have been deleted.
-pub fn validate_diff(
+pub async fn validate_diff(
     repo_dir: &Path,
     allowed_files: &[String],
     max_lines: usize,
@@ -32,6 +32,7 @@ pub fn validate_diff(
         .args(["diff", "--numstat", "HEAD"])
         .current_dir(repo_dir)
         .output()
+        .await
         .map_err(|e| GuardrailViolation::IoError(format!("git diff --numstat: {e}")))?;
 
     if !numstat_output.status.success() {
@@ -108,6 +109,7 @@ pub fn validate_diff(
             .args(["diff", "--name-status", "HEAD"])
             .current_dir(repo_dir)
             .output()
+            .await
             .map_err(|e| GuardrailViolation::IoError(format!("git diff --name-status: {e}")))?;
 
         if !status_output.status.success() {
@@ -141,11 +143,12 @@ pub fn validate_diff(
 }
 
 /// Discard all working-tree changes by running `git checkout .` and `git clean -fd`.
-pub fn discard_changes(repo_dir: &Path) -> anyhow::Result<()> {
+pub async fn discard_changes(repo_dir: &Path) -> anyhow::Result<()> {
     let checkout = Command::new("git")
         .args(["checkout", "."])
         .current_dir(repo_dir)
-        .output()?;
+        .output()
+        .await?;
 
     if !checkout.status.success() {
         let stderr = String::from_utf8_lossy(&checkout.stderr);
@@ -155,7 +158,8 @@ pub fn discard_changes(repo_dir: &Path) -> anyhow::Result<()> {
     let clean = Command::new("git")
         .args(["clean", "-fd"])
         .current_dir(repo_dir)
-        .output()?;
+        .output()
+        .await?;
 
     if !clean.status.success() {
         let stderr = String::from_utf8_lossy(&clean.stderr);
