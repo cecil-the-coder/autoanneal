@@ -276,7 +276,9 @@ async fn run_pipeline(
     let has_work = has_maintenance || has_reviews || has_issues;
 
     if config.skip_after > 0 && !has_work {
-        let threshold_secs = config.skip_after as u64 * config.cron_interval * 60;
+        let threshold_secs = (config.skip_after as u64)
+            .saturating_mul(config.cron_interval)
+            .saturating_mul(60);
         if preflight_output.newest_commit_age_secs > threshold_secs {
             info!(
                 age_secs = preflight_output.newest_commit_age_secs,
@@ -599,30 +601,8 @@ fn collect_work_items(
             "skipping analysis — too many open autoanneal PRs"
         );
     }
-    if budget_remaining > 0.0 && !config.dry_run && !skip_analysis {
+    if budget_remaining > 0.0 && !skip_analysis {
         let analysis_budget = budget_remaining; // analysis gets remaining budget
-        // Note: we don't reserve budget here; actual costs are subtracted
-        // when outcomes are processed to avoid double-counting.
-        items.push(WorkItem {
-            kind: WorkItemKind::Analysis {
-                clone_path: clone_path.clone(),
-                repo_info: repo_info.clone(),
-                arch_summary: arch_summary.to_string(),
-                stack_info: stack_info.clone(),
-                open_prs: merged_open_prs,
-                model: config.model.clone(),
-                max_tasks: config.max_tasks,
-                min_severity: *min_severity,
-                improve_docs: config.improve_docs,
-                dry_run: config.dry_run,
-                critic_threshold: config.critic_threshold,
-                doc_critic_threshold: config.doc_critic_threshold,
-            },
-            budget_cap: analysis_budget,
-        });
-    } else if config.dry_run && budget_remaining > 0.0 {
-        // For dry-run, still run analysis but it will just print and return.
-        let analysis_budget = budget_remaining;
         // Note: we don't reserve budget here; actual costs are subtracted
         // when outcomes are processed to avoid double-counting.
         items.push(WorkItem {
