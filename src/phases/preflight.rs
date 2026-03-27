@@ -1,12 +1,25 @@
-use crate::models::{InFlightPr, RepoInfo};
+use crate::models::{CiStatus, InFlightPr, RepoInfo};
 use crate::retry::gh_command;
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 use tracing::{info, warn};
 
+#[allow(dead_code)]
 pub struct PreflightOutput {
     pub repo_info: RepoInfo,
     pub in_flight_prs: Vec<InFlightPr>,
+    pub head_sha: String,
+    /// Number of autoanneal runs since the last commit on the default branch.
+    pub analysis_runs_since_last_commit: usize,
+}
+
+impl PreflightOutput {
+    pub fn prs_needing_fix(&self) -> Vec<&InFlightPr> {
+        self.in_flight_prs
+            .iter()
+            .filter(|pr| pr.ci_status == CiStatus::Failing && !pr.has_fixing_label)
+            .collect()
+    }
 }
 
 /// Validate environment and repo, return repo metadata plus in-flight PR info.
@@ -67,6 +80,9 @@ pub async fn run(repo_slug: &str) -> Result<PreflightOutput> {
     // 5. Detect in-flight autoanneal branches and their associated PRs.
     let in_flight_prs = detect_in_flight_prs(repo_slug).await;
 
+    // 6. Get HEAD SHA.
+    let head_sha = get_head_sha(repo_slug, &default_branch).await;
+
     info!(
         in_flight = in_flight_prs.len(),
         "Preflight passed: {}/{}, default branch: {}",
@@ -78,6 +94,8 @@ pub async fn run(repo_slug: &str) -> Result<PreflightOutput> {
     Ok(PreflightOutput {
         repo_info: info,
         in_flight_prs,
+        head_sha,
+        analysis_runs_since_last_commit: 0, // computed after clone in orchestrator
     })
 }
 
@@ -150,11 +168,50 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
                     let title = pr["title"].as_str().unwrap_or("").to_string();
                     let body = pr["body"].as_str().unwrap_or("").to_string();
                     if number > 0 {
+                        // Check CI status
+                        let ci_status = check_ci_status(repo_slug, number).await;
+
+                        // Check for autoanneal:fixing label and stale detection
+                        let mut has_fixing_label =
+                            check_fixing_label(repo_slug, number).await;
+
+                        // If label present but latest commit >30 min old, remove stale label
+                        if has_fixing_label {
+                            if is_stale_fixing(repo_slug, branch).await {
+                                info!(
+                                    pr_number = number,
+                                    "removing stale autoanneal:fixing label"
+                                );
+                                let _ = gh_command(
+                                    dot,
+                                    &[
+                                        "pr",
+                                        "edit",
+                                        &number.to_string(),
+                                        "--remove-label",
+                                        "autoanneal:fixing",
+                                        "-R",
+                                        repo_slug,
+                                    ],
+                                )
+                                .await;
+                                has_fixing_label = false;
+                            }
+                        }
+
+                        let ci_status = if has_fixing_label {
+                            CiStatus::Fixing
+                        } else {
+                            ci_status
+                        };
+
                         result.push(InFlightPr {
                             number,
                             title,
                             body,
                             branch: branch.to_string(),
+                            ci_status,
+                            has_fixing_label,
                         });
                     }
                 }
@@ -167,6 +224,175 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
 
     info!(count = result.len(), "found in-flight autoanneal PRs");
     result
+}
+
+/// Check CI status for a PR by inspecting check runs.
+async fn check_ci_status(repo_slug: &str, pr_number: u64) -> CiStatus {
+    let dot = Path::new(".");
+    match gh_command(
+        dot,
+        &[
+            "pr",
+            "checks",
+            &pr_number.to_string(),
+            "--json",
+            "name,state,conclusion",
+            "-R",
+            repo_slug,
+        ],
+    )
+    .await
+    {
+        Ok(raw) => {
+            let checks: Vec<serde_json::Value> = match serde_json::from_str(&raw) {
+                Ok(v) => v,
+                Err(_) => return CiStatus::Pending,
+            };
+            if checks.is_empty() {
+                return CiStatus::Pending;
+            }
+            let any_failing = checks.iter().any(|c| {
+                let conclusion = c["conclusion"].as_str().unwrap_or("");
+                conclusion == "FAILURE" || conclusion == "failure"
+            });
+            let all_complete = checks.iter().all(|c| {
+                let state = c["state"].as_str().unwrap_or("");
+                state == "COMPLETED" || state == "completed"
+            });
+            if any_failing {
+                CiStatus::Failing
+            } else if all_complete {
+                CiStatus::Passing
+            } else {
+                CiStatus::Pending
+            }
+        }
+        Err(e) => {
+            warn!(pr_number, error = %e, "failed to check CI status (non-fatal)");
+            CiStatus::Pending
+        }
+    }
+}
+
+/// Check if a PR has the autoanneal:fixing label.
+async fn check_fixing_label(repo_slug: &str, pr_number: u64) -> bool {
+    let dot = Path::new(".");
+    match gh_command(
+        dot,
+        &[
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "labels",
+            "-R",
+            repo_slug,
+        ],
+    )
+    .await
+    {
+        Ok(raw) => {
+            let v: serde_json::Value = match serde_json::from_str(&raw) {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
+            if let Some(labels) = v["labels"].as_array() {
+                labels
+                    .iter()
+                    .any(|l| l["name"].as_str() == Some("autoanneal:fixing"))
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    }
+}
+
+/// Check if the fixing label is stale (latest commit >30 min old).
+async fn is_stale_fixing(repo_slug: &str, branch: &str) -> bool {
+    let dot = Path::new(".");
+    match gh_command(
+        dot,
+        &[
+            "api",
+            &format!("repos/{repo_slug}/commits?sha={branch}&per_page=1"),
+            "--jq",
+            ".[0].commit.committer.date",
+        ],
+    )
+    .await
+    {
+        Ok(raw) => {
+            let date_str = raw.trim();
+            // Parse ISO 8601 date
+            if let Ok(commit_time) = chrono::DateTime::parse_from_rfc3339(date_str) {
+                let age = chrono::Utc::now().signed_duration_since(commit_time);
+                age.num_minutes() > 30
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    }
+}
+
+/// Get the HEAD SHA of the default branch.
+async fn get_head_sha(repo_slug: &str, default_branch: &str) -> String {
+    let dot = Path::new(".");
+    match gh_command(
+        dot,
+        &[
+            "api",
+            &format!("repos/{repo_slug}/git/ref/heads/{default_branch}"),
+            "--jq",
+            ".object.sha",
+        ],
+    )
+    .await
+    {
+        Ok(raw) => raw.trim().to_string(),
+        Err(e) => {
+            warn!(error = %e, "failed to get HEAD sha (non-fatal)");
+            String::new()
+        }
+    }
+}
+
+/// Check the most recent commit across ALL branches (including autoanneal/ branches).
+/// Returns the age in seconds of the newest commit found.
+/// This runs after clone so it has access to the git repo.
+pub async fn newest_commit_age_secs(clone_path: &std::path::Path) -> u64 {
+    // Get the most recent commit timestamp across all remote branches
+    let output = tokio::process::Command::new("git")
+        .args([
+            "log",
+            "--all",
+            "--remotes",
+            "-1",
+            "--format=%ct", // unix timestamp
+        ])
+        .current_dir(clone_path)
+        .output()
+        .await;
+
+    let timestamp: u64 = match output {
+        Ok(out) if out.status.success() => {
+            let s = String::from_utf8_lossy(&out.stdout);
+            s.trim().parse().unwrap_or(0)
+        }
+        _ => return 0, // can't determine, don't skip
+    };
+
+    if timestamp == 0 {
+        return 0;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    now.saturating_sub(timestamp)
 }
 
 /// Check that required environment variables are set and non-empty.

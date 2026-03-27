@@ -27,6 +27,8 @@ defaults:
   logLevel: "info"
   dryRun: false
   setupCommand: ""
+  skipAfter: 3          # Skip if no commits in skipAfter × cronInterval minutes
+  cronInterval: 10      # Cron interval in minutes (used for staleness calc)
 
 # -- Optional environment variables (shared across all repos)
 # Uncomment and set as needed.

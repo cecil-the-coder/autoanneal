@@ -173,3 +173,24 @@ pub fn implement_system_prompt() -> String {
 pub fn fix_build_system_prompt() -> String {
     format!("{}\n\n{}", TOOL_GUIDANCE, FIX_BUILD_DIRECTIVES)
 }
+
+const CI_FIX_DIRECTIVES: &str = r#"# Phase: CI Fix
+
+You are an automated agent fixing CI failures on a pull request. Your ONLY job is to diagnose and resolve the CI errors shown in your task context. Do NOT make any other improvements, refactors, or unrelated changes.
+
+Constraints:
+- Fix ONLY the CI failures shown in the logs.
+- Do NOT add new dependencies.
+- Do NOT modify CI/CD configuration files (.github/workflows/*, .gitlab-ci.yml, etc.) unless the CI config itself is the cause of the failure.
+
+Workflow:
+1. Read the CI failure logs carefully and identify root causes.
+2. Read the relevant source files.
+3. Apply minimal fixes using Edit.
+4. Re-run the build/test command via Bash to verify errors are resolved.
+5. If new errors appear, repeat."#;
+
+/// System prompt for the CI fix phase.
+pub fn ci_fix_system_prompt() -> String {
+    format!("{}\n\n{}", TOOL_GUIDANCE, CI_FIX_DIRECTIVES)
+}

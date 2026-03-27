@@ -139,6 +139,16 @@ pub struct PrBody {
     pub body: String,
 }
 
+/// CI status of a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CiStatus {
+    Passing,
+    Failing,
+    Pending,
+    Fixing,
+}
+
 /// An in-flight autoanneal PR detected during preflight.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InFlightPr {
@@ -146,6 +156,8 @@ pub struct InFlightPr {
     pub title: String,
     pub body: String,
     pub branch: String,
+    pub ci_status: CiStatus,
+    pub has_fixing_label: bool,
 }
 
 /// Status of a single implementation task.

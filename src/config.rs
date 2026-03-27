@@ -46,6 +46,17 @@ pub struct Config {
     /// Output format (text or json)
     #[arg(long, default_value = "text")]
     pub output: String,
+
+    /// Skip analysis if no commits anywhere (including autoanneal/ branches)
+    /// are newer than this many multiples of the cron interval.
+    /// E.g., with a 10m cron and skip_after=3, skip if nothing changed in 30m.
+    /// Set to 0 to disable skip logic.
+    #[arg(long, default_value = "3")]
+    pub skip_after: usize,
+
+    /// Cron interval in minutes (used with skip_after to calculate staleness).
+    #[arg(long, default_value = "10")]
+    pub cron_interval: u64,
 }
 
 impl Config {

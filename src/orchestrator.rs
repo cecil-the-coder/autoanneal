@@ -144,6 +144,62 @@ async fn run_pipeline(
         }
     };
 
+    // ─── CI Fix Phase ──────────────────────────────────────────────────
+    {
+        let prs_to_fix = preflight_output.prs_needing_fix();
+        if !prs_to_fix.is_empty() {
+            info!(count = prs_to_fix.len(), "starting CI fix phase");
+            for pr in prs_to_fix {
+                if *budget_remaining <= 0.0 {
+                    warn!("budget exhausted before CI fix");
+                    break;
+                }
+                let phase_start = Instant::now();
+                let fix_budget = budget_remaining.min(2.0);
+
+                match tokio::time::timeout(
+                    Duration::from_secs(600),
+                    phases::ci_fix::run(pr, repo_slug, work_dir, &config.model, fix_budget),
+                )
+                .await
+                {
+                    Ok(Ok(output)) => {
+                        *budget_remaining -= output.cost_usd;
+                        *total_cost += output.cost_usd;
+                        phases_report.push(PhaseReport {
+                            name: format!("CI Fix (PR #{})", pr.number),
+                            duration: phase_start.elapsed(),
+                            cost_usd: output.cost_usd,
+                            status: if output.fixed {
+                                "OK".to_string()
+                            } else {
+                                "NO_CHANGES".to_string()
+                            },
+                        });
+                    }
+                    Ok(Err(e)) => {
+                        warn!(pr_number = pr.number, error = %e, "CI fix failed (non-fatal)");
+                        phases_report.push(PhaseReport {
+                            name: format!("CI Fix (PR #{})", pr.number),
+                            duration: phase_start.elapsed(),
+                            cost_usd: 0.0,
+                            status: format!("FAILED: {e}"),
+                        });
+                    }
+                    Err(_) => {
+                        warn!(pr_number = pr.number, "CI fix timed out");
+                        phases_report.push(PhaseReport {
+                            name: format!("CI Fix (PR #{})", pr.number),
+                            duration: phase_start.elapsed(),
+                            cost_usd: 0.0,
+                            status: "TIMEOUT".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     let repo_info = preflight_output.repo_info;
     let in_flight_prs = preflight_output.in_flight_prs;
 
@@ -208,6 +264,31 @@ async fn run_pipeline(
     let clone_path = &recon_output.clone_path;
     let stack_info = &recon_output.stack_info;
     let arch_summary = &recon_output.arch_summary;
+
+    // ─── Staleness check ──────────────────────────────────────────────
+    // Skip analysis if no commits (on any branch) are newer than skip_after × cron_interval.
+    if config.skip_after > 0 {
+        let age_secs = phases::preflight::newest_commit_age_secs(clone_path).await;
+        let threshold_secs = config.skip_after as u64 * config.cron_interval * 60;
+        if age_secs > threshold_secs {
+            info!(
+                age_secs,
+                threshold_secs,
+                "no recent commits on any branch, skipping analysis"
+            );
+            println!(
+                "No recent commits (newest is {}s old, threshold {}s). Skipping.",
+                age_secs, threshold_secs
+            );
+            phases_report.push(PhaseReport {
+                name: "Skip".to_string(),
+                duration: Duration::ZERO,
+                cost_usd: 0.0,
+                status: format!("SKIPPED (no commits in {}m)", threshold_secs / 60),
+            });
+            return Ok(0);
+        }
+    }
 
     // Merge recon open PRs with in-flight autoanneal PRs so analysis can avoid overlap.
     let mut open_prs: Vec<OpenPr> = recon_output.open_prs.clone();
@@ -496,3 +577,4 @@ async fn run_pipeline(
 
     Ok(0)
 }
+

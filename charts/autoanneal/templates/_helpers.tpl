@@ -68,6 +68,10 @@ Expects a dict with keys: repo (the repo entry), root (top-level context).
 - "--setup-command"
 - {{ ($repo.setupCommand | default $defaults.setupCommand) | quote }}
 {{- end }}
+- "--skip-after"
+- {{ ($repo.skipAfter | default $defaults.skipAfter) | quote }}
+- "--cron-interval"
+- {{ ($repo.cronInterval | default $defaults.cronInterval) | quote }}
 {{- end }}
 
 {{/*
