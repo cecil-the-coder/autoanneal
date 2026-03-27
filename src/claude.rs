@@ -475,7 +475,7 @@ fn truncate(s: &str, max_len: usize) -> String {
     } else {
         let boundary = s.char_indices()
             .map(|(i, _)| i)
-            .take_while(|&i| i <= max_len)
+            .take_while(|&i| i < max_len)
             .last()
             .unwrap_or(0);
         format!("{}...", &s[..boundary])

@@ -10,6 +10,17 @@ use tracing::{info, warn};
 /// Maximum diff length (in characters) sent to the critic.
 const MAX_DIFF_CHARS: usize = 50_000;
 
+/// JSON schema for CriticResult structured output.
+const CRITIC_SCHEMA: &str = r#"{
+  \"type\": \"object\",
+  \"properties\": {
+    \"score\": { \"type\": \"integer\", \"minimum\": 1, \"maximum\": 10 },
+    \"verdict\": { \"type\": \"string\", \"enum\": [\"approve\", \"needs_work\", \"reject\"] },
+    \"summary\": { \"type\": \"string\" }
+  },
+  \"required\": [\"score\", \"verdict\", \"summary\"]
+}"#;
+
 #[allow(dead_code)]
 pub struct CriticOutput {
     pub score: u32,
@@ -50,7 +61,7 @@ pub async fn run(
         max_turns: 30,
         effort: "high",
         tools: "Read,Glob,Grep",
-        json_schema: None,
+        json_schema: Some(CRITIC_SCHEMA.to_string()),
         working_dir: clone_path.to_path_buf(),
         session_id: None,
         resume_session_id: None,
@@ -157,7 +168,7 @@ pub async fn run(
                         max_turns: 15,
                         effort: "high",
                         tools: "Read,Glob,Grep",
-                        json_schema: None,
+                        json_schema: Some(CRITIC_SCHEMA.to_string()),
                         working_dir: clone_path.to_path_buf(),
                         session_id: None,
                         resume_session_id: None,

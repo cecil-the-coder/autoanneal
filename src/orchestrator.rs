@@ -378,7 +378,7 @@ async fn run_pipeline(
         &stack_info,
         &recon_output.open_prs,
         min_severity,
-        budget_remaining,
+        *budget_remaining,
     );
 
     if work_items.is_empty() {
@@ -497,7 +497,7 @@ fn collect_work_items(
     stack_info: &StackInfo,
     open_prs: &[OpenPr],
     min_severity: &crate::models::Severity,
-    budget_remaining: &mut f64,
+    budget_remaining: f64,
 ) -> Vec<WorkItem> {
     let mut items = Vec::new();
 
@@ -525,7 +525,8 @@ fn collect_work_items(
             if fix_budget <= 0.0 {
                 break;
             }
-            *budget_remaining -= fix_budget;
+            // Note: we don't reserve budget here; actual costs are subtracted
+            // when outcomes are processed to avoid double-counting.
             items.push(WorkItem {
                 kind: WorkItemKind::CiFix { pr: pr.clone() },
                 budget_cap: fix_budget,
@@ -540,7 +541,8 @@ fn collect_work_items(
             if review_budget <= 0.5 {
                 break;
             }
-            *budget_remaining -= review_budget;
+            // Note: we don't reserve budget here; actual costs are subtracted
+            // when outcomes are processed to avoid double-counting.
             items.push(WorkItem {
                 kind: WorkItemKind::PrReview {
                     pr: pr.clone(),
@@ -557,7 +559,8 @@ fn collect_work_items(
         if issue_budget <= 0.0 {
             break;
         }
-        *budget_remaining -= issue_budget;
+        // Note: we don't reserve budget here; actual costs are subtracted
+        // when outcomes are processed to avoid double-counting.
         items.push(WorkItem {
             kind: WorkItemKind::IssueInvestigation {
                 issue: issue.clone(),
@@ -592,9 +595,10 @@ fn collect_work_items(
             "skipping analysis — too many open autoanneal PRs"
         );
     }
-    if *budget_remaining > 0.0 && !config.dry_run && !skip_analysis {
-        let analysis_budget = *budget_remaining; // analysis gets remaining budget
-        *budget_remaining = 0.0; // reserve it all
+    if budget_remaining > 0.0 && !config.dry_run && !skip_analysis {
+        let analysis_budget = budget_remaining; // analysis gets remaining budget
+        // Note: we don't reserve budget here; actual costs are subtracted
+        // when outcomes are processed to avoid double-counting.
         items.push(WorkItem {
             kind: WorkItemKind::Analysis {
                 clone_path: clone_path.clone(),
@@ -612,10 +616,11 @@ fn collect_work_items(
             },
             budget_cap: analysis_budget,
         });
-    } else if config.dry_run && *budget_remaining > 0.0 {
+    } else if config.dry_run && budget_remaining > 0.0 {
         // For dry-run, still run analysis but it will just print and return.
-        let analysis_budget = *budget_remaining;
-        *budget_remaining = 0.0;
+        let analysis_budget = budget_remaining;
+        // Note: we don't reserve budget here; actual costs are subtracted
+        // when outcomes are processed to avoid double-counting.
         items.push(WorkItem {
             kind: WorkItemKind::Analysis {
                 clone_path: clone_path.clone(),
