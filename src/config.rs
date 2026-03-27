@@ -164,19 +164,20 @@ fn parse_duration(s: &str) -> Option<std::time::Duration> {
             let n: u64 = current_num.parse().ok()?;
             current_num.clear();
 
-            match c {
-                'h' | 'H' => total_secs += n * 3600,
-                'm' | 'M' => total_secs += n * 60,
-                's' | 'S' => total_secs += n,
+            let secs = match c {
+                'h' | 'H' => n.checked_mul(3600)?,
+                'm' | 'M' => n.checked_mul(60)?,
+                's' | 'S' => n,
                 _ => return None,
-            }
+            };
+            total_secs = total_secs.checked_add(secs)?;
         }
     }
 
     // Handle bare number (no suffix) — treat as seconds
     if !current_num.is_empty() {
         let n: u64 = current_num.parse().ok()?;
-        total_secs += n;
+        total_secs = total_secs.checked_add(n)?;
     }
 
     if total_secs == 0 {
@@ -218,6 +219,26 @@ mod tests {
     #[test]
     fn test_parse_duration_empty() {
         assert_eq!(parse_duration(""), None);
+    }
+
+    #[test]
+    fn test_parse_duration_overflow_hours() {
+        // Very large number of hours should return None due to overflow
+        assert_eq!(parse_duration("99999999999999999999h"), None);
+    }
+
+    #[test]
+    fn test_parse_duration_overflow_minutes() {
+        // Very large number of minutes should return None due to overflow
+        assert_eq!(parse_duration("99999999999999999999m"), None);
+    }
+
+    #[test]
+    fn test_parse_duration_overflow_combined() {
+        // Combined duration that overflows should return None
+        // 5124095576030431h = 18446744073709551600 seconds (15 seconds from u64::MAX)
+        // Adding 20s will overflow
+        assert_eq!(parse_duration("5124095576030431h20s"), None);
     }
 
     #[test]

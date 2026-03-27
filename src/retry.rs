@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 const MAX_ATTEMPTS: u32 = 3;
@@ -22,7 +22,7 @@ static CALL_COUNT: AtomicU32 = AtomicU32::new(0);
 static RATE_REMAINING: AtomicU32 = AtomicU32::new(u32::MAX);
 
 /// Cached rate limit reset timestamp (unix seconds).
-static RATE_RESET: AtomicU32 = AtomicU32::new(0);
+static RATE_RESET: AtomicU64 = AtomicU64::new(0);
 
 /// Run a gh CLI command with retry, exponential backoff, and rate limit awareness.
 ///
@@ -150,7 +150,7 @@ async fn check_rate_limit() {
                 if let Ok(remaining) = parts[0].parse::<u32>() {
                     RATE_REMAINING.store(remaining, Ordering::Relaxed);
                 }
-                if let Ok(reset) = parts[1].parse::<u32>() {
+                if let Ok(reset) = parts[1].parse::<u64>() {
                     RATE_RESET.store(reset, Ordering::Relaxed);
                 }
                 tracing::debug!(
