@@ -290,7 +290,7 @@ async fn commit_and_push(clone_dir: &PathBuf, branch: &str) -> Result<()> {
 
     // git push
     let output = tokio::process::Command::new("git")
-        .args(["push", "origin", branch])
+        .args(["push", "origin", &format!("HEAD:refs/heads/{branch}")])
         .current_dir(clone_dir)
         .output()
         .await

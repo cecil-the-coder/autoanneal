@@ -993,12 +993,14 @@ async fn run_analysis_pipeline(
                         threshold,
                         "critic rejected changes"
                     );
+                    // Critic rejected — mark as no successful tasks so
+                    // cleanup deletes the lock branch from GitHub.
                     return Ok((
                         WorkItemResult::AnalysisPipeline {
                             pr_url: None,
                             branch_name: Some(branch_name),
                             pr_number: None,
-                            has_successful_tasks: true,
+                            has_successful_tasks: false,
                         },
                         cost_total,
                     ));
