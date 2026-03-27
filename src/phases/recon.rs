@@ -60,6 +60,11 @@ pub async fn run(
     })
 }
 
+/// Redact the GitHub token from a string to prevent credential leakage in logs/errors.
+fn redact_token(s: &str, token: &str) -> String {
+    s.replace(token, "[REDACTED]")
+}
+
 /// Clone the repository into `work_dir/<repo_name>`.
 async fn clone_repo(repo_info: &RepoInfo, work_dir: &Path) -> Result<PathBuf> {
     let gh_token = std::env::var("GH_TOKEN")
@@ -100,7 +105,8 @@ async fn clone_repo(repo_info: &RepoInfo, work_dir: &Path) -> Result<PathBuf> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git clone failed: {stderr}");
+        let sanitized_stderr = redact_token(&stderr, &gh_token);
+        anyhow::bail!("git clone failed: {sanitized_stderr}");
     }
 
     info!("Clone complete: {}", clone_path.display());
@@ -243,11 +249,13 @@ async fn detect_stack(clone_path: &Path) -> Result<StackInfo> {
 
     // Check for CI workflows.
     let workflows_dir = clone_path.join(".github/workflows");
-    let has_ci = workflows_dir.is_dir();
+    let has_ci = tokio::fs::try_exists(&workflows_dir)
+        .await
+        .unwrap_or(false);
     let mut ci_files = Vec::new();
     if has_ci {
-        if let Ok(entries) = std::fs::read_dir(&workflows_dir) {
-            for entry in entries.flatten() {
+        if let Ok(mut entries) = tokio::fs::read_dir(&workflows_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
                 if let Some(name) = path.file_name() {
                     let name_str = name.to_string_lossy();
