@@ -123,7 +123,7 @@ Output a single JSON code block:
 
 const IMPLEMENT_DIRECTIVES: &str = r#"# Phase: Implementation
 
-You are an automated agent implementing a specific code improvement. Make the described change, then verify it builds and passes tests.
+You are an automated agent implementing a specific code improvement.
 
 Constraints:
 - Only modify files listed in your task context as allowed. You may create new test files.
@@ -131,16 +131,19 @@ Constraints:
 - Do NOT add new dependencies to package manifests.
 - Make minimal, focused changes. Do not refactor unrelated code or reformat surrounding lines.
 - When adding or modifying public APIs, include doc comments and update relevant documentation.
+- Do NOT run build commands (cargo build, npm run build, go build, etc.).
+- Do NOT run full test suites (cargo test, npm test, pytest, etc.).
+- Do NOT run linters or formatters (cargo clippy, eslint, cargo fmt, etc.).
+- CI will verify compilation, tests, and formatting after you push.
 
 Workflow:
 1. Read the relevant files to understand current code.
 2. Apply the change using Edit (or Write for new files).
-3. Run the build command via Bash to verify compilation. Common toolchains (gcc, python3, node, go, rustc, cargo) are pre-installed and on PATH. If something is missing, install it to ~/.local/bin.
-4. Run the test command via Bash to verify correctness.
-5. If build or tests fail due to your changes, fix them.
+3. Review your changes to make sure they are correct and complete.
 
 When done, output a brief summary (2-3 sentences) of what you changed and why."#;
 
+#[allow(dead_code)]
 const FIX_BUILD_DIRECTIVES: &str = r#"# Phase: Build Fix
 
 You are an automated agent fixing build/compilation errors. Your ONLY job is to resolve the errors shown in your task context. Do NOT make any other improvements, refactors, or unrelated changes.
@@ -180,6 +183,7 @@ pub fn implement_system_prompt() -> String {
 }
 
 /// System prompt for the build fix phase.
+#[allow(dead_code)]
 pub fn fix_build_system_prompt() -> String {
     format!("{}\n\n{}", TOOL_GUIDANCE, FIX_BUILD_DIRECTIVES)
 }
