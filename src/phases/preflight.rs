@@ -274,7 +274,7 @@ async fn check_ci_status(repo_slug: &str, pr_number: u64) -> CiStatus {
             "checks",
             &pr_number.to_string(),
             "--json",
-            "name,state,conclusion",
+            "name,state,bucket",
             "-R",
             repo_slug,
         ],
@@ -290,12 +290,12 @@ async fn check_ci_status(repo_slug: &str, pr_number: u64) -> CiStatus {
                 return CiStatus::Pending;
             }
             let any_failing = checks.iter().any(|c| {
-                let conclusion = c["conclusion"].as_str().unwrap_or("");
-                conclusion == "FAILURE" || conclusion == "failure"
+                let bucket = c["bucket"].as_str().unwrap_or("");
+                bucket == "fail"
             });
             let all_complete = checks.iter().all(|c| {
-                let state = c["state"].as_str().unwrap_or("");
-                state == "COMPLETED" || state == "completed"
+                let bucket = c["bucket"].as_str().unwrap_or("");
+                bucket == "pass" || bucket == "fail"  // not "pending"
             });
             if any_failing {
                 CiStatus::Failing
