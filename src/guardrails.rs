@@ -38,12 +38,20 @@ pub async fn validate_diff(
         .map_err(|e| GuardrailViolation::IoError(format!("git diff --numstat: {e}")))?;
 
     if !numstat_output.status.success() {
+        // Lossy UTF-8 conversion is acceptable here because:
+        // 1. This is an error message for logging/debugging purposes only
+        // 2. Git error messages are typically ASCII, but even if not,
+        //    we want to capture as much readable text as possible
         let stderr = String::from_utf8_lossy(&numstat_output.stderr);
         return Err(GuardrailViolation::IoError(format!(
             "git diff --numstat failed: {stderr}"
         )));
     }
 
+    // Similarly, lossy conversion is acceptable for git diff output since:
+    // 1. Git file paths are typically UTF-8 encoded
+    // 2. Even with invalid UTF-8 sequences, we want to process what we can
+    // 3. The alternative would be to skip files with non-UTF-8 names entirely
     let numstat_stdout = String::from_utf8_lossy(&numstat_output.stdout);
 
     let mut files_changed: Vec<String> = Vec::new();
@@ -52,18 +60,26 @@ pub async fn validate_diff(
 
     // --- 2. Parse each line: <added>\t<removed>\t<filename> ---
     // Binary files show: -\t-\t<filename>
+    // Expected format: exactly 3 tab-separated fields
     for line in numstat_stdout.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
+        // Parse line into exactly 3 parts; skip malformed lines
         let parts: Vec<&str> = line.splitn(3, '\t').collect();
-        if parts.len() < 3 {
+        if parts.len() != 3 {
+            // Skip lines that don't match expected format
             continue;
         }
         let added_str = parts[0];
         let removed_str = parts[1];
         let filename = parts[2].to_string();
+
+        // Skip empty filenames (edge case in git output)
+        if filename.is_empty() {
+            continue;
+        }
 
         // Binary files use "-" for both added and removed; count as 0 lines.
         let added: usize = added_str.parse().unwrap_or(0);
@@ -122,12 +138,14 @@ pub async fn validate_diff(
             .map_err(|e| GuardrailViolation::IoError(format!("git diff --name-status: {e}")))?;
 
         if !status_output.status.success() {
+            // Lossy UTF-8 conversion acceptable for error reporting (see above)
             let stderr = String::from_utf8_lossy(&status_output.stderr);
             return Err(GuardrailViolation::IoError(format!(
                 "git diff --name-status failed: {stderr}"
             )));
         }
 
+        // Lossy UTF-8 conversion acceptable for git status output (see above)
         let status_stdout = String::from_utf8_lossy(&status_output.stdout);
         let deleted_files: Vec<String> = status_stdout
             .lines()
@@ -160,6 +178,7 @@ pub async fn discard_changes(repo_dir: &Path) -> anyhow::Result<()> {
         .await?;
 
     if !checkout.status.success() {
+        // Lossy UTF-8 conversion acceptable for error reporting (see above)
         let stderr = String::from_utf8_lossy(&checkout.stderr);
         anyhow::bail!("git checkout . failed: {stderr}");
     }
@@ -171,6 +190,7 @@ pub async fn discard_changes(repo_dir: &Path) -> anyhow::Result<()> {
         .await?;
 
     if !clean.status.success() {
+        // Lossy UTF-8 conversion acceptable for error reporting (see above)
         let stderr = String::from_utf8_lossy(&clean.stderr);
         anyhow::bail!("git clean -fd failed: {stderr}");
     }

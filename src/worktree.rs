@@ -50,7 +50,9 @@ impl WorktreeManager {
         }
 
         // Configure git identity in the worktree.
-        configure_git_identity(&wt_path).await;
+        configure_git_identity(&wt_path)
+            .await
+            .context("failed to configure git identity in worktree")?;
 
         info!(path = %wt_path.display(), "created git worktree");
         Ok(wt_path)
@@ -60,12 +62,16 @@ impl WorktreeManager {
     pub async fn create_at_branch(&self, name: &str, remote_branch: &str) -> Result<PathBuf> {
         let wt_path = self.create_from_head(name).await?;
 
-        // Fetch the branch.
-        let fetch = tokio::process::Command::new("git")
-            .args(["fetch", "origin", remote_branch])
-            .current_dir(&wt_path)
-            .output()
-            .await?;
+        // Fetch the branch with a 60-second timeout.
+        let fetch = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            tokio::process::Command::new("git")
+                .args(["fetch", "origin", remote_branch])
+                .current_dir(&wt_path)
+                .output(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("git fetch timed out after 60s"))??;
 
         if !fetch.status.success() {
             let stderr = String::from_utf8_lossy(&fetch.stderr);
@@ -117,15 +123,27 @@ impl WorktreeManager {
 }
 
 /// Configure git identity in a directory.
-async fn configure_git_identity(dir: &Path) {
+async fn configure_git_identity(dir: &Path) -> Result<()> {
     for (key, val) in [
         ("user.name", "autoanneal[bot]"),
         ("user.email", "autoanneal[bot]@users.noreply.github.com"),
     ] {
-        let _ = tokio::process::Command::new("git")
+        let output = tokio::process::Command::new("git")
             .args(["config", key, val])
             .current_dir(dir)
             .output()
-            .await;
+            .await
+            .with_context(|| format!("failed to run git config {key}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(
+                "git config {} failed: {}",
+                key,
+                stderr
+            );
+            anyhow::bail!("git config {} failed: {}", key, stderr);
+        }
     }
+    Ok(())
 }
