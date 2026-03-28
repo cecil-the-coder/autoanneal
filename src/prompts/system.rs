@@ -1,5 +1,39 @@
+/// Read the container/system memory limit.
+/// Checks cgroup v2 first, then v1, then falls back to /proc/meminfo.
+fn get_memory_limit_mb() -> Option<u64> {
+    // cgroup v2
+    if let Ok(val) = std::fs::read_to_string("/sys/fs/cgroup/memory.max") {
+        if let Ok(bytes) = val.trim().parse::<u64>() {
+            return Some(bytes / (1024 * 1024));
+        }
+    }
+    // cgroup v1
+    if let Ok(val) = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
+        if let Ok(bytes) = val.trim().parse::<u64>() {
+            // cgroup v1 uses a huge number for "unlimited"
+            if bytes < 1024 * 1024 * 1024 * 1024 {
+                return Some(bytes / (1024 * 1024));
+            }
+        }
+    }
+    None
+}
+
 /// Base tool-use guidance shared across all phases.
-const TOOL_GUIDANCE: &str = r#"# Tool Usage
+fn tool_guidance() -> String {
+    let memory_note = match get_memory_limit_mb() {
+        Some(mb) => format!(
+            "\n\n# Resource Constraints\n\n\
+             This environment has {mb}MB of memory available. Heavy builds \
+             (e.g., parallel Rust compilation) can exceed this and get killed. \
+             When running builds, limit parallelism (e.g., CARGO_BUILD_JOBS=1) \
+             or prefer lightweight checks (cargo check, cargo fmt --check) over \
+             full builds."
+        ),
+        None => String::new(),
+    };
+
+    format!(r#"# Tool Usage
 
 You have access to these tools. Use them instead of shell equivalents:
 - Read: read files (NOT cat/head/tail)
@@ -14,7 +48,8 @@ Rules:
 - Quote paths containing spaces with double quotes in Bash commands.
 - Prefer editing existing files over creating new ones.
 - Read a file before editing or overwriting it.
-- When multiple tool calls are independent, issue them in parallel."#;
+- When multiple tool calls are independent, issue them in parallel.{memory_note}"#)
+}
 
 const RECON_DIRECTIVES: &str = r#"# Phase: Repository Reconnaissance
 
@@ -158,16 +193,17 @@ Workflow:
 1. Read the error messages carefully and identify root causes.
 2. Read the relevant source files.
 3. Apply minimal fixes using Edit.
-4. Do NOT run build, test, lint, or format commands. CI will verify after push."#;
+4. Verify with a lightweight check if possible (e.g., cargo check, not cargo build).
+5. CI will run the full verification after push."#;
 
 /// System prompt for the recon phase.
 pub fn recon_system_prompt() -> String {
-    format!("{}\n\n{}", TOOL_GUIDANCE, RECON_DIRECTIVES)
+    format!("{}\n\n{}", tool_guidance(), RECON_DIRECTIVES)
 }
 
 /// System prompt for the analysis phase.
 pub fn analysis_system_prompt() -> String {
-    format!("{}\n\n{}", TOOL_GUIDANCE, ANALYSIS_DIRECTIVES)
+    format!("{}\n\n{}", tool_guidance(), ANALYSIS_DIRECTIVES)
 }
 
 /// System prompt for the plan phase (no tools needed).
@@ -177,13 +213,13 @@ pub fn plan_system_prompt() -> String {
 
 /// System prompt for the implementation phase.
 pub fn implement_system_prompt() -> String {
-    format!("{}\n\n{}", TOOL_GUIDANCE, IMPLEMENT_DIRECTIVES)
+    format!("{}\n\n{}", tool_guidance(), IMPLEMENT_DIRECTIVES)
 }
 
 /// System prompt for the build fix phase.
 #[allow(dead_code)]
 pub fn fix_build_system_prompt() -> String {
-    format!("{}\n\n{}", TOOL_GUIDANCE, FIX_BUILD_DIRECTIVES)
+    format!("{}\n\n{}", tool_guidance(), FIX_BUILD_DIRECTIVES)
 }
 
 const CRITIC_DIRECTIVES: &str = r#"# Phase: Critic Review
@@ -217,7 +253,7 @@ Constraints:
 
 /// System prompt for the critic fix phase (has Edit/Write tools).
 pub fn critic_fix_system_prompt() -> String {
-    format!("{}\n\n{}", TOOL_GUIDANCE, CRITIC_FIX_DIRECTIVES)
+    format!("{}\n\n{}", tool_guidance(), CRITIC_FIX_DIRECTIVES)
 }
 
 const CI_FIX_DIRECTIVES: &str = r#"# Phase: CI Fix
@@ -233,7 +269,8 @@ Workflow:
 1. Read the CI failure logs carefully and identify root causes.
 2. Read the relevant source files.
 3. Apply minimal fixes using Edit.
-4. Do NOT run build, test, lint, or format commands. CI will verify after push."#;
+4. Verify with a lightweight check if possible (e.g., cargo check, not cargo build).
+5. CI will run the full verification after push."#;
 
 /// System prompt for the critic review phase (read-only tools).
 pub fn critic_system_prompt() -> String {
@@ -254,7 +291,7 @@ Rules:
 
 /// System prompt for the CI fix phase.
 pub fn ci_fix_system_prompt() -> String {
-    format!("{}\n\n{}", TOOL_GUIDANCE, CI_FIX_DIRECTIVES)
+    format!("{}\n\n{}", tool_guidance(), CI_FIX_DIRECTIVES)
 }
 
 const PR_REVIEW_FIX_DIRECTIVES: &str = r#"# Phase: PR Review Fix
@@ -272,13 +309,13 @@ Workflow:
 1. Read the critic's review and understand the issues.
 2. Read the relevant source files in the working tree.
 3. Apply minimal fixes using Edit (or Write for new files).
-4. Do NOT run build, test, lint, or format commands. CI will verify after push.
+4. Verify with a lightweight check if possible. CI will run the full verification after push.
 
 When done, output a brief summary of what you changed and why."#;
 
 /// System prompt for the PR review fix phase.
 pub fn pr_review_fix_system_prompt() -> String {
-    format!("{}\n\n{}", TOOL_GUIDANCE, PR_REVIEW_FIX_DIRECTIVES)
+    format!("{}\n\n{}", tool_guidance(), PR_REVIEW_FIX_DIRECTIVES)
 }
 
 const ISSUE_INVESTIGATION_DIRECTIVES: &str = r#"# Phase: Issue Investigation
@@ -299,7 +336,7 @@ You are an automated agent investigating a GitHub issue. Your goal is to underst
 - Do NOT refactor unrelated code or reformat surrounding lines.
 - Do NOT add new dependencies.
 - Do NOT modify CI/CD configs (.github/workflows/*, .gitlab-ci.yml, etc.).
-- Do NOT run build, test, lint, or format commands. CI will verify after push.
+- Prefer lightweight checks (e.g., cargo check) over full builds. CI will run the full verification after push.
 
 ## Output
 
@@ -307,5 +344,5 @@ Always output a JSON code block at the end with your result."#;
 
 /// System prompt for the issue investigation phase.
 pub fn issue_investigation_system_prompt() -> String {
-    format!("{}\n\n{}", TOOL_GUIDANCE, ISSUE_INVESTIGATION_DIRECTIVES)
+    format!("{}\n\n{}", tool_guidance(), ISSUE_INVESTIGATION_DIRECTIVES)
 }

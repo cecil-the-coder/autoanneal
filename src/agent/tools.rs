@@ -285,14 +285,25 @@ impl ToolExecutor {
             rt.block_on(async {
                 use tokio::io::AsyncReadExt;
 
-                let mut child = tokio::process::Command::new("sh")
-                    .arg("-c")
+                let mut cmd = tokio::process::Command::new("sh");
+                cmd.arg("-c")
                     .arg(command)
                     .current_dir(&working_dir)
                     .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .spawn()
-                    .map_err(ToolError::IoError)?;
+                    .stderr(std::process::Stdio::piped());
+
+                // On Linux, set OOM score adjustment to maximum (1000) so the
+                // kernel kills this child process before our agent process if
+                // the cgroup memory limit is hit.
+                #[cfg(target_os = "linux")]
+                unsafe {
+                    cmd.pre_exec(|| {
+                        let _ = std::fs::write("/proc/self/oom_score_adj", "1000");
+                        Ok(())
+                    });
+                }
+
+                let mut child = cmd.spawn().map_err(ToolError::IoError)?;
 
                 // Take stdout/stderr handles and spawn readers so `child`
                 // remains available for kill() on timeout.
@@ -320,10 +331,28 @@ impl ToolExecutor {
                         let stderr_buf = stderr_task.await.unwrap_or_default();
                         match status {
                             Ok(exit) if !exit.success() => {
+                                let mut stderr_str = String::from_utf8_lossy(&stderr_buf).into_owned();
+
+                                // On Unix, detect signal kills (e.g., SIGKILL from OOM killer).
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::process::ExitStatusExt;
+                                    if let Some(sig) = exit.signal() {
+                                        let hint = if sig == 9 {
+                                            " (SIGKILL — likely killed by OOM killer due to memory limit)"
+                                        } else {
+                                            ""
+                                        };
+                                        stderr_str.push_str(
+                                            &format!("\n[process killed by signal {sig}{hint}]")
+                                        );
+                                    }
+                                }
+
                                 Err(ToolError::CommandFailed {
                                     code: exit.code().unwrap_or(-1),
                                     stdout: String::from_utf8_lossy(&stdout_buf).into_owned(),
-                                    stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
+                                    stderr: stderr_str,
                                 })
                             }
                             Ok(_) => {
