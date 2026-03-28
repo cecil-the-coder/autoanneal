@@ -464,7 +464,7 @@ async fn check_newest_commit_age_api(repo_slug: &str) -> u64 {
     .await;
 
     if let Ok(raw) = branches_result {
-        for date_line in raw.lines().filter(|s| !s.is_empty() && s != "null") {
+        for date_line in raw.lines().filter(|s| !s.is_empty() && *s != "null") {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date_line.trim()) {
                 let dt_utc = dt.with_timezone(&chrono::Utc);
                 if newest_date.map_or(true, |d| dt_utc > d) {
