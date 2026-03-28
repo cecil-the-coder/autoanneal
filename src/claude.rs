@@ -257,10 +257,16 @@ pub async fn invoke<T: DeserializeOwned>(
     invocation: &ClaudeInvocation,
     timeout: Duration,
 ) -> Result<ClaudeResponse<T>> {
-    // Prepend working directory context to the prompt.
-    let dir_context = get_dir_context(&invocation.working_dir).await;
+    // Prepend working directory context to the prompt only when tools are
+    // available — the listing is only useful when Claude has filesystem tools.
+    let prompt = if invocation.tools.is_empty() {
+        invocation.prompt.clone()
+    } else {
+        let dir_context = get_dir_context(&invocation.working_dir).await;
+        format!("{dir_context}\n\n{}", invocation.prompt)
+    };
     let augmented = ClaudeInvocation {
-        prompt: format!("{dir_context}\n\n{}", invocation.prompt),
+        prompt,
         system_prompt: invocation.system_prompt.clone(),
         model: invocation.model.clone(),
         max_budget_usd: invocation.max_budget_usd,

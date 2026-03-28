@@ -510,6 +510,7 @@ fn collect_work_items(
     budget_remaining: f64,
 ) -> Vec<WorkItem> {
     let mut items = Vec::new();
+    let mut budget_remaining = budget_remaining;
 
     // CI fix items.
     if config.fix_ci || config.fix_conflicts {
@@ -544,6 +545,7 @@ fn collect_work_items(
                 },
                 budget_cap: fix_budget,
             });
+            budget_remaining -= fix_budget;
         }
     }
 
@@ -562,6 +564,7 @@ fn collect_work_items(
                 },
                 budget_cap: review_budget,
             });
+            budget_remaining -= review_budget;
         }
     }
 
@@ -581,6 +584,7 @@ fn collect_work_items(
             },
             budget_cap: issue_budget,
         });
+        budget_remaining -= issue_budget;
     }
 
     // Merge open PRs with in-flight autoanneal PRs for analysis overlap avoidance.
