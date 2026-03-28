@@ -165,7 +165,6 @@ fn serialize_openai_request(req: &MessagesRequest) -> Value {
 
     let mut body = json!({
         "model": req.model,
-        "max_tokens": req.max_tokens,
         "max_completion_tokens": req.max_tokens,
         "messages": oai_messages,
     });

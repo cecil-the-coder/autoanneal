@@ -56,8 +56,8 @@ impl ContextManager {
             return 0;
         }
 
-        // Estimate how many tokens we need to free.
-        let target = last_input_tokens.saturating_sub(threshold / 2);
+        // Free just enough to get back below threshold.
+        let target = last_input_tokens.saturating_sub(threshold);
         let mut freed_estimate: u64 = 0;
         let mut evicted = 0;
 

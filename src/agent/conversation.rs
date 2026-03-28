@@ -219,6 +219,7 @@ pub async fn run(
         // --- process content blocks ---
         let mut has_tool_use = false;
         let mut tool_results: Vec<ContentBlock> = Vec::new();
+        let mut recall_ids: Vec<String> = Vec::new();
 
         // Collect text from this turn, and gather tool calls.
         for block in &response.content {
@@ -236,6 +237,7 @@ pub async fn run(
                     let (mut result_content, is_error) =
                         if name == context::RECALL_TOOL_NAME {
                             let recall_id = input["id"].as_str().unwrap_or("");
+                            recall_ids.push(id.clone());
                             (ctx_mgr.recall(recall_id), false)
                         } else {
                             executor.execute(name, input).await
@@ -288,10 +290,14 @@ pub async fn run(
             }
             "tool_use" => {
                 // Track tool results for potential eviction later.
+                // Skip recalled results — they're already in the store and
+                // would be immediately re-evicted, wasting context.
                 let result_msg_idx = messages.len();
                 for block in &tool_results {
                     if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-                        ctx_mgr.track(result_msg_idx, tool_use_id);
+                        if !recall_ids.contains(tool_use_id) {
+                            ctx_mgr.track(result_msg_idx, tool_use_id);
+                        }
                     }
                 }
                 // Append tool results as a user message and loop.
@@ -309,7 +315,9 @@ pub async fn run(
                     let result_msg_idx = messages.len();
                     for block in &tool_results {
                         if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-                            ctx_mgr.track(result_msg_idx, tool_use_id);
+                            if !recall_ids.contains(tool_use_id) {
+                                ctx_mgr.track(result_msg_idx, tool_use_id);
+                            }
                         }
                     }
                     messages.push(Message {

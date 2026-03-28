@@ -59,6 +59,12 @@ fn resolve_credentials() -> Result<Credentials> {
 
     // 2. Auto-detect: if OPENAI_BASE_URL is set, use OpenAI.
     if std::env::var("OPENAI_BASE_URL").is_ok() {
+        if std::env::var("ANTHROPIC_BASE_URL").is_ok() {
+            warn!(
+                "both OPENAI_BASE_URL and ANTHROPIC_BASE_URL are set; \
+                 using OpenAI. Set AUTOANNEAL_PROVIDER to override."
+            );
+        }
         return resolve_openai();
     }
 
