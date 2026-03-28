@@ -2,8 +2,12 @@ use crate::models::ClaudeOutput;
 use anyhow::{bail, Context, Result};
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tracing::{error, info, warn};
+
+/// Global counter to ensure unique session IDs across concurrent calls.
+static SESSION_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Parameters for a single Claude CLI invocation.
 pub struct ClaudeInvocation {
@@ -107,8 +111,9 @@ pub fn generate_session_id() -> String {
         .unwrap_or_default()
         .as_nanos();
     let pid = std::process::id();
+    let counter = SESSION_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut hasher = Sha256::new();
-    hasher.update(format!("{nanos}-{pid}").as_bytes());
+    hasher.update(format!("{nanos}-{pid}-{counter}").as_bytes());
     let hash = hasher.finalize();
     let hex = hex::encode(&hash[..16]);
     format!(
@@ -626,6 +631,30 @@ mod tests {
     fn test_parse_malformed_json() {
         let err = parse_response::<serde_json::Value>(b"not json", b"", false).unwrap_err();
         assert!(err.to_string().contains("failed to parse claude JSON"));
+    }
+
+    #[test]
+    fn test_generate_session_id_unique() {
+        // Rapidly generate many session IDs and verify they are all unique.
+        let ids: Vec<String> = (0..1000).map(|_| generate_session_id()).collect();
+        let unique: std::collections::HashSet<&str> =
+            ids.iter().map(|s| s.as_str()).collect();
+        assert_eq!(ids.len(), unique.len(), "duplicate session IDs detected");
+    }
+
+    #[test]
+    fn test_generate_session_id_format() {
+        let id = generate_session_id();
+        // UUID-shaped: 8-4-4-4-12 hex chars
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(parts.len(), 5);
+        assert_eq!(parts[0].len(), 8);
+        assert_eq!(parts[1].len(), 4);
+        assert_eq!(parts[2].len(), 4);
+        assert_eq!(parts[3].len(), 4);
+        assert_eq!(parts[4].len(), 12);
+        // All hex
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
     }
 
     #[test]

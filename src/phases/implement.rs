@@ -519,6 +519,20 @@ async fn merge_and_push(
                     result.files_changed.clear();
                 }
             }
+
+            // Discard any conflict markers or partial merge artifacts left by
+            // the failed `git apply --3way` so they don't get staged later.
+            let _ = tokio::process::Command::new("git")
+                .args(["checkout", "."])
+                .current_dir(clone_path)
+                .output()
+                .await;
+            let _ = tokio::process::Command::new("git")
+                .args(["clean", "-fd"])
+                .current_dir(clone_path)
+                .output()
+                .await;
+
             continue;
         }
 
