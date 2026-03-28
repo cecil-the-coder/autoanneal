@@ -157,10 +157,8 @@ Constraints:
 Workflow:
 1. Read the error messages carefully and identify root causes.
 2. Read the relevant source files.
-3. If the build toolchain is not installed, install it first via Bash.
-4. Apply minimal fixes using Edit.
-5. Re-run the build command via Bash to verify errors are resolved.
-6. If new errors appear, repeat."#;
+3. Apply minimal fixes using Edit.
+4. Do NOT run build, test, lint, or format commands. CI will verify after push."#;
 
 /// System prompt for the recon phase.
 pub fn recon_system_prompt() -> String {
@@ -235,8 +233,7 @@ Workflow:
 1. Read the CI failure logs carefully and identify root causes.
 2. Read the relevant source files.
 3. Apply minimal fixes using Edit.
-4. Re-run the build/test command via Bash to verify errors are resolved.
-5. If new errors appear, repeat."#;
+4. Do NOT run build, test, lint, or format commands. CI will verify after push."#;
 
 /// System prompt for the critic review phase (read-only tools).
 pub fn critic_system_prompt() -> String {
@@ -275,9 +272,7 @@ Workflow:
 1. Read the critic's review and understand the issues.
 2. Read the relevant source files in the working tree.
 3. Apply minimal fixes using Edit (or Write for new files).
-4. Run the build command via Bash to verify compilation.
-5. Run the test command via Bash to verify correctness.
-6. If build or tests fail due to your changes, fix them.
+4. Do NOT run build, test, lint, or format commands. CI will verify after push.
 
 When done, output a brief summary of what you changed and why."#;
 
@@ -295,7 +290,7 @@ You are an automated agent investigating a GitHub issue. Your goal is to underst
 1. Read the issue description carefully.
 2. Explore the relevant source code to understand the context.
 3. Identify the root cause of the issue.
-4. If you can fix it: implement minimal, focused changes and verify with build/test.
+4. If you can fix it: implement minimal, focused changes.
 5. If you cannot fix it: document your findings thoroughly.
 
 ## Constraints
@@ -304,7 +299,7 @@ You are an automated agent investigating a GitHub issue. Your goal is to underst
 - Do NOT refactor unrelated code or reformat surrounding lines.
 - Do NOT add new dependencies.
 - Do NOT modify CI/CD configs (.github/workflows/*, .gitlab-ci.yml, etc.).
-- Verify your fix compiles and passes tests before declaring it fixed.
+- Do NOT run build, test, lint, or format commands. CI will verify after push.
 
 ## Output
 

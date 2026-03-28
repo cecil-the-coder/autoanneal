@@ -13,4 +13,4 @@ Summary: {summary}
 
 ## Instructions
 
-Fix the issues identified by the critic. Make minimal, focused changes. After fixing, verify the build works."#;
+Fix the issues identified by the critic. Make minimal, focused changes. Do NOT run build, test, lint, or format commands — CI will verify after push."#;
