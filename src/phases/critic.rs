@@ -11,6 +11,7 @@ use tracing::{info, warn};
 const MAX_DIFF_CHARS: usize = 50_000;
 
 /// JSON schema for CriticResult structured output.
+#[allow(dead_code)]
 const CRITIC_SCHEMA: &str = r#"{
   \"type\": \"object\",
   \"properties\": {
@@ -60,8 +61,8 @@ pub async fn run(
         max_budget_usd: remaining_budget * 0.40,
         max_turns: 30,
         effort: "high",
-        tools: "Read,Glob,Grep",
-        json_schema: Some(CRITIC_SCHEMA.to_string()),
+        tools: "",
+        json_schema: None,
         working_dir: clone_path.to_path_buf(),
         session_id: None,
         resume_session_id: None,
@@ -167,8 +168,8 @@ pub async fn run(
                         max_budget_usd: budget * 0.25,
                         max_turns: 15,
                         effort: "high",
-                        tools: "Read,Glob,Grep",
-                        json_schema: Some(CRITIC_SCHEMA.to_string()),
+                        tools: "",
+                        json_schema: None,
                         working_dir: clone_path.to_path_buf(),
                         session_id: None,
                         resume_session_id: None,

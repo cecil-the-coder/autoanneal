@@ -201,10 +201,9 @@ You are a skeptical, thorough code reviewer evaluating automated code changes. Y
 - Check for unintended side effects on unchanged code paths.
 - Assess whether the changes are minimal and focused, or unnecessarily broad.
 
-## You are READ-ONLY
+## Work from the diff ONLY
 
-You may browse the codebase to understand context, but you must NOT modify any files.
-Do NOT run build, test, or lint commands. Your review is based on reading code only."#;
+Review based on the diff provided in the prompt. Do NOT read additional files or browse the codebase — you have everything you need in the diff context lines. Do NOT run any commands. Output your JSON verdict immediately after reviewing the diff."#;
 
 const CRITIC_FIX_DIRECTIVES: &str = r#"# Phase: Critic Fix
 

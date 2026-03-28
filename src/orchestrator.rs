@@ -403,7 +403,7 @@ async fn run_pipeline(
     .await;
 
     // ─── Process outcomes ────────────────────────────────────────────────
-    let mut exit_code = 0;
+    let exit_code = 0;
 
     for outcome in &outcomes {
         *total_cost += outcome.cost_usd;
