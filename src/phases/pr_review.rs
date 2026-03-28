@@ -1,4 +1,4 @@
-use crate::claude::{self, ClaudeInvocation, generate_session_id};
+use crate::llm::{self, LlmInvocation, generate_session_id};
 use crate::models::{CriticResult, ExternalPr};
 use crate::prompts::critic::CRITIC_PROMPT;
 use crate::prompts::pr_review::PR_REVIEW_FIX_PROMPT;
@@ -83,7 +83,7 @@ pub async fn run(
     let critic_prompt = CRITIC_PROMPT.replace("{diff}", &diff);
     let critic_budget = budget * 0.30;
 
-    let critic_invocation = ClaudeInvocation {
+    let critic_invocation = LlmInvocation {
         prompt: critic_prompt,
         system_prompt: Some(critic_system_prompt()),
         model: model.to_string(),
@@ -98,7 +98,7 @@ pub async fn run(
     };
 
     let critic_response =
-        claude::invoke::<CriticResult>(&critic_invocation, Duration::from_secs(300)).await?;
+        llm::invoke::<CriticResult>(&critic_invocation, Duration::from_secs(300)).await?;
 
     let mut total_cost = critic_response.cost_usd;
 
@@ -156,7 +156,7 @@ pub async fn run(
 
     let session_id = generate_session_id();
 
-    let fix_invocation = ClaudeInvocation {
+    let fix_invocation = LlmInvocation {
         prompt: fix_prompt,
         system_prompt: Some(pr_review_fix_system_prompt()),
         model: model.to_string(),
@@ -170,8 +170,8 @@ pub async fn run(
         resume_session_id: None,
     };
 
-    let fix_response: claude::ClaudeResponse<serde_json::Value> =
-        claude::invoke(&fix_invocation, Duration::from_secs(600)).await?;
+    let fix_response: llm::LlmResponse<serde_json::Value> =
+        llm::invoke(&fix_invocation, Duration::from_secs(600)).await?;
 
     total_cost += fix_response.cost_usd;
 

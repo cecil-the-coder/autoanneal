@@ -1,4 +1,4 @@
-use crate::claude::{self, ClaudeInvocation, ClaudeResponse};
+use crate::llm::{self, LlmInvocation, LlmResponse};
 use crate::guardrails;
 use crate::models::{Category, Improvement, StackInfo, TaskResult, TaskStatus};
 use crate::prompts::implement::IMPLEMENT_PROMPT;
@@ -392,7 +392,7 @@ async fn run_single_task(
         .replace("{test_command}", test_command);
 
     // Step 3: Invoke Claude.
-    let invocation = ClaudeInvocation {
+    let invocation = LlmInvocation {
         prompt,
         system_prompt: Some(implement_system_prompt()),
         model: model.to_string(),
@@ -402,23 +402,23 @@ async fn run_single_task(
         tools: "Read,Glob,Grep,Bash,Edit,Write",
         json_schema: None,
         working_dir: working_dir.to_path_buf(),
-        session_id: Some(claude::generate_session_id()),
+        session_id: Some(llm::generate_session_id()),
         resume_session_id: None,
     };
 
-    let response: ClaudeResponse<serde_json::Value> =
-        match claude::invoke(&invocation, TASK_TIMEOUT).await {
+    let response: LlmResponse<serde_json::Value> =
+        match llm::invoke(&invocation, TASK_TIMEOUT).await {
             Ok(resp) => resp,
             Err(e) => {
                 warn!(
                     task = %improvement.title,
                     error = %e,
-                    "claude invocation failed, skipping task"
+                    "LLM invocation failed, skipping task"
                 );
                 guardrails::discard_changes(working_dir).await?;
                 return Ok(TaskResult {
                     title: improvement.title.clone(),
-                    status: TaskStatus::Failed(format!("claude invocation failed: {e}")),
+                    status: TaskStatus::Failed(format!("LLM invocation failed: {e}")),
                     cost_usd: 0.0,
                     files_changed: vec![],
                 });

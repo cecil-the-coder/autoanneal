@@ -85,7 +85,6 @@ impl ApiClient {
             ApiError::ServerError { .. }
                 | ApiError::RateLimited { .. }
                 | ApiError::Timeout(_)
-                | ApiError::RequestFailed(_)
         )
     }
 
@@ -97,7 +96,7 @@ impl ApiClient {
         let url = format!("{}/v1/messages", self.base_url);
         let mut last_err = ApiError::RequestFailed("no attempts made".to_string());
 
-        for _attempt in 0..=self.max_retries {
+        for attempt in 0..=self.max_retries {
             let result = self
                 .http
                 .post(&url)
@@ -131,13 +130,31 @@ impl ApiClient {
                     if !Self::is_retryable(&err) {
                         return Err(err);
                     }
+
+                    // Backoff before next retry (skip delay after last attempt).
+                    if attempt < self.max_retries {
+                        let delay = match &err {
+                            ApiError::RateLimited { retry_after_secs } => {
+                                Duration::from_secs(*retry_after_secs)
+                            }
+                            _ => Duration::from_secs(1 << attempt), // 1s, 2s, 4s
+                        };
+                        tokio::time::sleep(delay).await;
+                    }
+
                     last_err = err;
                 }
                 Err(e) if e.is_timeout() => {
                     last_err = ApiError::Timeout(timeout);
+                    if attempt < self.max_retries {
+                        tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+                    }
                 }
                 Err(e) => {
                     last_err = ApiError::RequestFailed(e.to_string());
+                    if attempt < self.max_retries {
+                        tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+                    }
                 }
             }
         }

@@ -1,4 +1,4 @@
-//! Bridge module: drop-in replacement for `claude::invoke` that uses the agent
+//! Bridge module: drop-in replacement for `llm::invoke` that uses the agent
 //! module's conversation loop instead of shelling out to the `claude` CLI.
 
 use crate::agent::api_types;
@@ -9,7 +9,7 @@ use crate::agent::conversation::{
 };
 use crate::agent::provider::Provider;
 use crate::agent::tools::ToolExecutor;
-use crate::claude::{self, ClaudeInvocation, ClaudeResponse};
+use crate::llm::{self, LlmInvocation, LlmResponse};
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
@@ -19,9 +19,25 @@ use tracing::{info, warn};
 // Provider detection
 // ---------------------------------------------------------------------------
 
-/// Detect the provider from the ANTHROPIC_BASE_URL environment variable.
-/// If the URL contains "openai" or does not contain "anthropic", use OpenAI mode.
+/// Detect the provider from the AUTOANNEAL_PROVIDER environment variable,
+/// falling back to URL-based heuristic on ANTHROPIC_BASE_URL.
+/// AUTOANNEAL_PROVIDER accepts "anthropic" or "openai".
 fn detect_provider() -> Provider {
+    // Explicit provider override takes precedence.
+    if let Ok(val) = std::env::var("AUTOANNEAL_PROVIDER") {
+        match val.to_lowercase().as_str() {
+            "anthropic" => return Provider::Anthropic,
+            "openai" => return Provider::OpenAi,
+            other => {
+                warn!(
+                    "unknown AUTOANNEAL_PROVIDER value {:?}, falling back to URL heuristic",
+                    other
+                );
+            }
+        }
+    }
+
+    // Fall back to URL heuristic.
     match std::env::var("ANTHROPIC_BASE_URL") {
         Ok(url) => {
             if url.contains("openai") || !url.contains("anthropic") {
@@ -130,6 +146,7 @@ impl ToolHandler for ToolExecutorAdapter {
 struct ApiClientAdapter {
     client: ApiClient,
     provider: Provider,
+    http: reqwest::Client,
 }
 
 #[async_trait::async_trait]
@@ -146,8 +163,7 @@ impl MessageSender for ApiClientAdapter {
         let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
         let headers = self.provider.auth_headers(&api_key);
 
-        let http = reqwest::Client::new();
-        let mut req_builder = http.post(&url).timeout(timeout);
+        let mut req_builder = self.http.post(&url).timeout(timeout);
         for (key, value) in &headers {
             req_builder = req_builder.header(*key, value);
         }
@@ -181,17 +197,17 @@ impl MessageSender for ApiClientAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Build ConversationConfig from ClaudeInvocation
+// Build ConversationConfig from LlmInvocation
 // ---------------------------------------------------------------------------
 
-fn build_config(invocation: &ClaudeInvocation, timeout: Duration) -> ConversationConfig {
+fn build_config(invocation: &LlmInvocation, timeout: Duration) -> ConversationConfig {
     let (max_input, max_output) = budget_to_tokens(invocation.max_budget_usd, &invocation.model);
 
     ConversationConfig {
         model: invocation.model.clone(),
         system_prompt: invocation.system_prompt.clone(),
         max_turns: invocation.max_turns,
-        max_tokens_per_turn: 4096,
+        max_tokens_per_turn: 16384,
         max_total_input_tokens: max_input,
         max_total_output_tokens: max_output,
         timeout_per_turn: timeout,
@@ -200,10 +216,10 @@ fn build_config(invocation: &ClaudeInvocation, timeout: Duration) -> Conversatio
 }
 
 // ---------------------------------------------------------------------------
-// Map ConversationResult -> ClaudeResponse<T>
+// Map ConversationResult -> LlmResponse<T>
 // ---------------------------------------------------------------------------
 
-fn map_result<T: DeserializeOwned>(result: ConversationResult) -> Result<ClaudeResponse<T>> {
+fn map_result<T: DeserializeOwned>(result: ConversationResult, duration_ms: u64) -> Result<LlmResponse<T>> {
     // Estimate cost from tokens (rough: input $3/M, output $15/M for sonnet).
     let estimated_cost = (result.total_input_tokens as f64 * 3.0
         + result.total_output_tokens as f64 * 15.0)
@@ -214,7 +230,7 @@ fn map_result<T: DeserializeOwned>(result: ConversationResult) -> Result<ClaudeR
     // 2. Try extracting from a markdown code fence.
     let structured: Option<T> = if let Ok(parsed) = serde_json::from_str::<T>(&result.text) {
         Some(parsed)
-    } else if let Some(json_str) = claude::extract_json_block(&result.text) {
+    } else if let Some(json_str) = llm::extract_json_block(&result.text) {
         match serde_json::from_str::<T>(json_str) {
             Ok(parsed) => Some(parsed),
             Err(e) => {
@@ -243,11 +259,11 @@ fn map_result<T: DeserializeOwned>(result: ConversationResult) -> Result<ClaudeR
         StopReason::EndTurn => {}
     }
 
-    Ok(ClaudeResponse {
+    Ok(LlmResponse {
         structured,
         text: result.text,
         cost_usd: estimated_cost,
-        duration_ms: 0, // Not tracked by the conversation loop.
+        duration_ms,
         num_turns: result.turns,
         session_id: None,
     })
@@ -257,14 +273,14 @@ fn map_result<T: DeserializeOwned>(result: ConversationResult) -> Result<ClaudeR
 // Public bridge function
 // ---------------------------------------------------------------------------
 
-/// Drop-in replacement for `claude::invoke` that uses the agent module internally.
-/// This bridges the old `ClaudeInvocation`/`ClaudeResponse` types to the new
+/// Drop-in replacement for `llm::invoke` that uses the agent module internally.
+/// This bridges the old `LlmInvocation`/`LlmResponse` types to the new
 /// conversation loop, calling the LLM API directly instead of shelling out to
 /// the `claude` CLI.
 pub async fn invoke<T: DeserializeOwned>(
-    invocation: &ClaudeInvocation,
+    invocation: &LlmInvocation,
     timeout: Duration,
-) -> Result<ClaudeResponse<T>> {
+) -> Result<LlmResponse<T>> {
     let provider = detect_provider();
     let base_url = get_base_url();
     let api_key = get_api_key()?;
@@ -279,7 +295,8 @@ pub async fn invoke<T: DeserializeOwned>(
 
     // Build the pieces.
     let client = ApiClient::new(base_url, api_key);
-    let sender = ApiClientAdapter { client, provider };
+    let http = reqwest::Client::new();
+    let sender = ApiClientAdapter { client, provider, http };
 
     let executor = ToolExecutor::new(
         invocation.working_dir.clone(),
@@ -295,7 +312,7 @@ pub async fn invoke<T: DeserializeOwned>(
     let config = build_config(invocation, timeout);
 
     // Prepend working directory context (reuse the logic from claude.rs).
-    let dir_context = claude::get_dir_context(&invocation.working_dir).await;
+    let dir_context = llm::get_dir_context(&invocation.working_dir).await;
     let augmented_prompt = if dir_context.is_empty() {
         invocation.prompt.clone()
     } else {
@@ -303,17 +320,20 @@ pub async fn invoke<T: DeserializeOwned>(
     };
 
     // Run the conversation loop.
+    let start = std::time::Instant::now();
     let result = conversation::run(&sender, &tool_handler, &config, &augmented_prompt).await;
+    let duration_ms = start.elapsed().as_millis() as u64;
 
     info!(
         turns = result.turns,
         input_tokens = result.total_input_tokens,
         output_tokens = result.total_output_tokens,
         stop_reason = ?result.stop_reason,
+        duration_ms = duration_ms,
         "bridge: conversation complete"
     );
 
-    map_result(result)
+    map_result(result, duration_ms)
 }
 
 // ---------------------------------------------------------------------------
@@ -381,8 +401,8 @@ mod tests {
 
     // -- Helpers --
 
-    fn make_invocation() -> ClaudeInvocation {
-        ClaudeInvocation {
+    fn make_invocation() -> LlmInvocation {
+        LlmInvocation {
             prompt: "Do something.".to_string(),
             system_prompt: Some("You are helpful.".to_string()),
             model: "claude-sonnet-4-20250514".to_string(),
@@ -476,7 +496,7 @@ mod tests {
             total_output_tokens: 50,
             stop_reason: StopReason::EndTurn,
         };
-        let response: ClaudeResponse<serde_json::Value> = map_result(result).unwrap();
+        let response: LlmResponse<serde_json::Value> = map_result(result, 0).unwrap();
         let s = response.structured.unwrap();
         assert_eq!(s["title"], "Fix bug");
 
@@ -488,7 +508,7 @@ mod tests {
             total_output_tokens: 80,
             stop_reason: StopReason::EndTurn,
         };
-        let response2: ClaudeResponse<serde_json::Value> = map_result(result2).unwrap();
+        let response2: LlmResponse<serde_json::Value> = map_result(result2, 0).unwrap();
         let s2 = response2.structured.unwrap();
         assert_eq!(s2["title"], "Update docs");
 
@@ -500,7 +520,7 @@ mod tests {
             total_output_tokens: 20,
             stop_reason: StopReason::EndTurn,
         };
-        let response3: ClaudeResponse<serde_json::Value> = map_result(result3).unwrap();
+        let response3: LlmResponse<serde_json::Value> = map_result(result3, 0).unwrap();
         assert!(response3.structured.is_none());
     }
 
@@ -514,7 +534,7 @@ mod tests {
             total_output_tokens: 500,
             stop_reason: StopReason::EndTurn,
         };
-        let response: ClaudeResponse<serde_json::Value> = map_result(result).unwrap();
+        let response: LlmResponse<serde_json::Value> = map_result(result, 0).unwrap();
         assert_eq!(response.num_turns, 3);
         assert!(response.cost_usd > 0.0);
         assert_eq!(response.text, "done");
@@ -527,7 +547,7 @@ mod tests {
             total_output_tokens: 2000,
             stop_reason: StopReason::MaxTurns,
         };
-        let response: ClaudeResponse<serde_json::Value> = map_result(result).unwrap();
+        let response: LlmResponse<serde_json::Value> = map_result(result, 0).unwrap();
         assert_eq!(response.num_turns, 10);
         assert_eq!(response.text, "partial");
 
@@ -539,7 +559,7 @@ mod tests {
             total_output_tokens: 40_000,
             stop_reason: StopReason::BudgetExhausted,
         };
-        let response: ClaudeResponse<serde_json::Value> = map_result(result).unwrap();
+        let response: LlmResponse<serde_json::Value> = map_result(result, 0).unwrap();
         assert_eq!(response.text, "budget hit");
 
         // Error -> still returns Ok (the error is in the text/stop_reason log).
@@ -550,7 +570,7 @@ mod tests {
             total_output_tokens: 10,
             stop_reason: StopReason::Error("auth failed".to_string()),
         };
-        let response: ClaudeResponse<serde_json::Value> = map_result(result).unwrap();
+        let response: LlmResponse<serde_json::Value> = map_result(result, 0).unwrap();
         assert_eq!(response.text, "error occurred");
 
         // Timeout -> partial success.
@@ -561,7 +581,7 @@ mod tests {
             total_output_tokens: 100,
             stop_reason: StopReason::Timeout,
         };
-        let response: ClaudeResponse<serde_json::Value> = map_result(result).unwrap();
+        let response: LlmResponse<serde_json::Value> = map_result(result, 0).unwrap();
         assert_eq!(response.text, "timed out");
     }
 
@@ -596,7 +616,7 @@ mod tests {
         };
 
         let result = conversation::run(&sender, &tool_handler, &config, "hello").await;
-        let response: ClaudeResponse<serde_json::Value> = map_result(result).unwrap();
+        let response: LlmResponse<serde_json::Value> = map_result(result, 0).unwrap();
 
         assert!(response.structured.is_some());
         assert_eq!(response.structured.unwrap()["answer"], 42);

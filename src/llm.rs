@@ -3,8 +3,8 @@ use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Parameters for a single Claude CLI invocation.
-pub struct ClaudeInvocation {
+/// Parameters for a single LLM invocation.
+pub struct LlmInvocation {
     pub prompt: String,
     pub system_prompt: Option<String>,
     pub model: String,
@@ -20,9 +20,9 @@ pub struct ClaudeInvocation {
     pub resume_session_id: Option<String>,
 }
 
-/// Parsed response from a Claude CLI invocation.
+/// Parsed response from an LLM invocation.
 #[derive(Debug)]
-pub struct ClaudeResponse<T> {
+pub struct LlmResponse<T> {
     pub structured: Option<T>,
     pub text: String,
     pub cost_usd: f64,
@@ -97,15 +97,15 @@ pub(crate) async fn get_dir_context(working_dir: &Path) -> String {
     )
 }
 
-/// Invoke the Claude API and parse its response.
+/// Invoke the LLM API and parse its response.
 ///
 /// Delegates to `agent::bridge::invoke` which handles the conversation loop,
 /// tool execution, retries, and structured output extraction. This function
 /// is a thin wrapper that preserves the public API for all phase callers.
 pub async fn invoke<T: DeserializeOwned>(
-    invocation: &ClaudeInvocation,
+    invocation: &LlmInvocation,
     timeout: Duration,
-) -> Result<ClaudeResponse<T>> {
+) -> Result<LlmResponse<T>> {
     crate::agent::bridge::invoke(invocation, timeout).await
 }
 

@@ -1,4 +1,4 @@
-use crate::claude::{self, ClaudeInvocation, generate_session_id};
+use crate::llm::{self, LlmInvocation, generate_session_id};
 use crate::models::{GithubIssue, RepoInfo, StackInfo};
 use crate::prompts;
 use crate::guardrails;
@@ -74,7 +74,7 @@ pub async fn run(
     let session_id = generate_session_id();
 
     // 3. Invoke Claude.
-    let invocation = ClaudeInvocation {
+    let invocation = LlmInvocation {
         prompt,
         system_prompt: Some(system_prompt),
         model: model.to_string(),
@@ -88,8 +88,8 @@ pub async fn run(
         resume_session_id: None,
     };
 
-    let response: claude::ClaudeResponse<serde_json::Value> =
-        claude::invoke(&invocation, Duration::from_secs(900)).await?;
+    let response: llm::LlmResponse<serde_json::Value> =
+        llm::invoke(&invocation, Duration::from_secs(900)).await?;
 
     let cost_usd = response.cost_usd;
 

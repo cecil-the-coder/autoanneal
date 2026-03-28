@@ -1,4 +1,4 @@
-use crate::claude::{self, truncate_to_char_boundary, ClaudeInvocation, generate_session_id};
+use crate::llm::{self, truncate_to_char_boundary, LlmInvocation, generate_session_id};
 use crate::models::CriticResult;
 use crate::prompts::critic::{CRITIC_FIX_PROMPT, CRITIC_PROMPT};
 use crate::prompts::system::{critic_fix_system_prompt, critic_system_prompt};
@@ -59,7 +59,7 @@ pub async fn run(
     }
 
     let prompt = CRITIC_PROMPT.replace("{diff}", &diff);
-    let invocation = ClaudeInvocation {
+    let invocation = LlmInvocation {
         prompt,
         system_prompt: Some(critic_system_prompt()),
         model: model.to_string(),
@@ -73,7 +73,7 @@ pub async fn run(
         resume_session_id: None,
     };
 
-    let response = claude::invoke::<CriticResult>(&invocation, Duration::from_secs(600)).await?;
+    let response = llm::invoke::<CriticResult>(&invocation, Duration::from_secs(600)).await?;
     total_cost += response.cost_usd;
 
     let initial_review = response.structured.unwrap_or(CriticResult {
@@ -116,7 +116,7 @@ pub async fn run(
         .replace("{score}", &initial_review.score.to_string())
         .replace("{diff}", &diff);
 
-    let fix_invocation = ClaudeInvocation {
+    let fix_invocation = LlmInvocation {
         prompt: fix_prompt,
         system_prompt: Some(critic_fix_system_prompt()),
         model: model.to_string(),
@@ -130,7 +130,7 @@ pub async fn run(
         resume_session_id: None,
     };
 
-    let fix_response = claude::invoke::<serde_json::Value>(&fix_invocation, Duration::from_secs(600)).await;
+    let fix_response = llm::invoke::<serde_json::Value>(&fix_invocation, Duration::from_secs(600)).await;
 
     match fix_response {
         Ok(resp) => {
@@ -184,7 +184,7 @@ pub async fn run(
                 let new_diff = get_diff(clone_path, default_branch).await?;
                 if !new_diff.trim().is_empty() && (remaining_budget - total_cost) > budget * 0.05 {
                     let re_prompt = CRITIC_PROMPT.replace("{diff}", &new_diff);
-                    let re_invocation = ClaudeInvocation {
+                    let re_invocation = LlmInvocation {
                         prompt: re_prompt,
                         system_prompt: Some(critic_system_prompt()),
                         model: model.to_string(),
@@ -198,7 +198,7 @@ pub async fn run(
                         resume_session_id: None,
                     };
 
-                    if let Ok(re_response) = claude::invoke::<CriticResult>(
+                    if let Ok(re_response) = llm::invoke::<CriticResult>(
                         &re_invocation,
                         Duration::from_secs(300),
                     ).await {

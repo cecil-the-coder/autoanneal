@@ -1,4 +1,4 @@
-use crate::claude::{invoke, ClaudeInvocation};
+use crate::llm::{invoke, LlmInvocation};
 use crate::models::{Improvement, PrBody, RepoInfo};
 use crate::prompts::plan::PR_BODY_PROMPT;
 use crate::prompts::system::plan_system_prompt;
@@ -109,7 +109,7 @@ pub async fn create_pr(
 
     let prompt = PR_BODY_PROMPT.replace("{improvements}", &improvements_text);
 
-    let invocation = ClaudeInvocation {
+    let invocation = LlmInvocation {
         prompt,
         system_prompt: Some(plan_system_prompt()),
         model: model.to_string(),

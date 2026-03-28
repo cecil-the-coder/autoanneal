@@ -11,8 +11,8 @@ use std::time::Duration;
 pub enum ToolError {
     #[error("file not found: {0}")]
     FileNotFound(String),
-    #[error("command failed with exit code {code}: {stderr}")]
-    CommandFailed { code: i32, stderr: String },
+    #[error("command failed with exit code {code}:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}")]
+    CommandFailed { code: i32, stdout: String, stderr: String },
     #[error("command timed out after {0} seconds")]
     CommandTimeout(u64),
     #[error("invalid input: {0}")]
@@ -247,6 +247,7 @@ impl ToolExecutor {
         if !output.status.success() && output.status.code() != Some(1) {
             return Err(ToolError::CommandFailed {
                 code: output.status.code().unwrap_or(-1),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             });
         }
@@ -273,49 +274,89 @@ impl ToolExecutor {
         }
 
         let effective_timeout = timeout.unwrap_or(self.command_timeout);
-
-        let child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .current_dir(&self.working_dir)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()?;
-
         let timeout_secs = effective_timeout.as_secs();
+        let working_dir = self.working_dir.clone();
 
-        // Use wait_with_output via a thread + channel for timeout.
-        let (tx, rx) = std::sync::mpsc::channel();
-        let handle = std::thread::spawn(move || {
-            let result = child.wait_with_output();
-            let _ = tx.send(result);
-        });
+        // Run the command using tokio::process::Command + tokio::time::timeout
+        // so we can reliably kill the child on timeout.
+        let run = |rt: tokio::runtime::Handle| {
+            rt.block_on(async {
+                use tokio::io::AsyncReadExt;
 
-        match rx.recv_timeout(effective_timeout) {
-            Ok(Ok(output)) => {
-                let _ = handle.join();
-                if !output.status.success() {
-                    return Err(ToolError::CommandFailed {
-                        code: output.status.code().unwrap_or(-1),
-                        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                    });
+                let mut child = tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(command)
+                    .current_dir(&working_dir)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .map_err(ToolError::IoError)?;
+
+                // Take stdout/stderr handles and spawn readers so `child`
+                // remains available for kill() on timeout.
+                let stdout_handle = child.stdout.take();
+                let stderr_handle = child.stderr.take();
+
+                let stdout_task = tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    if let Some(mut out) = stdout_handle {
+                        let _ = out.read_to_end(&mut buf).await;
+                    }
+                    buf
+                });
+                let stderr_task = tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    if let Some(mut err) = stderr_handle {
+                        let _ = err.read_to_end(&mut buf).await;
+                    }
+                    buf
+                });
+
+                tokio::select! {
+                    status = child.wait() => {
+                        let stdout_buf = stdout_task.await.unwrap_or_default();
+                        let stderr_buf = stderr_task.await.unwrap_or_default();
+                        match status {
+                            Ok(exit) if !exit.success() => {
+                                Err(ToolError::CommandFailed {
+                                    code: exit.code().unwrap_or(-1),
+                                    stdout: String::from_utf8_lossy(&stdout_buf).into_owned(),
+                                    stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
+                                })
+                            }
+                            Ok(_) => {
+                                let mut stdout =
+                                    String::from_utf8_lossy(&stdout_buf).into_owned();
+                                if stdout.len() > MAX_OUTPUT_BYTES {
+                                    stdout.truncate(MAX_OUTPUT_BYTES);
+                                    stdout.push_str("\n... [output truncated]");
+                                }
+                                Ok(stdout)
+                            }
+                            Err(e) => Err(ToolError::IoError(e)),
+                        }
+                    }
+                    _ = tokio::time::sleep(effective_timeout) => {
+                        // Timeout: kill the child process.
+                        let _ = child.kill().await;
+                        stdout_task.abort();
+                        stderr_task.abort();
+                        Err(ToolError::CommandTimeout(timeout_secs))
+                    }
                 }
-                let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-                if stdout.len() > MAX_OUTPUT_BYTES {
-                    stdout.truncate(MAX_OUTPUT_BYTES);
-                    stdout.push_str("\n... [output truncated]");
-                }
-                Ok(stdout)
-            }
-            Ok(Err(e)) => {
-                let _ = handle.join();
-                Err(ToolError::IoError(e))
+            })
+        };
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                // Inside a tokio runtime — use block_in_place to allow block_on.
+                tokio::task::block_in_place(|| run(handle))
             }
             Err(_) => {
-                // Timed out – best-effort kill; the spawned thread still owns
-                // the child so we cannot kill directly, but the thread will
-                // clean up when dropped.
-                Err(ToolError::CommandTimeout(timeout_secs))
+                // No runtime active — create a temporary one.
+                let rt = tokio::runtime::Runtime::new()
+                    .map_err(ToolError::IoError)?;
+                run(rt.handle().clone())
             }
         }
     }

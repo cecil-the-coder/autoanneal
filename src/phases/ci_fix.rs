@@ -1,4 +1,4 @@
-use crate::claude::{self, truncate_to_char_boundary, ClaudeInvocation, generate_session_id};
+use crate::llm::{self, truncate_to_char_boundary, LlmInvocation, generate_session_id};
 use crate::models::InFlightPr;
 use crate::prompts;
 use crate::retry::gh_command;
@@ -162,7 +162,7 @@ pub async fn run(
     let system_prompt = prompts::system::ci_fix_system_prompt();
     let session_id = generate_session_id();
 
-    let invocation = ClaudeInvocation {
+    let invocation = LlmInvocation {
         prompt,
         system_prompt: Some(system_prompt),
         model: model.to_string(),
@@ -176,8 +176,8 @@ pub async fn run(
         resume_session_id: None,
     };
 
-    let response: claude::ClaudeResponse<serde_json::Value> =
-        claude::invoke(&invocation, Duration::from_secs(900)).await?;
+    let response: llm::LlmResponse<serde_json::Value> =
+        llm::invoke(&invocation, Duration::from_secs(900)).await?;
 
     let cost_usd = response.cost_usd;
 

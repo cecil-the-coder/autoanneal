@@ -1,4 +1,4 @@
-use crate::claude::{self, ClaudeInvocation};
+use crate::llm::{self, LlmInvocation};
 use crate::models::{OpenPr, ReconResult, RepoInfo, StackInfo};
 use crate::prompts::recon::RECON_PROMPT;
 use crate::prompts::system::recon_system_prompt;
@@ -49,7 +49,7 @@ pub async fn run(
 
     // 7. Claude architecture summary.
     let (arch_summary, cost_usd) =
-        claude_recon(&clone_path, model, budget, &mut stack_info).await?;
+        llm_recon(&clone_path, model, budget, &mut stack_info).await?;
 
     Ok(ReconOutput {
         clone_path,
@@ -339,13 +339,13 @@ async fn fetch_open_prs(repo_info: &RepoInfo) -> Result<Vec<OpenPr>> {
 
 /// Invoke Claude for the architecture summary and update stack_info with
 /// any more specific commands Claude discovers.
-async fn claude_recon(
+async fn llm_recon(
     clone_path: &Path,
     model: &str,
     budget: f64,
     stack_info: &mut StackInfo,
 ) -> Result<(String, f64)> {
-    let invocation = ClaudeInvocation {
+    let invocation = LlmInvocation {
         prompt: RECON_PROMPT.to_string(),
         system_prompt: Some(recon_system_prompt()),
         model: model.to_string(),
@@ -360,7 +360,7 @@ async fn claude_recon(
     };
 
     let timeout = Duration::from_secs(300);
-    let response = claude::invoke::<ReconResult>(&invocation, timeout)
+    let response = llm::invoke::<ReconResult>(&invocation, timeout)
         .await
         .context("Claude recon invocation failed")?;
 

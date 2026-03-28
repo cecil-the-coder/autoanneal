@@ -239,8 +239,11 @@ fn serialize_openai_request(req: &MessagesRequest) -> Value {
 fn convert_message_to_openai(msg: &Message) -> Vec<Value> {
     // For "user" role with tool results, each tool result becomes a separate
     // "tool" role message. Regular content stays as "user".
+    // For "assistant" role, we collect ALL text and tool_calls and produce a
+    // SINGLE message with both `content` and `tool_calls` fields.
     let mut result = Vec::new();
     let mut text_parts: Vec<String> = Vec::new();
+    let mut tool_calls: Vec<Value> = Vec::new();
 
     for block in &msg.content {
         match block {
@@ -267,36 +270,37 @@ fn convert_message_to_openai(msg: &Message) -> Vec<Value> {
                 }));
             }
             ContentBlock::ToolUse { id, name, input } => {
-                // Assistant message with tool calls -- flush text first, then
-                // represent as an assistant message with tool_calls.
-                if !text_parts.is_empty() {
-                    result.push(json!({
-                        "role": "assistant",
-                        "content": text_parts.join("\n"),
-                    }));
-                    text_parts.clear();
-                }
-                // We accumulate tool uses -- but for simplicity, emit one per block.
-                // In practice the caller should group them, but this works for the
-                // common case.
-                result.push(json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": id,
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "arguments": input.to_string(),
-                        }
-                    }]
+                // Accumulate tool calls to emit as a single assistant message.
+                tool_calls.push(json!({
+                    "id": id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": input.to_string(),
+                    }
                 }));
             }
             ContentBlock::Unknown => {}
         }
     }
 
-    // Flush remaining text
+    // If we have tool_calls, produce a single assistant message with both
+    // content (text) and tool_calls combined.
+    if !tool_calls.is_empty() {
+        let content_val = if text_parts.is_empty() {
+            Value::Null
+        } else {
+            Value::String(text_parts.join("\n"))
+        };
+        result.push(json!({
+            "role": "assistant",
+            "content": content_val,
+            "tool_calls": tool_calls,
+        }));
+        text_parts.clear();
+    }
+
+    // Flush remaining text (for non-tool messages)
     if !text_parts.is_empty() {
         let content = text_parts.join("\n");
         // For simple single-text user messages, content is a plain string
