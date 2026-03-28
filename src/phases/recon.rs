@@ -239,11 +239,12 @@ async fn detect_stack(clone_path: &Path) -> Result<StackInfo> {
 
     for (file, lang, builds, tests, lints) in checks {
         if clone_path.join(file).exists() {
-            primary_language = lang.to_string();
-            build_commands = builds.iter().map(|s| s.to_string()).collect();
-            test_commands = tests.iter().map(|s| s.to_string()).collect();
-            lint_commands = lints.iter().map(|s| s.to_string()).collect();
-            break;
+            if primary_language == "Unknown" {
+                primary_language = lang.to_string();
+            }
+            build_commands.extend(builds.iter().map(|s| s.to_string()));
+            test_commands.extend(tests.iter().map(|s| s.to_string()));
+            lint_commands.extend(lints.iter().map(|s| s.to_string()));
         }
     }
 

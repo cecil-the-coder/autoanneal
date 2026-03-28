@@ -1,4 +1,4 @@
-use crate::claude::{self, ClaudeInvocation, generate_session_id};
+use crate::claude::{self, truncate_to_char_boundary, ClaudeInvocation, generate_session_id};
 use crate::models::InFlightPr;
 use crate::prompts;
 use crate::retry::gh_command;
@@ -196,24 +196,6 @@ pub async fn run(
     })
 }
 
-/// Safely truncates a string at a UTF-8 character boundary near the given byte limit.
-/// This prevents panics when slicing strings that contain multi-byte characters.
-/// Appends a truncation marker so the consumer knows the content was shortened.
-fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        s.to_string()
-    } else {
-        let truncate_at = s
-            .char_indices()
-            .take_while(|(idx, _)| *idx < max_bytes)
-            .last()
-            .map(|(idx, c)| idx + c.len_utf8())
-            .unwrap_or(0);
-        let mut truncated = s[..truncate_at].to_string();
-        truncated.push_str("\n\n... (diff truncated) ...");
-        truncated
-    }
-}
 
 async fn fetch_ci_logs(repo_slug: &str, branch: &str) -> String {
     let dot = Path::new(".");

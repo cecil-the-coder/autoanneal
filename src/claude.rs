@@ -468,6 +468,25 @@ async fn invoke_once<T: DeserializeOwned>(
     Ok(response)
 }
 
+/// Safely truncates a string at a UTF-8 character boundary near the given byte limit.
+/// This prevents panics when slicing strings that contain multi-byte characters.
+/// Appends a truncation marker so the consumer knows the content was shortened.
+pub(crate) fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        s.to_string()
+    } else {
+        let truncate_at = s
+            .char_indices()
+            .take_while(|(idx, _)| *idx < max_bytes)
+            .last()
+            .map(|(idx, c)| idx + c.len_utf8())
+            .unwrap_or(0);
+        let mut truncated = s[..truncate_at].to_string();
+        truncated.push_str("\n\n... (diff truncated) ...");
+        truncated
+    }
+}
+
 /// Truncate a string to at most `max_len` characters, appending "..." if truncated.
 /// Properly handles multi-byte UTF-8 characters by using char boundaries.
 fn truncate(s: &str, max_len: usize) -> String {

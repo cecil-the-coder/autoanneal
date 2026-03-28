@@ -101,6 +101,10 @@ enum WorkItemResult {
         pr_number: Option<u64>,
         has_successful_tasks: bool,
     },
+    /// Work item was skipped before execution (e.g., budget exhausted).
+    Skipped {
+        reason: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -468,6 +472,7 @@ async fn run_pipeline(
                         "NO_IMPROVEMENTS".to_string()
                     }
                 }
+                WorkItemResult::Skipped { reason } => format!("SKIPPED ({reason})"),
             },
             Err(e) => {
                 warn!(item = %outcome.item_name, error = %e, "work item failed");
@@ -651,7 +656,7 @@ async fn run_work_queue(
 
     // Shared atomic cost tracker so concurrent items can see aggregate spending.
     let shared_cost = Arc::new(AtomicU64::new(0));
-    let total_budget_microdollars = (total_budget * MICRODOLLAR) as u64;
+    let total_budget_microdollars = (total_budget * MICRODOLLAR).round() as u64;
 
     /// Helper: check aggregate spend and optionally adjust/skip an item.
     fn check_budget(
@@ -679,6 +684,14 @@ async fn run_work_queue(
         };
         if !check_budget(&mut item, &shared_cost, total_budget_microdollars) {
             info!(item = %item.name(), "skipping work item: shared budget exhausted");
+            outcomes.push(WorkItemOutcome {
+                item_name: item.name(),
+                result: Ok(WorkItemResult::Skipped {
+                    reason: "budget exhausted".to_string(),
+                }),
+                cost_usd: 0.0,
+                duration: Duration::ZERO,
+            });
             continue;
         }
         spawn_work_item(
@@ -700,7 +713,7 @@ async fn run_work_queue(
         });
 
         // Update the shared cost tracker with actual spend.
-        let cost_microdollars = (outcome.cost_usd * MICRODOLLAR) as u64;
+        let cost_microdollars = (outcome.cost_usd * MICRODOLLAR).round() as u64;
         shared_cost.fetch_add(cost_microdollars, Ordering::Relaxed);
 
         outcomes.push(outcome);
@@ -709,6 +722,14 @@ async fn run_work_queue(
         while let Some(mut item) = pending.pop_front() {
             if !check_budget(&mut item, &shared_cost, total_budget_microdollars) {
                 info!(item = %item.name(), "skipping work item: shared budget exhausted");
+                outcomes.push(WorkItemOutcome {
+                    item_name: item.name(),
+                    result: Ok(WorkItemResult::Skipped {
+                        reason: "budget exhausted".to_string(),
+                    }),
+                    cost_usd: 0.0,
+                    duration: Duration::ZERO,
+                });
                 continue;
             }
             spawn_work_item(
