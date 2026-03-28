@@ -605,7 +605,7 @@ async fn create_worktree(repo_dir: &Path, name: &str) -> Result<PathBuf> {
 
     let worktree_dir_str = worktree_dir
         .to_str()
-        .context("worktree path contains non-UTF8 characters")?;
+        .context("failed to convert worktree path to string")?;
     let output = tokio::process::Command::new("git")
         .args(["worktree", "add", "--detach", worktree_dir_str, &head_ref])
         .current_dir(repo_dir)
@@ -626,7 +626,7 @@ async fn create_worktree(repo_dir: &Path, name: &str) -> Result<PathBuf> {
 async fn remove_worktree(repo_dir: &Path, worktree_path: &Path) -> Result<()> {
     let worktree_path_str = worktree_path
         .to_str()
-        .context("worktree path contains non-UTF8 characters")?;
+        .context("failed to convert worktree path to string")?;
     let output = tokio::process::Command::new("git")
         .args(["worktree", "remove", "--force", worktree_path_str])
         .current_dir(repo_dir)
