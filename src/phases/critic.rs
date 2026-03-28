@@ -67,7 +67,7 @@ pub async fn run(
         resume_session_id: None,
     };
 
-    let response = claude::invoke::<CriticResult>(&invocation, Duration::from_secs(300)).await?;
+    let response = claude::invoke::<CriticResult>(&invocation, Duration::from_secs(600)).await?;
     total_cost += response.cost_usd;
 
     let initial_review = response.structured.unwrap_or(CriticResult {
@@ -123,7 +123,7 @@ pub async fn run(
         resume_session_id: None,
     };
 
-    let fix_response = claude::invoke::<serde_json::Value>(&fix_invocation, Duration::from_secs(300)).await;
+    let fix_response = claude::invoke::<serde_json::Value>(&fix_invocation, Duration::from_secs(600)).await;
 
     match fix_response {
         Ok(resp) => {
@@ -176,7 +176,7 @@ pub async fn run(
 
                     if let Ok(re_response) = claude::invoke::<CriticResult>(
                         &re_invocation,
-                        Duration::from_secs(180),
+                        Duration::from_secs(300),
                     ).await {
                         total_cost += re_response.cost_usd;
                         if let Some(re_review) = re_response.structured {
