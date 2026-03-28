@@ -10,6 +10,8 @@ pub const ANALYSIS_PROMPT: &str = r#"You are analyzing a codebase to find concre
 
 ## Open Pull Requests (do NOT overlap with these)
 
+The following PRs are already open. Do NOT propose improvements that touch the same files or address the same issues. Each PR lists its title and the files it modifies:
+
 {open_prs}
 
 ## Recently Merged Changes (do NOT revert these)
@@ -35,6 +37,8 @@ Do NOT suggest:
 - Changes that overlap with the open pull requests listed above
 - Documentation-only changes unless they fix genuinely misleading information
 - Broad refactors that touch many files without a clear functional benefit
+
+IMPORTANT grouping rule: Do NOT mix breaking changes (removing defaults, changing APIs, altering behavior) with safe fixes in the same set of improvements. If you find a breaking change, either propose it as the ONLY improvement, or skip it and focus on safe improvements instead. All improvements in a single batch will become one PR.
 
 Each improvement must be implementable by modifying fewer than 500 lines of code. Be specific: name the exact files, functions, and line ranges involved. Prefer high-confidence, low-risk changes where the current behavior is clearly wrong or clearly improvable.
 

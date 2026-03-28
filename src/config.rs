@@ -40,7 +40,7 @@ pub struct Config {
     pub model_plan: Option<String>,
 
     /// Maximum number of improvements to implement
-    #[arg(long, default_value = "5")]
+    #[arg(long, default_value = "3")]
     pub max_tasks: usize,
 
     /// Run analysis only, print JSON, no PR

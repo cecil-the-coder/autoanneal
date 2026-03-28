@@ -27,7 +27,7 @@ defaults:
   modelImplement: ""
   modelCritic: ""
   modelPlan: ""
-  maxTasks: 5
+  maxTasks: 3
   minSeverity: "minor"
   logLevel: "info"
   dryRun: false

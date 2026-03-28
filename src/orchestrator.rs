@@ -1005,6 +1005,53 @@ async fn run_analysis_pipeline(
         improvements
     };
 
+    // ─── File-overlap dedup against in-flight PRs ──────────────────────
+    // Remove improvements whose files are already being modified by an
+    // open autoanneal PR, even if the LLM analysis didn't notice.
+    let in_flight_files: std::collections::HashSet<&str> = open_prs
+        .iter()
+        .flat_map(|pr| pr.files.iter().map(|f| f.as_str()))
+        .collect();
+
+    let before_dedup = improvements.len();
+    let improvements: Vec<_> = improvements
+        .into_iter()
+        .filter(|imp| {
+            let dominated = imp
+                .files_to_modify
+                .iter()
+                .any(|f| in_flight_files.contains(f.as_str()));
+            if dominated {
+                info!(
+                    title = %imp.title,
+                    "skipping improvement: files overlap with in-flight PR"
+                );
+            }
+            !dominated
+        })
+        .collect();
+
+    if improvements.len() < before_dedup {
+        info!(
+            before = before_dedup,
+            after = improvements.len(),
+            "dedup: removed improvements overlapping with in-flight PRs"
+        );
+    }
+
+    if improvements.is_empty() {
+        info!("all improvements overlap with in-flight PRs, nothing to do");
+        return Ok((
+            WorkItemResult::AnalysisPipeline {
+                pr_url: None,
+                branch_name: None,
+                pr_number: None,
+                has_successful_tasks: false,
+            },
+            cost_total,
+        ));
+    }
+
     // Dry-run: print JSON and return.
     if dry_run {
         let json = serde_json::to_string_pretty(&improvements)
