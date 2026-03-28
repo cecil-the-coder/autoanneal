@@ -129,6 +129,12 @@ pub struct Config {
     /// Budget per issue investigation (USD).
     #[arg(long, default_value = "3.00")]
     pub issue_budget: f64,
+
+    /// Context window size in tokens. Old tool results are evicted when the
+    /// conversation approaches this limit, and a recall tool lets the model
+    /// retrieve them on demand. Lower values reduce cost.
+    #[arg(long, default_value = "128000")]
+    pub context_window: u64,
 }
 
 impl Config {
@@ -299,6 +305,7 @@ mod tests {
             max_issues: 2,
             issue_budget: 3.0,
             max_open_prs: 5,
+            context_window: 128_000,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -337,6 +344,7 @@ mod tests {
             max_issues: 2,
             issue_budget: 3.0,
             max_open_prs: 5,
+            context_window: 128_000,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -375,6 +383,7 @@ mod tests {
             max_issues: 2,
             issue_budget: 3.0,
             max_open_prs: 5,
+            context_window: 128_000,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -413,6 +422,7 @@ mod tests {
             max_issues: 2,
             issue_budget: 3.0,
             max_open_prs: 5,
+            context_window: 128_000,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -451,6 +461,7 @@ mod tests {
             max_issues: 2,
             issue_budget: 3.0,
             max_open_prs: 5,
+            context_window: 128_000,
         };
         assert_eq!(config.min_severity(), Severity::Moderate);
     }
@@ -489,6 +500,7 @@ mod tests {
             max_issues: 2,
             issue_budget: 3.0,
             max_open_prs: 5,
+            context_window: 128_000,
         };
         assert_eq!(config.min_severity(), Severity::Minor);
     }

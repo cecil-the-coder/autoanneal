@@ -125,6 +125,8 @@ Expects a dict with keys: repo (the repo entry), root (top-level context).
 - {{ ($repo.issueBudget | default $defaults.issueBudget) | quote }}
 - "--max-open-prs"
 - {{ ($repo.maxOpenPrs | default $defaults.maxOpenPrs) | quote }}
+- "--context-window"
+- {{ ($repo.contextWindow | default $defaults.contextWindow) | quote }}
 {{- end }}
 
 {{/*

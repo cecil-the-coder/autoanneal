@@ -1,4 +1,4 @@
-use crate::claude::{self, ClaudeInvocation, generate_session_id};
+use crate::llm::{self, LlmInvocation};
 use crate::models::{CriticResult, ExternalPr};
 use crate::prompts::critic::CRITIC_PROMPT;
 use crate::prompts::pr_review::PR_REVIEW_FIX_PROMPT;
@@ -29,6 +29,7 @@ pub async fn run(
     model: &str,
     budget: f64,
     fix_threshold: u32,
+    context_window: u64,
 ) -> Result<PrReviewOutput> {
     let dot = Path::new(".");
     let clone_dir = worktree_path.to_path_buf();
@@ -83,7 +84,7 @@ pub async fn run(
     let critic_prompt = CRITIC_PROMPT.replace("{diff}", &diff);
     let critic_budget = budget * 0.30;
 
-    let critic_invocation = ClaudeInvocation {
+    let critic_invocation = LlmInvocation {
         prompt: critic_prompt,
         system_prompt: Some(critic_system_prompt()),
         model: model.to_string(),
@@ -93,12 +94,11 @@ pub async fn run(
         tools: "Read,Glob,Grep,Bash",
         json_schema: None,
         working_dir: clone_dir.clone(),
-        session_id: None,
-        resume_session_id: None,
+        context_window,
     };
 
     let critic_response =
-        claude::invoke::<CriticResult>(&critic_invocation, Duration::from_secs(300)).await?;
+        llm::invoke::<CriticResult>(&critic_invocation, Duration::from_secs(300)).await?;
 
     let mut total_cost = critic_response.cost_usd;
 
@@ -154,9 +154,7 @@ pub async fn run(
         .replace("{summary}", &critic.summary)
         .replace("{diff}", &diff);
 
-    let session_id = generate_session_id();
-
-    let fix_invocation = ClaudeInvocation {
+    let fix_invocation = LlmInvocation {
         prompt: fix_prompt,
         system_prompt: Some(pr_review_fix_system_prompt()),
         model: model.to_string(),
@@ -166,12 +164,11 @@ pub async fn run(
         tools: "Read,Glob,Grep,Bash,Edit,Write",
         json_schema: None,
         working_dir: clone_dir.clone(),
-        session_id: Some(session_id),
-        resume_session_id: None,
+        context_window,
     };
 
-    let fix_response: claude::ClaudeResponse<serde_json::Value> =
-        claude::invoke(&fix_invocation, Duration::from_secs(600)).await?;
+    let fix_response: llm::LlmResponse<serde_json::Value> =
+        llm::invoke(&fix_invocation, Duration::from_secs(600)).await?;
 
     total_cost += fix_response.cost_usd;
 
