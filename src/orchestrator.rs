@@ -58,6 +58,7 @@ enum WorkItemKind {
         dry_run: bool,
         critic_threshold: u32,
         doc_critic_threshold: u32,
+        critic_model_specs: Option<Vec<(Option<String>, String)>>,
     },
 }
 
@@ -639,6 +640,7 @@ fn collect_work_items(
                 dry_run: config.dry_run,
                 critic_threshold: config.critic_threshold,
                 doc_critic_threshold: config.doc_critic_threshold,
+                critic_model_specs: config.critic_model_specs(),
             },
             budget_cap: analysis_budget,
             context_window,
@@ -856,6 +858,7 @@ fn spawn_work_item(
                 dry_run,
                 critic_threshold,
                 doc_critic_threshold,
+                critic_model_specs,
             } => {
                 run_analysis_pipeline(
                     &clone_path,
@@ -873,6 +876,7 @@ fn spawn_work_item(
                     dry_run,
                     critic_threshold,
                     doc_critic_threshold,
+                    &critic_model_specs,
                     budget,
                     &repo_slug,
                     context_window,
@@ -917,6 +921,7 @@ async fn run_analysis_pipeline(
     dry_run: bool,
     critic_threshold: u32,
     doc_critic_threshold: u32,
+    critic_model_specs: &Option<Vec<(Option<String>, String)>>,
     mut budget: f64,
     _repo_slug: &str,
     context_window: u64,
@@ -1127,53 +1132,86 @@ async fn run_analysis_pipeline(
 
     if threshold > 0 && budget > 0.0 {
         let critic_budget = budget.min(1.50);
-        match tokio::time::timeout(
-            Duration::from_secs(900),
-            phases::critic::run(
-                clone_path,
-                &repo_info.default_branch,
-                model_critic,
-                critic_budget,
-                context_window,
-            ),
-        )
-        .await
-        {
-            Ok(Ok(critic_output)) => {
-                budget -= critic_output.cost_usd;
-                cost_total += critic_output.cost_usd;
 
-                if critic_output.score < threshold {
-                    info!(
-                        score = critic_output.score,
-                        threshold,
-                        "critic rejected changes"
-                    );
-                    // Critic rejected — mark as no successful tasks so
-                    // cleanup deletes the lock branch from GitHub.
-                    return Ok((
-                        WorkItemResult::AnalysisPipeline {
-                            pr_url: None,
-                            branch_name: Some(branch_name),
-                            pr_number: None,
-                            has_successful_tasks: false,
-                        },
-                        cost_total,
-                    ));
+        let critic_result = if let Some(specs) = critic_model_specs {
+            // Panel mode: 3-gate deliberation
+            info!("using critic panel with {} model(s)", specs.len());
+            match tokio::time::timeout(
+                Duration::from_secs(900),
+                phases::critic_panel::run(
+                    clone_path,
+                    &repo_info.default_branch,
+                    specs,
+                    critic_budget,
+                    context_window,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(result)) => Some(result),
+                Ok(Err(e)) => {
+                    warn!(error = %e, "critic panel failed (non-fatal, proceeding)");
+                    None
                 }
-                critic_summary = Some(format!(
-                    "## Review\n\nScore: {}/10\n\n{}",
-                    critic_output.score, critic_output.summary
+                Err(_) => {
+                    warn!("critic panel timed out (non-fatal, proceeding)");
+                    None
+                }
+            }
+        } else {
+            // Single critic mode (existing behavior)
+            match tokio::time::timeout(
+                Duration::from_secs(900),
+                phases::critic::run(
+                    clone_path,
+                    &repo_info.default_branch,
+                    model_critic,
+                    critic_budget,
+                    context_window,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(result)) => Some(result),
+                Ok(Err(e)) => {
+                    warn!(error = %e, "critic review failed (non-fatal, proceeding)");
+                    None
+                }
+                Err(_) => {
+                    warn!("critic review timed out (non-fatal, proceeding)");
+                    None
+                }
+            }
+        };
+
+        if let Some(critic_output) = critic_result {
+            budget -= critic_output.cost_usd;
+            cost_total += critic_output.cost_usd;
+
+            if critic_output.score < threshold {
+                info!(
+                    score = critic_output.score,
+                    threshold,
+                    "critic rejected changes"
+                );
+                // Critic rejected — mark as no successful tasks so
+                // cleanup deletes the lock branch from GitHub.
+                return Ok((
+                    WorkItemResult::AnalysisPipeline {
+                        pr_url: None,
+                        branch_name: Some(branch_name),
+                        pr_number: None,
+                        has_successful_tasks: false,
+                    },
+                    cost_total,
                 ));
             }
-            Ok(Err(e)) => {
-                warn!(error = %e, "critic review failed (non-fatal, proceeding)");
-                critic_summary = Some(format!("## Review\n\nCritic review failed: {e}"));
-            }
-            Err(_) => {
-                warn!("critic review timed out (non-fatal, proceeding)");
-                critic_summary = Some("## Review\n\nCritic review timed out.".to_string());
-            }
+            critic_summary = Some(format!(
+                "## Review\n\nScore: {}/10\n\n{}",
+                critic_output.score, critic_output.summary
+            ));
+        } else {
+            critic_summary = Some("## Review\n\nCritic review unavailable.".to_string());
         }
     }
 
