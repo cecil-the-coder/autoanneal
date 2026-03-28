@@ -511,6 +511,7 @@ async fn invoke_critic<T: serde::de::DeserializeOwned + Send + 'static>(
         working_dir: clone_path.to_path_buf(),
         context_window,
         provider_hint,
+        max_tokens_per_turn: Some(4096), // critics output small JSON, no need for 16K
     };
 
     let response = llm::invoke::<T>(&invocation, Duration::from_secs(300))

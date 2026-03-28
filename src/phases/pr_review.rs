@@ -96,6 +96,7 @@ pub async fn run(
         working_dir: clone_dir.clone(),
         context_window,
         provider_hint: None,
+        max_tokens_per_turn: None,
     };
 
     let critic_response =
@@ -167,6 +168,7 @@ pub async fn run(
         working_dir: clone_dir.clone(),
         context_window,
         provider_hint: None,
+        max_tokens_per_turn: None,
     };
 
     let fix_response: llm::LlmResponse<serde_json::Value> =

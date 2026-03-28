@@ -233,7 +233,7 @@ fn build_config(invocation: &LlmInvocation, timeout: Duration) -> ConversationCo
         model: invocation.model.clone(),
         system_prompt: invocation.system_prompt.clone(),
         max_turns: invocation.max_turns,
-        max_tokens_per_turn: 16384,
+        max_tokens_per_turn: invocation.max_tokens_per_turn.unwrap_or(16384),
         max_total_input_tokens: max_input,
         max_total_output_tokens: max_output,
         timeout_per_turn: timeout,
@@ -454,6 +454,7 @@ mod tests {
             working_dir: PathBuf::from("/tmp"),
             context_window: crate::agent::context::DEFAULT_CONTEXT_WINDOW,
             provider_hint: None,
+            max_tokens_per_turn: None,
         }
     }
 

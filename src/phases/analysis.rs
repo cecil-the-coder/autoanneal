@@ -126,6 +126,7 @@ pub async fn run(
         working_dir: clone_path.to_path_buf(),
         context_window,
         provider_hint: None,
+        max_tokens_per_turn: None,
     };
 
     // 3. Invoke Claude.
@@ -204,6 +205,7 @@ pub async fn run_doc_analysis(
         working_dir: clone_path.to_path_buf(),
         context_window,
         provider_hint: None,
+        max_tokens_per_turn: None,
     };
 
     // 3. Invoke Claude.
