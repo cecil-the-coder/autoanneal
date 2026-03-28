@@ -15,4 +15,4 @@ pub const FIX_BUILD_PROMPT: &str = r#"A build or compilation failed after recent
 - Do NOT add new dependencies.
 - Do NOT modify CI/CD configuration files.
 
-Read the error messages carefully, identify the root cause in the allowed files, and apply the minimal fix to resolve each error. After fixing, re-run the build command to verify the errors are resolved."#;
+Read the error messages carefully, identify the root cause in the allowed files, and apply the minimal fix to resolve each error. Do NOT run build, test, lint, or format commands — CI will verify after push."#;
