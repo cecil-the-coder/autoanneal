@@ -1,4 +1,4 @@
-use crate::llm::{self, LlmInvocation, generate_session_id};
+use crate::llm::{self, LlmInvocation};
 use crate::models::{CriticResult, ExternalPr};
 use crate::prompts::critic::CRITIC_PROMPT;
 use crate::prompts::pr_review::PR_REVIEW_FIX_PROMPT;
@@ -93,8 +93,6 @@ pub async fn run(
         tools: "Read,Glob,Grep,Bash",
         json_schema: None,
         working_dir: clone_dir.clone(),
-        session_id: None,
-        resume_session_id: None,
     };
 
     let critic_response =
@@ -154,8 +152,6 @@ pub async fn run(
         .replace("{summary}", &critic.summary)
         .replace("{diff}", &diff);
 
-    let session_id = generate_session_id();
-
     let fix_invocation = LlmInvocation {
         prompt: fix_prompt,
         system_prompt: Some(pr_review_fix_system_prompt()),
@@ -166,8 +162,6 @@ pub async fn run(
         tools: "Read,Glob,Grep,Bash,Edit,Write",
         json_schema: None,
         working_dir: clone_dir.clone(),
-        session_id: Some(session_id),
-        resume_session_id: None,
     };
 
     let fix_response: llm::LlmResponse<serde_json::Value> =

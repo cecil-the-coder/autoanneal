@@ -1,4 +1,4 @@
-use crate::llm::{self, LlmInvocation, generate_session_id};
+use crate::llm::{self, LlmInvocation};
 use crate::models::{GithubIssue, RepoInfo, StackInfo};
 use crate::prompts;
 use crate::guardrails;
@@ -71,7 +71,6 @@ pub async fn run(
         .replace("{test_commands}", &test_cmds);
 
     let system_prompt = prompts::system::issue_investigation_system_prompt();
-    let session_id = generate_session_id();
 
     // 3. Invoke Claude.
     let invocation = LlmInvocation {
@@ -84,8 +83,6 @@ pub async fn run(
         tools: "Read,Glob,Grep,Bash,Edit,Write",
         json_schema: None,
         working_dir: worktree_path.to_path_buf(),
-        session_id: Some(session_id),
-        resume_session_id: None,
     };
 
     let response: llm::LlmResponse<serde_json::Value> =

@@ -4,8 +4,8 @@
 use crate::agent::api_types;
 use crate::agent::client::ApiClient;
 use crate::agent::conversation::{
-    self, ApiError as ConvApiError, ConversationConfig, ConversationResult,
-    MessageSender, StopReason, ToolHandler,
+    self, ConversationConfig, ConversationResult,
+    StopReason, ToolHandler,
 };
 use crate::agent::provider::Provider;
 use crate::agent::tools::ToolExecutor;
@@ -139,60 +139,17 @@ impl ToolHandler for ToolExecutorAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Adapter: ApiClient -> MessageSender trait
+// Effort -> temperature mapping
 // ---------------------------------------------------------------------------
 
-/// Wraps an `ApiClient` to implement the conversation loop's `MessageSender` trait.
-struct ApiClientAdapter {
-    client: ApiClient,
-    provider: Provider,
-    http: reqwest::Client,
-}
-
-#[async_trait::async_trait]
-impl MessageSender for ApiClientAdapter {
-    async fn send(
-        &self,
-        request: &api_types::MessagesRequest,
-        timeout: Duration,
-    ) -> std::result::Result<api_types::MessagesResponse, ConvApiError> {
-        // Use the provider to serialize/deserialize with the correct wire format.
-        let body_json = self.provider.serialize_request(request);
-        let url = format!("{}{}", self.client.base_url(), self.provider.url_path());
-
-        let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-        let headers = self.provider.auth_headers(&api_key);
-
-        let mut req_builder = self.http.post(&url).timeout(timeout);
-        for (key, value) in &headers {
-            req_builder = req_builder.header(*key, value);
-        }
-        req_builder = req_builder.json(&body_json);
-
-        let result = req_builder.send().await;
-
-        match result {
-            Ok(resp) => {
-                let status = resp.status().as_u16();
-                let body = resp
-                    .text()
-                    .await
-                    .map_err(|e| ConvApiError::Request(e.to_string()))?;
-
-                if status >= 200 && status < 300 {
-                    self.provider
-                        .deserialize_response(&body)
-                        .map_err(|e| ConvApiError::MalformedResponse(e.to_string()))
-                } else {
-                    Err(ConvApiError::Http {
-                        status,
-                        body,
-                    })
-                }
-            }
-            Err(e) if e.is_timeout() => Err(ConvApiError::Timeout),
-            Err(e) => Err(ConvApiError::Request(e.to_string())),
-        }
+/// Map the `effort` field to a temperature value for the API.
+fn effort_to_temperature(effort: &str) -> Option<f64> {
+    match effort {
+        "low" => Some(0.2),
+        "medium" => Some(0.5),
+        "high" => Some(0.8),
+        "max" => Some(1.0),
+        _ => None,
     }
 }
 
@@ -212,6 +169,7 @@ fn build_config(invocation: &LlmInvocation, timeout: Duration) -> ConversationCo
         max_total_output_tokens: max_output,
         timeout_per_turn: timeout,
         tools_enabled: !invocation.tools.is_empty(),
+        temperature: effort_to_temperature(invocation.effort),
     }
 }
 
@@ -265,7 +223,6 @@ fn map_result<T: DeserializeOwned>(result: ConversationResult, duration_ms: u64)
         cost_usd: estimated_cost,
         duration_ms,
         num_turns: result.turns,
-        session_id: None,
     })
 }
 
@@ -294,9 +251,7 @@ pub async fn invoke<T: DeserializeOwned>(
     );
 
     // Build the pieces.
-    let client = ApiClient::new(base_url, api_key);
-    let http = reqwest::Client::new();
-    let sender = ApiClientAdapter { client, provider, http };
+    let client = ApiClient::new(base_url, api_key, provider);
 
     let executor = ToolExecutor::new(
         invocation.working_dir.clone(),
@@ -313,15 +268,22 @@ pub async fn invoke<T: DeserializeOwned>(
 
     // Prepend working directory context (reuse the logic from claude.rs).
     let dir_context = llm::get_dir_context(&invocation.working_dir).await;
-    let augmented_prompt = if dir_context.is_empty() {
+    let mut augmented_prompt = if dir_context.is_empty() {
         invocation.prompt.clone()
     } else {
         format!("{dir_context}\n\n{}", invocation.prompt)
     };
 
+    // Append JSON schema instruction if provided.
+    if let Some(schema) = &invocation.json_schema {
+        augmented_prompt.push_str(&format!(
+            "\n\nOutput your response as JSON matching this schema: {schema}"
+        ));
+    }
+
     // Run the conversation loop.
     let start = std::time::Instant::now();
-    let result = conversation::run(&sender, &tool_handler, &config, &augmented_prompt).await;
+    let result = conversation::run(&client, &tool_handler, &config, &augmented_prompt).await;
     let duration_ms = start.elapsed().as_millis() as u64;
 
     info!(
@@ -412,8 +374,6 @@ mod tests {
             tools: "read_file,write_file,bash",
             json_schema: None,
             working_dir: PathBuf::from("/tmp"),
-            session_id: None,
-            resume_session_id: None,
         }
     }
 
@@ -613,6 +573,7 @@ mod tests {
             max_total_output_tokens: 50_000,
             timeout_per_turn: Duration::from_secs(30),
             tools_enabled: true,
+            temperature: None,
         };
 
         let result = conversation::run(&sender, &tool_handler, &config, "hello").await;

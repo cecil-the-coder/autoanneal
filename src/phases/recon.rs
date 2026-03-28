@@ -355,8 +355,6 @@ async fn llm_recon(
         tools: "Read,Glob,Grep,Bash",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
-        session_id: None,
-        resume_session_id: None,
     };
 
     let timeout = Duration::from_secs(300);

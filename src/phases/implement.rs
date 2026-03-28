@@ -1,4 +1,4 @@
-use crate::llm::{self, LlmInvocation, LlmResponse};
+use crate::llm::{self, LlmInvocation};
 use crate::guardrails;
 use crate::models::{Category, Improvement, StackInfo, TaskResult, TaskStatus};
 use crate::prompts::implement::IMPLEMENT_PROMPT;
@@ -402,11 +402,9 @@ async fn run_single_task(
         tools: "Read,Glob,Grep,Bash,Edit,Write",
         json_schema: None,
         working_dir: working_dir.to_path_buf(),
-        session_id: Some(llm::generate_session_id()),
-        resume_session_id: None,
     };
 
-    let response: LlmResponse<serde_json::Value> =
+    let response: llm::LlmResponse<serde_json::Value> =
         match llm::invoke(&invocation, TASK_TIMEOUT).await {
             Ok(resp) => resp,
             Err(e) => {

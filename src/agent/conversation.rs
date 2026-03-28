@@ -1,5 +1,6 @@
 use crate::agent::api_types::*;
 use std::time::Duration;
+use tracing::trace;
 
 // ---------------------------------------------------------------------------
 // Traits -- these abstract away the API client and tool executor so the
@@ -56,6 +57,7 @@ pub struct ConversationConfig {
     pub max_total_output_tokens: u64,
     pub timeout_per_turn: Duration,
     pub tools_enabled: bool,
+    pub temperature: Option<f64>,
 }
 
 impl Default for ConversationConfig {
@@ -69,6 +71,7 @@ impl Default for ConversationConfig {
             max_total_output_tokens: 100_000,
             timeout_per_turn: Duration::from_secs(120),
             tools_enabled: true,
+            temperature: None,
         }
     }
 }
@@ -160,7 +163,7 @@ pub async fn run(
             system: config.system_prompt.clone(),
             messages: messages.clone(),
             tools,
-            temperature: None,
+            temperature: config.temperature,
             stop_sequences: None,
             tool_choice: None,
         };
@@ -215,6 +218,7 @@ pub async fn run(
         };
 
         // --- accumulate tokens ---
+        trace!(msg_id = %response.id, turn = turns, "received API response");
         total_input_tokens += response.usage.input_tokens
             + response.usage.cache_creation_input_tokens
             + response.usage.cache_read_input_tokens;

@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tracing::info;
 
 /// Parameters for a single LLM invocation.
 pub struct LlmInvocation {
@@ -14,10 +15,6 @@ pub struct LlmInvocation {
     pub tools: &'static str,
     pub json_schema: Option<String>,
     pub working_dir: PathBuf,
-    /// Pre-assigned session ID (for potential timeout resume).
-    pub session_id: Option<String>,
-    /// If set, resumes an existing session instead of starting a new one.
-    pub resume_session_id: Option<String>,
 }
 
 /// Parsed response from an LLM invocation.
@@ -28,32 +25,6 @@ pub struct LlmResponse<T> {
     pub cost_usd: f64,
     pub duration_ms: u64,
     pub num_turns: u32,
-    /// Session ID for potential resume (used when timeout triggers a follow-up).
-    #[allow(dead_code)]
-    pub session_id: Option<String>,
-}
-
-/// Generate a UUID-shaped session ID from system time and process ID.
-/// Format: 8-4-4-4-12 hex chars (standard UUID layout).
-pub fn generate_session_id() -> String {
-    use sha2::{Digest, Sha256};
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let pid = std::process::id();
-    let mut hasher = Sha256::new();
-    hasher.update(format!("{nanos}-{pid}").as_bytes());
-    let hash = hasher.finalize();
-    let hex = hex::encode(&hash[..16]);
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
 }
 
 /// Generate a compact working directory context string.
@@ -106,7 +77,15 @@ pub async fn invoke<T: DeserializeOwned>(
     invocation: &LlmInvocation,
     timeout: Duration,
 ) -> Result<LlmResponse<T>> {
-    crate::agent::bridge::invoke(invocation, timeout).await
+    let response = crate::agent::bridge::invoke(invocation, timeout).await?;
+    info!(
+        model = %invocation.model,
+        duration_ms = response.duration_ms,
+        num_turns = response.num_turns,
+        cost_usd = response.cost_usd,
+        "llm::invoke complete"
+    );
+    Ok(response)
 }
 
 /// Safely truncates a string at a UTF-8 character boundary near the given byte limit.

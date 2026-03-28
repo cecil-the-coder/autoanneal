@@ -48,13 +48,6 @@ impl Provider {
         }
     }
 
-    /// Try to parse an error response body into a `ProviderError`.
-    pub fn parse_error(&self, status: u16, body: &str) -> ProviderError {
-        match self {
-            Provider::Anthropic => parse_anthropic_error(status, body),
-            Provider::OpenAi => parse_openai_error(status, body),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -65,16 +58,6 @@ impl Provider {
 pub enum ProviderError {
     #[error("deserialization failed: {0}")]
     DeserializationFailed(String),
-    #[error("API error {status}: {error_type}: {message}")]
-    ApiError {
-        status: u16,
-        error_type: String,
-        message: String,
-    },
-    #[error("overloaded (status {status}): {message}")]
-    Overloaded { status: u16, message: String },
-    #[error("rate limited (status {status}): {message}")]
-    RateLimited { status: u16, message: String },
     #[error("content filtered: {message}")]
     ContentFiltered { message: String },
 }
@@ -150,45 +133,6 @@ fn serialize_anthropic_content(blocks: &[ContentBlock]) -> Value {
 fn deserialize_anthropic_response(body: &str) -> Result<MessagesResponse, ProviderError> {
     serde_json::from_str::<MessagesResponse>(body)
         .map_err(|e| ProviderError::DeserializationFailed(format!("Anthropic JSON: {e}")))
-}
-
-fn parse_anthropic_error(status: u16, body: &str) -> ProviderError {
-    if let Ok(v) = serde_json::from_str::<Value>(body) {
-        if v.get("type").and_then(|t| t.as_str()) == Some("error") {
-            let error_obj = &v["error"];
-            let error_type = error_obj["type"]
-                .as_str()
-                .unwrap_or("unknown")
-                .to_string();
-            let message = error_obj["message"]
-                .as_str()
-                .unwrap_or("unknown error")
-                .to_string();
-
-            if status == 529 || error_type == "overloaded_error" {
-                return ProviderError::Overloaded {
-                    status,
-                    message,
-                };
-            }
-            if status == 429 {
-                return ProviderError::RateLimited {
-                    status,
-                    message,
-                };
-            }
-            return ProviderError::ApiError {
-                status,
-                error_type,
-                message,
-            };
-        }
-    }
-    ProviderError::ApiError {
-        status,
-        error_type: "unknown".to_string(),
-        message: body.to_string(),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -417,42 +361,6 @@ fn map_openai_finish_reason(reason: &str) -> Result<String, ProviderError> {
             message: "response filtered by content filter".to_string(),
         }),
         other => Ok(other.to_string()),
-    }
-}
-
-fn parse_openai_error(status: u16, body: &str) -> ProviderError {
-    if let Ok(v) = serde_json::from_str::<Value>(body) {
-        if let Some(error_obj) = v.get("error") {
-            let message = error_obj["message"]
-                .as_str()
-                .unwrap_or("unknown error")
-                .to_string();
-            let error_type = error_obj["type"]
-                .as_str()
-                .unwrap_or("unknown")
-                .to_string();
-            let _code = error_obj["code"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-
-            if status == 429 {
-                return ProviderError::RateLimited {
-                    status,
-                    message,
-                };
-            }
-            return ProviderError::ApiError {
-                status,
-                error_type,
-                message,
-            };
-        }
-    }
-    ProviderError::ApiError {
-        status,
-        error_type: "unknown".to_string(),
-        message: body.to_string(),
     }
 }
 
@@ -979,97 +887,4 @@ mod tests {
     // Error format tests
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn test_anthropic_error_parsing() {
-        let body = json!({
-            "type": "error",
-            "error": {
-                "type": "invalid_request_error",
-                "message": "max_tokens must be positive"
-            }
-        })
-        .to_string();
-
-        let err = Provider::Anthropic.parse_error(400, &body);
-        match err {
-            ProviderError::ApiError {
-                status,
-                error_type,
-                message,
-            } => {
-                assert_eq!(status, 400);
-                assert_eq!(error_type, "invalid_request_error");
-                assert_eq!(message, "max_tokens must be positive");
-            }
-            other => panic!("expected ApiError, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_openai_error_parsing() {
-        let body = json!({
-            "error": {
-                "message": "Invalid API key",
-                "type": "invalid_request_error",
-                "code": "invalid_api_key"
-            }
-        })
-        .to_string();
-
-        let err = Provider::OpenAi.parse_error(401, &body);
-        match err {
-            ProviderError::ApiError {
-                status,
-                error_type,
-                message,
-            } => {
-                assert_eq!(status, 401);
-                assert_eq!(error_type, "invalid_request_error");
-                assert_eq!(message, "Invalid API key");
-            }
-            other => panic!("expected ApiError, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_anthropic_overloaded_error_529() {
-        let body = json!({
-            "type": "error",
-            "error": {
-                "type": "overloaded_error",
-                "message": "Overloaded"
-            }
-        })
-        .to_string();
-
-        let err = Provider::Anthropic.parse_error(529, &body);
-        match err {
-            ProviderError::Overloaded { status, message } => {
-                assert_eq!(status, 529);
-                assert_eq!(message, "Overloaded");
-            }
-            other => panic!("expected Overloaded, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_openai_rate_limit_error() {
-        let body = json!({
-            "error": {
-                "message": "Rate limit exceeded",
-                "type": "rate_limit_error",
-                "code": "rate_limit_exceeded"
-            }
-        })
-        .to_string();
-
-        let err = Provider::OpenAi.parse_error(429, &body);
-        match err {
-            ProviderError::RateLimited { status, message } => {
-                assert_eq!(status, 429);
-                assert_eq!(message, "Rate limit exceeded");
-            }
-            other => panic!("expected RateLimited, got {:?}", other),
-        }
-    }
 }

@@ -1,4 +1,4 @@
-use crate::llm::{self, truncate_to_char_boundary, LlmInvocation, generate_session_id};
+use crate::llm::{self, truncate_to_char_boundary, LlmInvocation};
 use crate::models::InFlightPr;
 use crate::prompts;
 use crate::retry::gh_command;
@@ -160,7 +160,6 @@ pub async fn run(
     };
 
     let system_prompt = prompts::system::ci_fix_system_prompt();
-    let session_id = generate_session_id();
 
     let invocation = LlmInvocation {
         prompt,
@@ -172,8 +171,6 @@ pub async fn run(
         tools: "Read,Glob,Grep,Bash,Edit,Write",
         json_schema: None,
         working_dir: clone_dir.clone(),
-        session_id: Some(session_id),
-        resume_session_id: None,
     };
 
     let response: llm::LlmResponse<serde_json::Value> =

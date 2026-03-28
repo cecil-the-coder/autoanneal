@@ -123,8 +123,6 @@ pub async fn run(
         tools: "Read,Glob,Grep,Agent",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
-        session_id: None,
-        resume_session_id: None,
     };
 
     // 3. Invoke Claude.
@@ -200,8 +198,6 @@ pub async fn run_doc_analysis(
         tools: "Read,Glob,Grep,Agent",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
-        session_id: None,
-        resume_session_id: None,
     };
 
     // 3. Invoke Claude.

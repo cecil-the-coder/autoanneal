@@ -1,4 +1,4 @@
-use crate::llm::{self, truncate_to_char_boundary, LlmInvocation, generate_session_id};
+use crate::llm::{self, truncate_to_char_boundary, LlmInvocation};
 use crate::models::CriticResult;
 use crate::prompts::critic::{CRITIC_FIX_PROMPT, CRITIC_PROMPT};
 use crate::prompts::system::{critic_fix_system_prompt, critic_system_prompt};
@@ -69,8 +69,6 @@ pub async fn run(
         tools: "",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
-        session_id: None,
-        resume_session_id: None,
     };
 
     let response = llm::invoke::<CriticResult>(&invocation, Duration::from_secs(600)).await?;
@@ -126,8 +124,6 @@ pub async fn run(
         tools: "Read,Glob,Grep,Bash,Edit,Write",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
-        session_id: Some(generate_session_id()),
-        resume_session_id: None,
     };
 
     let fix_response = llm::invoke::<serde_json::Value>(&fix_invocation, Duration::from_secs(600)).await;
@@ -194,8 +190,6 @@ pub async fn run(
                         tools: "",
                         json_schema: None,
                         working_dir: clone_path.to_path_buf(),
-                        session_id: None,
-                        resume_session_id: None,
                     };
 
                     if let Ok(re_response) = llm::invoke::<CriticResult>(
