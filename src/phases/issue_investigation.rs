@@ -1,6 +1,7 @@
 use crate::claude::{self, ClaudeInvocation, generate_session_id};
 use crate::models::{GithubIssue, RepoInfo, StackInfo};
 use crate::prompts;
+use crate::guardrails;
 use crate::retry::gh_command;
 use anyhow::Result;
 use std::path::Path;
@@ -93,7 +94,7 @@ pub async fn run(
     let cost_usd = response.cost_usd;
 
     // 4. Parse the result to check if fixed.
-    let fixed = response
+    let mut fixed = response
         .structured
         .as_ref()
         .and_then(|v| v.get("fixed"))
@@ -109,6 +110,20 @@ pub async fn run(
         .to_string();
 
     let mut pr_url = None;
+
+    if fixed {
+        // Validate diff against guardrails before committing.
+        info!(issue = issue.number, "validating issue fix diff against guardrails");
+        if let Err(violation) = guardrails::validate_diff(worktree_path, &[], 500, false).await {
+            warn!(
+                issue = issue.number,
+                violation = %violation,
+                "guardrail violation, discarding issue fix changes"
+            );
+            let _ = guardrails::discard_changes(worktree_path).await;
+            fixed = false;
+        }
+    }
 
     if fixed {
         // 5. Commit, create branch, push, create PR.
