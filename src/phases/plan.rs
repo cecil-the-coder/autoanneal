@@ -13,9 +13,10 @@ use tracing::{info, warn};
 /// UTF-8 validity. This avoids panicking on multi-byte characters that Rust's
 /// byte-level slicing would cause.
 fn truncate_to_char_limit(s: &str, max_chars: usize) -> String {
-    match s.char_indices().nth(max_chars) {
-        None => s.to_string(),
-        Some((idx, _)) => s[..idx].to_string(),
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        s.chars().take(max_chars).collect()
     }
 }
 
