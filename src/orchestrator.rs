@@ -601,7 +601,10 @@ fn collect_work_items(
             "skipping analysis — too many open autoanneal PRs"
         );
     }
-    if budget_remaining > 0.0 && !skip_analysis {
+    // Run analysis when there is budget and either we're not skipping (normal
+    // mode) or we're in dry-run mode (dry-run doesn't create PRs, so the
+    // open-PR cap doesn't apply).
+    if budget_remaining > 0.0 && (!skip_analysis || config.dry_run) {
         let analysis_budget = budget_remaining; // analysis gets remaining budget
         // Note: we don't reserve budget here; actual costs are subtracted
         // when outcomes are processed to avoid double-counting.

@@ -1,4 +1,5 @@
 use crate::models::DiffReport;
+use std::collections::HashSet;
 use std::path::Path;
 use tokio::process::Command;
 use thiserror::Error;
@@ -73,9 +74,10 @@ pub async fn validate_diff(
     }
 
     // --- 3. Build extra_files list ---
+    let allowed_set: HashSet<&str> = allowed_files.iter().map(|s| s.as_str()).collect();
     let extra_files: Vec<String> = files_changed
         .iter()
-        .filter(|f| !allowed_files.contains(f))
+        .filter(|f| !allowed_set.contains(f.as_str()))
         .cloned()
         .collect();
 
