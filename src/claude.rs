@@ -211,7 +211,7 @@ fn parse_response<T: DeserializeOwned>(
 /// Generate a compact working directory context string.
 /// Uses `find` with depth limit, excludes common noise directories,
 /// and truncates to avoid wasting tokens.
-async fn get_dir_context(working_dir: &Path) -> String {
+pub(crate) async fn get_dir_context(working_dir: &Path) -> String {
     let output = tokio::process::Command::new("find")
         .args([
             ".",
@@ -507,7 +507,7 @@ fn truncate(s: &str, max_len: usize) -> String {
 
 /// Extract a JSON object from a markdown code fence in the text.
 /// Looks for ```json ... ``` or ``` ... ``` blocks containing a JSON object.
-fn extract_json_block(text: &str) -> Option<&str> {
+pub(crate) fn extract_json_block(text: &str) -> Option<&str> {
     // Try ```json first, then bare ```
     for fence in ["```json", "```"] {
         if let Some(start_idx) = text.find(fence) {
