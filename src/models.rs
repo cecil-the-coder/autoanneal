@@ -236,12 +236,20 @@ pub struct WorthwhileResponse {
     pub reasoning: String,
 }
 
-/// Gate 2 (READY) critic response.
+/// Gate 2 (REVIEW) critic response — evaluates implementation quality and scores.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadyResponse {
     pub verdict: String,
     pub issues: Vec<CriticIssue>,
     pub reasoning: String,
+    #[serde(default = "default_score")]
+    pub score: u32,
+    #[serde(default)]
+    pub summary: String,
+}
+
+fn default_score() -> u32 {
+    5
 }
 
 /// An issue identified by a critic in Gate 2.
@@ -252,13 +260,6 @@ pub struct CriticIssue {
     pub severity: String,
     #[serde(default)]
     pub suggested_fix: Option<String>,
-}
-
-/// Gate 3 (VERDICT) critic response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerdictResponse {
-    pub score: u32,
-    pub summary: String,
 }
 
 /// Result of a single gate's execution.
@@ -281,7 +282,7 @@ pub struct CriticEntry {
     pub cost_usd: f64,
 }
 
-/// Full result of the 3-gate deliberation pipeline.
+/// Full result of the 2-gate deliberation pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeliberationResult {
     pub approved: bool,

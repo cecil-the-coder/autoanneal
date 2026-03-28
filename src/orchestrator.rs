@@ -1134,7 +1134,7 @@ async fn run_analysis_pipeline(
         let critic_budget = budget.min(1.50);
 
         let critic_result = if let Some(models) = critic_models {
-            // Panel mode: 3-gate deliberation
+            // Panel mode: 2-gate deliberation
             info!("using critic panel with {} model(s)", models.len());
             match tokio::time::timeout(
                 Duration::from_secs(900),
@@ -1144,6 +1144,7 @@ async fn run_analysis_pipeline(
                     models,
                     critic_budget,
                     context_window,
+                    false, // skip_gate1
                 ),
             )
             .await

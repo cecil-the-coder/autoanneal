@@ -1,4 +1,4 @@
-//! 3-gate critic deliberation pipeline.
+//! 2-gate critic deliberation pipeline.
 
 use crate::agent::bridge::parse_provider_model;
 use crate::llm::{self, LlmInvocation};
@@ -15,12 +15,15 @@ use super::critic::CriticOutput;
 /// Maximum diff length (in characters) sent to critics.
 const MAX_DIFF_CHARS: usize = 50_000;
 
-/// Run a multi-model critic panel using 3-gate deliberation.
+/// Run a multi-model critic panel using 2-gate deliberation.
 ///
 /// `model_specs` is a list of `(provider_hint, model_id)` pairs parsed from
 /// the `--critic-models` flag.  Each model becomes an independent critic
-/// instance.  The three gates (WORTHWHILE, READY, VERDICT) are evaluated
-/// in sequence; the pipeline short-circuits if any gate fails.
+/// instance.  The two gates (WORTHWHILE, REVIEW) are evaluated in sequence;
+/// the pipeline short-circuits if any gate fails.
+///
+/// When `skip_gate1` is true, Gate 1 is skipped (e.g., when re-reviewing
+/// after a CI fix where worthwhileness was already established).
 ///
 /// Returns the same [`CriticOutput`] type as `phases::critic::run` so the
 /// orchestrator can treat both paths identically.
@@ -30,10 +33,12 @@ pub async fn run(
     models: &[String],
     budget: f64,
     context_window: u64,
+    skip_gate1: bool,
 ) -> Result<CriticOutput> {
     info!(
         models = models.len(),
         budget,
+        skip_gate1,
         "starting critic panel deliberation"
     );
 
@@ -57,126 +62,106 @@ pub async fn run(
         .collect();
 
     // ── Budget allocation ───────────────────────────────────────────
-    let gate1_budget = budget * 0.18;
-    let gate2_budget = budget * 0.18;
-    let gate3_budget = budget * 0.14;
-    // remaining 50% reserved for fix/research
+    let gate1_budget = budget * 0.25;
+    let gate2_budget = budget * 0.75;
 
     let mut total_cost = 0.0;
 
     // ── Gate 1: WORTHWHILE ──────────────────────────────────────────
-    // Budget per critic per round: divide gate budget by critics × 2 (allows for rebuttal)
-    let (g1_passed, g1_responses, g1_cost) =
-        run_gate1(&diff, &critics, gate1_budget / (critics.len() as f64 * 2.0), context_window, clone_path)
-            .await?;
-    total_cost += g1_cost;
+    if !skip_gate1 {
+        let (g1_passed, g1_responses, g1_cost) =
+            run_gate1(&diff, &critics, gate1_budget / (critics.len() as f64 * 2.0), context_window, clone_path)
+                .await?;
+        total_cost += g1_cost;
 
-    let _g1_entries: Vec<CriticEntry> = g1_responses
-        .iter()
-        .enumerate()
-        .map(|(i, (_resp, cost))| CriticEntry {
-            model: critics[i].clone(),
-            role_hint: format!("gate1_variant_{}", (b'A' + (i % 3) as u8) as char),
-            cost_usd: *cost,
-        })
-        .collect();
+        if !g1_passed {
+            let summary = g1_responses
+                .iter()
+                .filter(|(r, _)| r.verdict == "reject")
+                .max_by(|a, b| a.0.confidence.partial_cmp(&b.0.confidence).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(r, _)| r.reasoning.clone())
+                .unwrap_or_else(|| "Gate 1 rejected: changes not worthwhile.".to_string());
 
-    if !g1_passed {
-        // Pick the lowest-confidence reasoning as summary
-        let summary = g1_responses
-            .iter()
-            .filter(|(r, _)| r.verdict == "reject")
-            .max_by(|a, b| a.0.confidence.partial_cmp(&b.0.confidence).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(r, _)| r.reasoning.clone())
-            .unwrap_or_else(|| "Gate 1 rejected: changes not worthwhile.".to_string());
-
-        info!(cost = total_cost, "gate 1 rejected — aborting deliberation");
-        return Ok(CriticOutput {
-            score: 3,
-            verdict: "reject".to_string(),
-            summary,
-            cost_usd: total_cost,
-            made_fixes: false,
-            score_unverified: false,
-        });
+            info!(cost = total_cost, "gate 1 rejected — aborting deliberation");
+            return Ok(CriticOutput {
+                score: 3,
+                verdict: "reject".to_string(),
+                summary,
+                cost_usd: total_cost,
+                made_fixes: false,
+                score_unverified: false,
+            });
+        }
+        info!(cost = g1_cost, "gate 1 passed");
+    } else {
+        info!("gate 1 skipped (skip_gate1=true)");
     }
-    info!(cost = g1_cost, "gate 1 passed");
 
-    // ── Gate 2: READY ───────────────────────────────────────────────
-    let (g2_passed, g2_responses, g2_issues, g2_cost) =
+    // ── Gate 2: REVIEW ──────────────────────────────────────────────
+    let (g2_passed, g2_responses, g2_issues, g2_median_score, g2_summary, g2_cost) =
         run_gate2(&diff, &critics, gate2_budget / (critics.len() as f64 * 2.0), context_window, clone_path)
             .await?;
     total_cost += g2_cost;
 
-    let _g2_entries: Vec<CriticEntry> = g2_responses
-        .iter()
-        .enumerate()
-        .map(|(i, (_, cost))| CriticEntry {
-            model: critics[i].clone(),
-            role_hint: "gate2_review".to_string(),
-            cost_usd: *cost,
-        })
-        .collect();
+    // Determine the dominant verdict from responses
+    let approve_count = g2_responses.iter().filter(|(r, _)| r.verdict == "approve").count();
+    let needs_fix_count = g2_responses.iter().filter(|(r, _)| r.verdict == "needs_fix").count();
+    let reject_count = g2_responses.iter().filter(|(r, _)| r.verdict == "reject").count();
 
-    if !g2_passed {
+    let (verdict, score) = if g2_passed && approve_count >= needs_fix_count && approve_count >= reject_count && g2_median_score >= 6 {
+        // Approve: majority approves and score meets threshold
+        ("approve".to_string(), g2_median_score)
+    } else if reject_count > (critics.len() / 2) {
+        // Reject: majority rejects
+        ("reject".to_string(), g2_median_score)
+    } else if needs_fix_count > 0 || !g2_passed {
+        // Needs work: some critics want fixes
         let issue_summary = g2_issues
             .iter()
-            .take(3)
+            .take(5)
             .map(|iss| format!("- {}: {}", iss.file, iss.description))
             .collect::<Vec<_>>()
             .join("\n");
-        let summary = format!(
-            "Gate 2 rejected: implementation has blocking issues.\n{}",
-            issue_summary
-        );
+        let summary_with_issues = if issue_summary.is_empty() {
+            g2_summary.clone()
+        } else {
+            format!("{}\n\n## Issues\n{}", g2_summary, issue_summary)
+        };
 
-        info!(cost = total_cost, issues = g2_issues.len(), "gate 2 rejected — aborting deliberation");
+        info!(
+            cost = total_cost,
+            issues = g2_issues.len(),
+            score = g2_median_score,
+            "gate 2 needs_work — returning for fix loop"
+        );
         return Ok(CriticOutput {
-            score: 4,
-            verdict: "reject".to_string(),
-            summary,
+            score: g2_median_score,
+            verdict: "needs_work".to_string(),
+            summary: summary_with_issues,
             cost_usd: total_cost,
             made_fixes: false,
             score_unverified: false,
         });
-    }
-    info!(cost = g2_cost, issues = g2_issues.len(), "gate 2 passed");
-
-    // ── Gate 3: VERDICT ─────────────────────────────────────────────
-    let (g3_score, g3_summary, g3_responses, g3_cost) =
-        run_gate3(&diff, &critics, gate3_budget / critics.len() as f64, context_window, clone_path)
-            .await?;
-    total_cost += g3_cost;
-
-    let _g3_entries: Vec<CriticEntry> = g3_responses
-        .iter()
-        .enumerate()
-        .map(|(i, (_, cost))| CriticEntry {
-            model: critics[i].clone(),
-            role_hint: "gate3_verdict".to_string(),
-            cost_usd: *cost,
-        })
-        .collect();
-
-    let verdict = if g3_score >= 6 {
-        "approve"
-    } else if g3_score >= 4 {
-        "needs_work"
     } else {
-        "reject"
+        // Fallback: use score to determine
+        if g2_median_score >= 6 {
+            ("approve".to_string(), g2_median_score)
+        } else {
+            ("needs_work".to_string(), g2_median_score)
+        }
     };
 
     info!(
-        score = g3_score,
-        verdict,
+        score,
+        verdict = %verdict,
         cost = total_cost,
         "critic panel deliberation complete"
     );
 
     Ok(CriticOutput {
-        score: g3_score,
-        verdict: verdict.to_string(),
-        summary: g3_summary,
+        score,
+        verdict,
+        summary: g2_summary,
         cost_usd: total_cost,
         made_fixes: false,
         score_unverified: false,
@@ -337,12 +322,9 @@ async fn run_gate1(
     }
 
     // Use rebuttal responses where available, fall back to round 1 for the rest.
-    // JoinSet returns results in completion order, so we use all rebuttals we got
-    // and fill remaining slots with original round 1 responses.
     let final_responses = if rebuttal_responses.len() >= responses.len() {
         rebuttal_responses
     } else {
-        // Append original responses for missing rebuttal slots
         let mut merged = rebuttal_responses;
         let needed = responses.len() - merged.len();
         merged.extend(responses.iter().rev().take(needed).cloned());
@@ -350,8 +332,6 @@ async fn run_gate1(
     };
 
     let reject_count = final_responses.iter().filter(|(r, _)| r.verdict == "reject").count();
-    // Only a majority of explicit "reject" votes kills the PR.
-    // "needs_work" means "proceed but fix issues" — not a rejection.
     let passed = reject_count <= final_responses.len() / 2;
 
     info!(
@@ -364,7 +344,7 @@ async fn run_gate1(
     Ok((passed, final_responses, total_cost))
 }
 
-// ── Gate 2: READY ───────────────────────────────────────────────────────
+// ── Gate 2: REVIEW ─────────────────────────────────────────────────────
 
 async fn run_gate2(
     diff: &str,
@@ -372,9 +352,9 @@ async fn run_gate2(
     budget_per_critic: f64,
     context_window: u64,
     clone_path: &Path,
-) -> Result<(bool, Vec<(ReadyResponse, f64)>, Vec<CriticIssue>, f64)> {
+) -> Result<(bool, Vec<(ReadyResponse, f64)>, Vec<CriticIssue>, u32, String, f64)> {
     let user_prompt = format!(
-        "## Changes Under Review\n\n```\n{}\n```\n\nReview the implementation quality.",
+        "## Changes Under Review\n\n```\n{}\n```\n\nReview the implementation quality and provide your score.",
         diff
     );
 
@@ -405,9 +385,10 @@ async fn run_gate2(
             Ok(Ok((resp, cost))) => {
                 let preview: String = resp.reasoning.chars().take(120).collect();
                 info!(
-                    gate = "ready",
+                    gate = "review",
                     critic = responses.len() + 1,
                     verdict = %resp.verdict,
+                    score = resp.score,
                     issues = resp.issues.len(),
                     cost_usd = cost,
                     reasoning = %preview,
@@ -423,6 +404,8 @@ async fn run_gate2(
                         verdict: "needs_fix".to_string(),
                         issues: vec![],
                         reasoning: "(critic unavailable — defaulting to needs_fix)".into(),
+                        score: 5,
+                        summary: "(critic unavailable)".into(),
                     },
                     0.0,
                 ));
@@ -434,6 +417,8 @@ async fn run_gate2(
                         verdict: "needs_fix".to_string(),
                         issues: vec![],
                         reasoning: "(critic unavailable — defaulting to needs_fix)".into(),
+                        score: 5,
+                        summary: "(critic unavailable)".into(),
                     },
                     0.0,
                 ));
@@ -471,89 +456,6 @@ async fn run_gate2(
         .count();
     let passed = reject_count < (critics.len() + 1) / 2; // strict majority to reject
 
-    info!(
-        passed,
-        reject_count,
-        issues = all_issues.len(),
-        "gate2 complete"
-    );
-
-    Ok((passed, responses, all_issues, total_cost))
-}
-
-// ── Gate 3: VERDICT ─────────────────────────────────────────────────────
-
-async fn run_gate3(
-    diff: &str,
-    critics: &[String],
-    budget_per_critic: f64,
-    context_window: u64,
-    clone_path: &Path,
-) -> Result<(u32, String, Vec<(VerdictResponse, f64)>, f64)> {
-    let user_prompt = format!(
-        "## Changes Under Review\n\n```\n{}\n```\n\nProvide your final score.",
-        diff
-    );
-
-    let mut set = JoinSet::new();
-    for i in 0..critics.len() {
-        let system = prompts::GATE3_SYSTEM.to_string();
-        let prompt = user_prompt.clone();
-        let model = critics[i].clone();
-        let wd = clone_path.to_path_buf();
-        set.spawn(async move {
-            invoke_critic::<VerdictResponse>(
-                system,
-                prompt,
-                model,
-                budget_per_critic,
-                context_window,
-                &wd,
-            )
-            .await
-        });
-    }
-
-    let mut responses: Vec<(VerdictResponse, f64)> = Vec::with_capacity(critics.len());
-    let mut total_cost = 0.0;
-
-    while let Some(result) = set.join_next().await {
-        match result {
-            Ok(Ok((resp, cost))) => {
-                info!(
-                    gate = "verdict",
-                    critic = responses.len() + 1,
-                    score = resp.score,
-                    cost_usd = cost,
-                    summary = %resp.summary,
-                    "gate3 critic responded"
-                );
-                total_cost += cost;
-                responses.push((resp, cost));
-            }
-            Ok(Err(e)) => {
-                warn!(error = %e, critic = responses.len() + 1, "gate3 critic failed");
-                responses.push((
-                    VerdictResponse {
-                        score: 5,
-                        summary: "(critic unavailable)".into(),
-                    },
-                    0.0,
-                ));
-            }
-            Err(e) => {
-                warn!(error = %e, critic = responses.len() + 1, "gate3 critic panicked");
-                responses.push((
-                    VerdictResponse {
-                        score: 5,
-                        summary: "(critic unavailable)".into(),
-                    },
-                    0.0,
-                ));
-            }
-        }
-    }
-
     // Compute median score
     let mut scores: Vec<u32> = responses.iter().map(|(r, _)| r.score).collect();
     let med = median(&mut scores);
@@ -561,17 +463,27 @@ async fn run_gate3(
     // Pick summary from the critic whose score is closest to the median
     let summary = responses
         .iter()
+        .filter(|(r, _)| !r.summary.is_empty() && r.summary != "(critic unavailable)")
         .min_by_key(|(r, _)| (r.score as i64 - med as i64).unsigned_abs())
         .map(|(r, _)| r.summary.clone())
-        .unwrap_or_else(|| "No verdict available.".to_string());
+        .unwrap_or_else(|| {
+            // Fallback: use reasoning from critic closest to median
+            responses
+                .iter()
+                .min_by_key(|(r, _)| (r.score as i64 - med as i64).unsigned_abs())
+                .map(|(r, _)| r.reasoning.chars().take(200).collect::<String>())
+                .unwrap_or_else(|| "No review summary available.".to_string())
+        });
 
     info!(
+        passed,
+        reject_count,
         median_score = med,
-        num_critics = responses.len(),
-        "gate3 complete"
+        issues = all_issues.len(),
+        "gate2 complete"
     );
 
-    Ok((med, summary, responses, total_cost))
+    Ok((passed, responses, all_issues, med, summary, total_cost))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

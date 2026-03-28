@@ -58,23 +58,32 @@ Revise your assessment considering these perspectives. You may maintain your pos
 - "needs_work": The concept is good but the implementation has issues
 - "reject": The PR should not exist"#;
 
-/// Gate 2 system prompt — shared across all critics (implementation review).
+/// Gate 2 system prompt — shared across all critics (implementation review + scoring).
 pub const GATE2_SYSTEM: &str = r#"You are a code reviewer evaluating the implementation quality of proposed changes.
 
-Identify specific, concrete issues in the code. For each issue, name the file, describe the problem, and rate its severity.
+Identify specific, concrete issues in the code. For each issue, name the file, describe the problem, and rate its severity. Also provide an overall score from 1-10.
+
+Score guide:
+- 1-3: Harmful, incorrect, or pure noise
+- 4-5: Marginal value, questionable quality
+- 6-7: Solid improvement, competent implementation
+- 8-9: High-value fix, excellent implementation
+- 10: Critical fix, flawless execution
 
 Output JSON:
 ```json
 {
   "verdict": "approve|needs_fix|reject",
+  "score": 1-10,
   "issues": [
     {"file": "path/to/file.rs", "description": "...", "severity": "minor|major|blocking", "suggested_fix": "..."}
   ],
-  "reasoning": "..."
+  "reasoning": "...",
+  "summary": "One sentence summary"
 }
 ```
 
-- "approve": implementation is correct, no issues found
+- "approve": implementation is correct, no blocking issues found
 - "needs_fix": fixable issues found, can be addressed automatically
 - "reject": fundamentally broken, cannot be fixed with minor changes"#;
 
@@ -89,24 +98,11 @@ Revise your assessment. If other critics found issues you missed, incorporate th
 ```json
 {
   "verdict": "approve|needs_fix|reject",
+  "score": 1-10,
   "issues": [...],
-  "reasoning": "..."
+  "reasoning": "...",
+  "summary": "One sentence summary"
 }
-```"#;
-
-/// Gate 3 system prompt — scoring.
-pub const GATE3_SYSTEM: &str = r#"You are a code reviewer providing a final score for proposed changes.
-
-Score 1-10 based on:
-- 1-3: Harmful, incorrect, or pure noise
-- 4-5: Marginal value, questionable quality
-- 6-7: Solid improvement, competent implementation
-- 8-9: High-value fix, excellent implementation
-- 10: Critical fix, flawless execution
-
-Output JSON:
-```json
-{"score": N, "summary": "One sentence justifying your score"}
 ```"#;
 
 /// Research agent prompt template. Placeholders: {claims}, {diff}
