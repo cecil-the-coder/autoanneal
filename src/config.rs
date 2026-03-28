@@ -193,23 +193,22 @@ impl Config {
         parse_duration(&self.timeout).unwrap_or(std::time::Duration::from_secs(30 * 60))
     }
 
-    /// Parse critic_models into a list of (provider_hint, model) pairs.
+    /// Parse critic_models into a list of model names.
     /// Returns None if critic_models is not set (use single-critic fallback).
-    pub fn critic_model_specs(&self) -> Option<Vec<(Option<String>, String)>> {
+    pub fn critic_model_list(&self) -> Option<Vec<String>> {
         let models_str = self.critic_models.as_ref()?;
         if models_str.trim().is_empty() {
             return None;
         }
-        let specs: Vec<(Option<String>, String)> = models_str
+        let models: Vec<String> = models_str
             .split(',')
-            .map(|s| s.trim())
+            .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .map(|s| crate::agent::bridge::parse_provider_model(s))
             .collect();
-        if specs.is_empty() {
+        if models.is_empty() {
             None
         } else {
-            Some(specs)
+            Some(models)
         }
     }
 

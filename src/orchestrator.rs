@@ -58,7 +58,7 @@ enum WorkItemKind {
         dry_run: bool,
         critic_threshold: u32,
         doc_critic_threshold: u32,
-        critic_model_specs: Option<Vec<(Option<String>, String)>>,
+        critic_models: Option<Vec<String>>,
     },
 }
 
@@ -640,7 +640,7 @@ fn collect_work_items(
                 dry_run: config.dry_run,
                 critic_threshold: config.critic_threshold,
                 doc_critic_threshold: config.doc_critic_threshold,
-                critic_model_specs: config.critic_model_specs(),
+                critic_models: config.critic_model_list(),
             },
             budget_cap: analysis_budget,
             context_window,
@@ -858,7 +858,7 @@ fn spawn_work_item(
                 dry_run,
                 critic_threshold,
                 doc_critic_threshold,
-                critic_model_specs,
+                critic_models,
             } => {
                 run_analysis_pipeline(
                     &clone_path,
@@ -876,7 +876,7 @@ fn spawn_work_item(
                     dry_run,
                     critic_threshold,
                     doc_critic_threshold,
-                    &critic_model_specs,
+                    &critic_models,
                     budget,
                     &repo_slug,
                     context_window,
@@ -921,7 +921,7 @@ async fn run_analysis_pipeline(
     dry_run: bool,
     critic_threshold: u32,
     doc_critic_threshold: u32,
-    critic_model_specs: &Option<Vec<(Option<String>, String)>>,
+    critic_models: &Option<Vec<String>>,
     mut budget: f64,
     _repo_slug: &str,
     context_window: u64,
@@ -1133,15 +1133,15 @@ async fn run_analysis_pipeline(
     if threshold > 0 && budget > 0.0 {
         let critic_budget = budget.min(1.50);
 
-        let critic_result = if let Some(specs) = critic_model_specs {
+        let critic_result = if let Some(models) = critic_models {
             // Panel mode: 3-gate deliberation
-            info!("using critic panel with {} model(s)", specs.len());
+            info!("using critic panel with {} model(s)", models.len());
             match tokio::time::timeout(
                 Duration::from_secs(900),
                 phases::critic_panel::run(
                     clone_path,
                     &repo_info.default_branch,
-                    specs,
+                    models,
                     critic_budget,
                     context_window,
                 ),

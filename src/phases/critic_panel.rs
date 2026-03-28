@@ -26,12 +26,12 @@ const MAX_DIFF_CHARS: usize = 50_000;
 pub async fn run(
     clone_path: &Path,
     default_branch: &str,
-    model_specs: &[(Option<String>, String)],
+    models: &[String],
     budget: f64,
     context_window: u64,
 ) -> Result<CriticOutput> {
     info!(
-        models = model_specs.len(),
+        models = models.len(),
         budget,
         "starting critic panel deliberation"
     );
@@ -50,12 +50,9 @@ pub async fn run(
     }
 
     // ── Ensure at least 3 critics (cycle through models) ────────────
-    let num_critics = 3.max(model_specs.len());
-    let critics: Vec<(Option<String>, String)> = (0..num_critics)
-        .map(|i| {
-            let spec = &model_specs[i % model_specs.len()];
-            (spec.0.clone(), spec.1.clone())
-        })
+    let num_critics = 3.max(models.len());
+    let critics: Vec<String> = (0..num_critics)
+        .map(|i| models[i % models.len()].clone())
         .collect();
 
     // ── Budget allocation ───────────────────────────────────────────
@@ -77,7 +74,7 @@ pub async fn run(
         .iter()
         .enumerate()
         .map(|(i, (_resp, cost))| CriticEntry {
-            model: critics[i].1.clone(),
+            model: critics[i].clone(),
             role_hint: format!("gate1_variant_{}", (b'A' + (i % 3) as u8) as char),
             cost_usd: *cost,
         })
@@ -114,7 +111,7 @@ pub async fn run(
         .iter()
         .enumerate()
         .map(|(i, (_, cost))| CriticEntry {
-            model: critics[i].1.clone(),
+            model: critics[i].clone(),
             role_hint: "gate2_review".to_string(),
             cost_usd: *cost,
         })
@@ -154,7 +151,7 @@ pub async fn run(
         .iter()
         .enumerate()
         .map(|(i, (_, cost))| CriticEntry {
-            model: critics[i].1.clone(),
+            model: critics[i].clone(),
             role_hint: "gate3_verdict".to_string(),
             cost_usd: *cost,
         })
@@ -189,7 +186,7 @@ pub async fn run(
 
 async fn run_gate1(
     diff: &str,
-    critics: &[(Option<String>, String)],
+    critics: &[String],
     budget_per_critic: f64,
     context_window: u64,
     clone_path: &Path,
@@ -204,15 +201,13 @@ async fn run_gate1(
     for i in 0..critics.len() {
         let system = prompts::gate1_system_prompt(i).to_string();
         let prompt = user_prompt.clone();
-        let model = critics[i].1.clone();
-        let provider = critics[i].0.clone();
+        let model = critics[i].clone();
         let wd = clone_path.to_path_buf();
         set.spawn(async move {
             invoke_critic::<WorthwhileResponse>(
                 system,
                 prompt,
                 model,
-                provider,
                 budget_per_critic,
                 context_window,
                 &wd,
@@ -287,15 +282,13 @@ async fn run_gate1(
     for i in 0..critics.len() {
         let system = prompts::gate1_system_prompt(i).to_string();
         let prompt = rebuttal_user.clone();
-        let model = critics[i].1.clone();
-        let provider = critics[i].0.clone();
+        let model = critics[i].clone();
         let wd = clone_path.to_path_buf();
         rebuttal_set.spawn(async move {
             invoke_critic::<WorthwhileResponse>(
                 system,
                 prompt,
                 model,
-                provider,
                 budget_per_critic,
                 context_window,
                 &wd,
@@ -348,7 +341,7 @@ async fn run_gate1(
 
 async fn run_gate2(
     diff: &str,
-    critics: &[(Option<String>, String)],
+    critics: &[String],
     budget_per_critic: f64,
     context_window: u64,
     clone_path: &Path,
@@ -362,15 +355,13 @@ async fn run_gate2(
     for i in 0..critics.len() {
         let system = prompts::GATE2_SYSTEM.to_string();
         let prompt = user_prompt.clone();
-        let model = critics[i].1.clone();
-        let provider = critics[i].0.clone();
+        let model = critics[i].clone();
         let wd = clone_path.to_path_buf();
         set.spawn(async move {
             invoke_critic::<ReadyResponse>(
                 system,
                 prompt,
                 model,
-                provider,
                 budget_per_critic,
                 context_window,
                 &wd,
@@ -457,7 +448,7 @@ async fn run_gate2(
 
 async fn run_gate3(
     diff: &str,
-    critics: &[(Option<String>, String)],
+    critics: &[String],
     budget_per_critic: f64,
     context_window: u64,
     clone_path: &Path,
@@ -471,15 +462,13 @@ async fn run_gate3(
     for i in 0..critics.len() {
         let system = prompts::GATE3_SYSTEM.to_string();
         let prompt = user_prompt.clone();
-        let model = critics[i].1.clone();
-        let provider = critics[i].0.clone();
+        let model = critics[i].clone();
         let wd = clone_path.to_path_buf();
         set.spawn(async move {
             invoke_critic::<VerdictResponse>(
                 system,
                 prompt,
                 model,
-                provider,
                 budget_per_critic,
                 context_window,
                 &wd,
@@ -547,7 +536,6 @@ async fn invoke_critic<T: serde::de::DeserializeOwned + Send + 'static>(
     system_prompt: String,
     user_prompt: String,
     model: String,
-    provider_hint: Option<String>,
     budget: f64,
     context_window: u64,
     clone_path: &Path,
@@ -563,7 +551,7 @@ async fn invoke_critic<T: serde::de::DeserializeOwned + Send + 'static>(
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
         context_window,
-        provider_hint,
+        provider_hint: None,
     };
 
     let response = llm::invoke::<T>(&invocation, Duration::from_secs(300))
