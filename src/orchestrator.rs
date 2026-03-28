@@ -126,7 +126,7 @@ pub async fn run(config: &Config) -> Result<i32> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let work_dir = PathBuf::from(format!("/tmp/autoanneal-{timestamp}"));
+    let work_dir = PathBuf::from(format!("/tmp/autoanneal-{timestamp}-{}", std::process::id()));
     std::fs::create_dir_all(&work_dir)
         .with_context(|| format!("failed to create work directory: {}", work_dir.display()))?;
 

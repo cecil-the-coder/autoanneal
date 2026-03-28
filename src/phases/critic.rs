@@ -30,6 +30,10 @@ pub struct CriticOutput {
     pub cost_usd: f64,
     /// True if the critic made fixes and the score improved.
     pub made_fixes: bool,
+    /// True when fixes were applied but re-review was skipped (budget exhausted
+    /// or re-review failed). Callers should treat the score as a lower bound
+    /// and may enforce a stricter threshold.
+    pub score_unverified: bool,
 }
 
 pub async fn run(
@@ -50,6 +54,7 @@ pub async fn run(
             summary: "No changes found to review.".to_string(),
             cost_usd: 0.0,
             made_fixes: false,
+            score_unverified: false,
         });
     }
 
@@ -100,6 +105,7 @@ pub async fn run(
             summary: initial_review.summary,
             cost_usd: total_cost,
             made_fixes: false,
+            score_unverified: false,
         });
     }
 
@@ -143,17 +149,34 @@ pub async fn run(
 
             if has_changes {
                 // Stage the fixes.
-                let _ = tokio::process::Command::new("git")
+                let add_succeeded = tokio::process::Command::new("git")
                     .args(["add", "-A"])
                     .current_dir(clone_path)
                     .output()
-                    .await;
+                    .await
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
 
-                let _ = tokio::process::Command::new("git")
-                    .args(["commit", "-m", "autoanneal: address review feedback"])
-                    .current_dir(clone_path)
-                    .output()
-                    .await;
+                let commit_succeeded = add_succeeded
+                    && tokio::process::Command::new("git")
+                        .args(["commit", "-m", "autoanneal: address review feedback"])
+                        .current_dir(clone_path)
+                        .output()
+                        .await
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
+
+                if !commit_succeeded {
+                    warn!("critic: git add/commit failed, skipping re-review");
+                    return Ok(CriticOutput {
+                        score: initial_review.score,
+                        verdict: initial_review.verdict,
+                        summary: initial_review.summary,
+                        cost_usd: total_cost,
+                        made_fixes: false,
+                        score_unverified: false,
+                    });
+                }
 
                 info!("critic committed review fixes");
 
@@ -196,14 +219,16 @@ pub async fn run(
                                 ),
                                 cost_usd: total_cost,
                                 made_fixes: true,
+                                score_unverified: false,
                             });
                         }
                     }
                 }
 
-                // Re-review failed or no budget — return with initial score bumped slightly.
+                // Re-review failed or no budget — return original score without bump.
+                // The score is unverified since fixes were applied without re-review.
                 return Ok(CriticOutput {
-                    score: (initial_review.score + 1).min(10),
+                    score: initial_review.score,
                     verdict: initial_review.verdict,
                     summary: format!(
                         "Initial: {}/10 — {}. Fixes applied but re-review skipped.",
@@ -211,6 +236,7 @@ pub async fn run(
                     ),
                     cost_usd: total_cost,
                     made_fixes: true,
+                    score_unverified: true,
                 });
             }
 
@@ -228,6 +254,7 @@ pub async fn run(
         summary: initial_review.summary,
         cost_usd: total_cost,
         made_fixes: false,
+        score_unverified: false,
     })
 }
 
