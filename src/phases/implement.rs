@@ -410,6 +410,8 @@ async fn run_single_task(
         json_schema: None,
         working_dir: working_dir.to_path_buf(),
         context_window,
+        provider_hint: None,
+        max_tokens_per_turn: None,
     };
 
     let response: llm::LlmResponse<serde_json::Value> =

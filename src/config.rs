@@ -90,6 +90,13 @@ pub struct Config {
     #[arg(long, default_value = "6")]
     pub critic_threshold: u32,
 
+    /// Comma-separated models for the critic panel (e.g., "sonnet,openai:gpt-4o").
+    /// Each model becomes a separate critic instance. Use "provider:model" format
+    /// for multi-provider setups. When set, enables the 3-gate deliberation pipeline
+    /// instead of the single-critic review.
+    #[arg(long)]
+    pub critic_models: Option<String>,
+
     /// Fall back to documentation improvements when no code improvements found.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub improve_docs: bool,
@@ -184,6 +191,25 @@ impl Config {
     /// Supports strings like "30m", "1h", "1h30m", "90s".
     pub fn timeout_duration(&self) -> std::time::Duration {
         parse_duration(&self.timeout).unwrap_or(std::time::Duration::from_secs(30 * 60))
+    }
+
+    /// Parse critic_models into a list of model names.
+    /// Returns None if critic_models is not set (use single-critic fallback).
+    pub fn critic_model_list(&self) -> Option<Vec<String>> {
+        let models_str = self.critic_models.as_ref()?;
+        if models_str.trim().is_empty() {
+            return None;
+        }
+        let models: Vec<String> = models_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if models.is_empty() {
+            None
+        } else {
+            Some(models)
+        }
     }
 
     /// Parse min_severity string into Severity enum.
@@ -295,6 +321,7 @@ mod tests {
             fix_ci: true,
             fix_conflicts: true,
             critic_threshold: 6,
+            critic_models: None,
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
@@ -334,6 +361,7 @@ mod tests {
             fix_ci: true,
             fix_conflicts: true,
             critic_threshold: 6,
+            critic_models: None,
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
@@ -373,6 +401,7 @@ mod tests {
             fix_ci: true,
             fix_conflicts: true,
             critic_threshold: 6,
+            critic_models: None,
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
@@ -412,6 +441,7 @@ mod tests {
             fix_ci: true,
             fix_conflicts: true,
             critic_threshold: 6,
+            critic_models: None,
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
@@ -451,6 +481,7 @@ mod tests {
             fix_ci: true,
             fix_conflicts: true,
             critic_threshold: 6,
+            critic_models: None,
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
@@ -490,6 +521,7 @@ mod tests {
             fix_ci: true,
             fix_conflicts: true,
             critic_threshold: 6,
+            critic_models: None,
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,

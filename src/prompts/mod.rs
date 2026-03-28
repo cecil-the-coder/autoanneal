@@ -5,6 +5,7 @@ pub mod implement;
 pub mod fix_build;
 pub mod ci_fix;
 pub mod critic;
+pub mod critic_panel;
 pub mod doc_analysis;
 pub mod system;
 pub mod pr_review;

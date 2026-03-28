@@ -37,6 +37,7 @@ defaults:
   fixCi: true           # Fix PRs with failing CI before looking for new improvements
   fixConflicts: true    # Rebase PRs with merge conflicts
   criticThreshold: 6    # Minimum critic score (1-10) to create a PR. 0 disables critic.
+  criticModels: ""      # Comma-separated models for critic panel (empty = single critic)
   improveDocs: true     # Fall back to documentation improvements when no code improvements found
   docCriticThreshold: 7 # Minimum critic score for documentation changes
   reviewPrs: false       # Review external PRs (not created by autoanneal)

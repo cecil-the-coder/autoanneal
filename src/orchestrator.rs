@@ -5,7 +5,9 @@ use crate::models::{
     ExternalPr, GithubIssue, InFlightPr, OpenPr, PhaseReport, RepoInfo, StackInfo,
     TaskStatus,
 };
+use crate::llm::{self, LlmInvocation};
 use crate::phases;
+use crate::prompts::system::critic_fix_system_prompt;
 use crate::worktree::WorktreeManager;
 use anyhow::{Context, Result};
 use std::collections::VecDeque;
@@ -58,6 +60,7 @@ enum WorkItemKind {
         dry_run: bool,
         critic_threshold: u32,
         doc_critic_threshold: u32,
+        critic_models: Option<Vec<String>>,
     },
 }
 
@@ -639,6 +642,7 @@ fn collect_work_items(
                 dry_run: config.dry_run,
                 critic_threshold: config.critic_threshold,
                 doc_critic_threshold: config.doc_critic_threshold,
+                critic_models: config.critic_model_list(),
             },
             budget_cap: analysis_budget,
             context_window,
@@ -856,6 +860,7 @@ fn spawn_work_item(
                 dry_run,
                 critic_threshold,
                 doc_critic_threshold,
+                critic_models,
             } => {
                 run_analysis_pipeline(
                     &clone_path,
@@ -873,6 +878,7 @@ fn spawn_work_item(
                     dry_run,
                     critic_threshold,
                     doc_critic_threshold,
+                    &critic_models,
                     budget,
                     &repo_slug,
                     context_window,
@@ -917,6 +923,7 @@ async fn run_analysis_pipeline(
     dry_run: bool,
     critic_threshold: u32,
     doc_critic_threshold: u32,
+    critic_models: &Option<Vec<String>>,
     mut budget: f64,
     _repo_slug: &str,
     context_window: u64,
@@ -1127,53 +1134,258 @@ async fn run_analysis_pipeline(
 
     if threshold > 0 && budget > 0.0 {
         let critic_budget = budget.min(1.50);
-        match tokio::time::timeout(
-            Duration::from_secs(900),
-            phases::critic::run(
-                clone_path,
-                &repo_info.default_branch,
-                model_critic,
-                critic_budget,
-                context_window,
-            ),
-        )
-        .await
-        {
-            Ok(Ok(critic_output)) => {
-                budget -= critic_output.cost_usd;
-                cost_total += critic_output.cost_usd;
 
-                if critic_output.score < threshold {
-                    info!(
-                        score = critic_output.score,
-                        threshold,
-                        "critic rejected changes"
-                    );
-                    // Critic rejected — mark as no successful tasks so
-                    // cleanup deletes the lock branch from GitHub.
-                    return Ok((
-                        WorkItemResult::AnalysisPipeline {
-                            pr_url: None,
-                            branch_name: Some(branch_name),
-                            pr_number: None,
-                            has_successful_tasks: false,
-                        },
-                        cost_total,
-                    ));
+        let critic_result = if let Some(models) = critic_models {
+            // Panel mode: 2-gate deliberation
+            info!("using critic panel with {} model(s)", models.len());
+            let initial_panel = match tokio::time::timeout(
+                Duration::from_secs(900),
+                phases::critic_panel::run(
+                    clone_path,
+                    &repo_info.default_branch,
+                    models,
+                    critic_budget,
+                    context_window,
+                    false, // skip_gate1
+                ),
+            )
+            .await
+            {
+                Ok(Ok(result)) => Some(result),
+                Ok(Err(e)) => {
+                    warn!(error = %e, "critic panel failed (non-fatal, proceeding)");
+                    None
                 }
-                critic_summary = Some(format!(
-                    "## Review\n\nScore: {}/10\n\n{}",
-                    critic_output.score, critic_output.summary
+                Err(_) => {
+                    warn!("critic panel timed out (non-fatal, proceeding)");
+                    None
+                }
+            };
+
+            // ─── Panel fix loop ─────────────────────────────────────
+            // If the panel returned needs_work, attempt up to 2 fix rounds
+            // using a single critic model, then re-run the panel.
+            const MAX_FIX_ROUNDS: u32 = 2;
+            let mut panel_result = initial_panel;
+            if let Some(ref mut cr) = panel_result {
+                let mut remaining = critic_budget - cr.cost_usd;
+                for fix_round in 1..=MAX_FIX_ROUNDS {
+                    if cr.verdict != "needs_work" {
+                        break;
+                    }
+                    if remaining < 0.20 {
+                        info!(
+                            remaining,
+                            "panel fix loop: insufficient budget, stopping"
+                        );
+                        break;
+                    }
+
+                    info!(
+                        fix_round,
+                        score = cr.score,
+                        remaining,
+                        "panel fix loop: attempting fix"
+                    );
+
+                    let fix_budget = remaining * 0.25;
+                    let fix_prompt = format!(
+                        "A code review panel found issues with the implementation.\n\n\
+                         ## Review Summary\n\n{summary}\n\n\
+                         ## Instructions\n\n\
+                         Fix the issues identified above. Make minimal, focused changes.",
+                        summary = cr.summary
+                    );
+
+                    let fix_invocation = LlmInvocation {
+                        prompt: fix_prompt,
+                        system_prompt: Some(critic_fix_system_prompt()),
+                        model: model_critic.to_string(),
+                        max_budget_usd: fix_budget,
+                        max_turns: 50,
+                        effort: "high",
+                        tools: "Read,Glob,Grep,Bash,Edit,Write",
+                        json_schema: None,
+                        working_dir: clone_path.to_path_buf(),
+                        context_window,
+                        provider_hint: None,
+                        max_tokens_per_turn: None,
+                    };
+
+                    let fix_response = llm::invoke::<serde_json::Value>(
+                        &fix_invocation,
+                        Duration::from_secs(600),
+                    )
+                    .await;
+
+                    match fix_response {
+                        Ok(resp) => {
+                            remaining -= resp.cost_usd;
+                            cr.cost_usd += resp.cost_usd;
+
+                            // Check for changes
+                            let has_changes = tokio::process::Command::new("git")
+                                .args(["diff", "--stat"])
+                                .current_dir(clone_path)
+                                .output()
+                                .await
+                                .map(|o| {
+                                    !String::from_utf8_lossy(&o.stdout).trim().is_empty()
+                                })
+                                .unwrap_or(false);
+
+                            if !has_changes {
+                                info!(fix_round, "panel fix: no changes produced, stopping");
+                                break;
+                            }
+
+                            // Stage and commit
+                            let add_ok = tokio::process::Command::new("git")
+                                .args(["add", "-A"])
+                                .current_dir(clone_path)
+                                .output()
+                                .await
+                                .map(|o| o.status.success())
+                                .unwrap_or(false);
+
+                            let commit_msg = format!(
+                                "autoanneal: address review feedback (round {})",
+                                fix_round
+                            );
+                            let commit_ok = add_ok
+                                && tokio::process::Command::new("git")
+                                    .args(["commit", "-m", &commit_msg])
+                                    .current_dir(clone_path)
+                                    .output()
+                                    .await
+                                    .map(|o| o.status.success())
+                                    .unwrap_or(false);
+
+                            if !commit_ok {
+                                warn!(fix_round, "panel fix: git commit failed, stopping");
+                                break;
+                            }
+
+                            info!(fix_round, "panel fix: committed changes, re-reviewing");
+
+                            // Re-run panel with skip_gate1=true
+                            let re_review_budget = remaining * 0.50;
+                            match tokio::time::timeout(
+                                Duration::from_secs(900),
+                                phases::critic_panel::run(
+                                    clone_path,
+                                    &repo_info.default_branch,
+                                    models,
+                                    re_review_budget,
+                                    context_window,
+                                    true, // skip_gate1
+                                ),
+                            )
+                            .await
+                            {
+                                Ok(Ok(re_result)) => {
+                                    remaining -= re_result.cost_usd;
+                                    info!(
+                                        fix_round,
+                                        old_score = cr.score,
+                                        new_score = re_result.score,
+                                        new_verdict = %re_result.verdict,
+                                        "panel fix: re-review complete"
+                                    );
+                                    // Update the result in place
+                                    cr.score = re_result.score;
+                                    cr.verdict = re_result.verdict;
+                                    cr.summary = re_result.summary;
+                                    cr.cost_usd += re_result.cost_usd;
+                                    cr.made_fixes = true;
+                                }
+                                Ok(Err(e)) => {
+                                    warn!(
+                                        fix_round,
+                                        error = %e,
+                                        "panel fix: re-review failed, stopping"
+                                    );
+                                    cr.made_fixes = true;
+                                    cr.score_unverified = true;
+                                    break;
+                                }
+                                Err(_) => {
+                                    warn!(
+                                        fix_round,
+                                        "panel fix: re-review timed out, stopping"
+                                    );
+                                    cr.made_fixes = true;
+                                    cr.score_unverified = true;
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                fix_round,
+                                error = %e,
+                                "panel fix: fix agent failed, stopping"
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+            panel_result
+        } else {
+            // Single critic mode (existing behavior)
+            match tokio::time::timeout(
+                Duration::from_secs(900),
+                phases::critic::run(
+                    clone_path,
+                    &repo_info.default_branch,
+                    model_critic,
+                    critic_budget,
+                    context_window,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(result)) => Some(result),
+                Ok(Err(e)) => {
+                    warn!(error = %e, "critic review failed (non-fatal, proceeding)");
+                    None
+                }
+                Err(_) => {
+                    warn!("critic review timed out (non-fatal, proceeding)");
+                    None
+                }
+            }
+        };
+
+        if let Some(critic_output) = critic_result {
+            budget -= critic_output.cost_usd;
+            cost_total += critic_output.cost_usd;
+
+            if critic_output.score < threshold {
+                info!(
+                    score = critic_output.score,
+                    threshold,
+                    "critic rejected changes"
+                );
+                // Critic rejected — mark as no successful tasks so
+                // cleanup deletes the lock branch from GitHub.
+                return Ok((
+                    WorkItemResult::AnalysisPipeline {
+                        pr_url: None,
+                        branch_name: Some(branch_name),
+                        pr_number: None,
+                        has_successful_tasks: false,
+                    },
+                    cost_total,
                 ));
             }
-            Ok(Err(e)) => {
-                warn!(error = %e, "critic review failed (non-fatal, proceeding)");
-                critic_summary = Some(format!("## Review\n\nCritic review failed: {e}"));
-            }
-            Err(_) => {
-                warn!("critic review timed out (non-fatal, proceeding)");
-                critic_summary = Some("## Review\n\nCritic review timed out.".to_string());
-            }
+            critic_summary = Some(format!(
+                "## Review\n\nScore: {}/10\n\n{}",
+                critic_output.score, critic_output.summary
+            ));
+        } else {
+            critic_summary = Some("## Review\n\nCritic review unavailable.".to_string());
         }
     }
 

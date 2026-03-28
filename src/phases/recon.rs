@@ -358,6 +358,8 @@ async fn llm_recon(
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
         context_window,
+        provider_hint: None,
+        max_tokens_per_turn: None,
     };
 
     let timeout = Duration::from_secs(300);
