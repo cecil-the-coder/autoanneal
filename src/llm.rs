@@ -18,6 +18,9 @@ pub struct LlmInvocation {
     /// Context window size in tokens. Old tool results are evicted when the
     /// conversation approaches this limit.
     pub context_window: u64,
+    /// Optional provider hint: "anthropic" or "openai".
+    /// When set, overrides environment-based auto-detection for this invocation only.
+    pub provider_hint: Option<String>,
 }
 
 /// Parsed response from an LLM invocation.

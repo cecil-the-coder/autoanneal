@@ -121,6 +121,7 @@ pub async fn create_pr(
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
         context_window,
+        provider_hint: None,
     };
 
     let response = invoke::<PrBody>(&invocation, Duration::from_secs(120))

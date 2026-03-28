@@ -71,6 +71,7 @@ pub async fn run(
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
         context_window,
+        provider_hint: None,
     };
 
     let response = llm::invoke::<CriticResult>(&invocation, Duration::from_secs(600)).await?;
@@ -127,6 +128,7 @@ pub async fn run(
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
         context_window,
+        provider_hint: None,
     };
 
     let fix_response = llm::invoke::<serde_json::Value>(&fix_invocation, Duration::from_secs(600)).await;
@@ -194,6 +196,7 @@ pub async fn run(
                         json_schema: None,
                         working_dir: clone_path.to_path_buf(),
                         context_window,
+                        provider_hint: None,
                     };
 
                     if let Ok(re_response) = llm::invoke::<CriticResult>(

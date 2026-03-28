@@ -85,6 +85,7 @@ pub async fn run(
         json_schema: None,
         working_dir: worktree_path.to_path_buf(),
         context_window,
+        provider_hint: None,
     };
 
     let response: llm::LlmResponse<serde_json::Value> =

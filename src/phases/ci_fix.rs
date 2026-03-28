@@ -173,6 +173,7 @@ pub async fn run(
         json_schema: None,
         working_dir: clone_dir.clone(),
         context_window,
+        provider_hint: None,
     };
 
     let response: llm::LlmResponse<serde_json::Value> =

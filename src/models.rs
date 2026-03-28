@@ -226,3 +226,67 @@ pub struct PhaseReport {
     pub cost_usd: f64,
     pub status: String,
 }
+
+/// Gate 1 (WORTHWHILE) critic response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorthwhileResponse {
+    pub proceed: bool,
+    pub confidence: f64,
+    pub reasoning: String,
+}
+
+/// Gate 2 (READY) critic response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadyResponse {
+    pub verdict: String,
+    pub issues: Vec<CriticIssue>,
+    pub reasoning: String,
+}
+
+/// An issue identified by a critic in Gate 2.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CriticIssue {
+    pub file: String,
+    pub description: String,
+    pub severity: String,
+    #[serde(default)]
+    pub suggested_fix: Option<String>,
+}
+
+/// Gate 3 (VERDICT) critic response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerdictResponse {
+    pub score: u32,
+    pub summary: String,
+}
+
+/// Result of a single gate's execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GateResult {
+    pub gate: String,
+    pub passed: bool,
+    pub round1_responses: Vec<CriticEntry>,
+    #[serde(default)]
+    pub round2_responses: Vec<CriticEntry>,
+    #[serde(default)]
+    pub research_findings: Option<String>,
+}
+
+/// A single critic's response within a gate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CriticEntry {
+    pub model: String,
+    pub role_hint: String,
+    pub cost_usd: f64,
+}
+
+/// Full result of the 3-gate deliberation pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliberationResult {
+    pub approved: bool,
+    pub score: u32,
+    pub summary: String,
+    pub cost_usd: f64,
+    pub made_fixes: bool,
+    pub gate_results: Vec<GateResult>,
+}

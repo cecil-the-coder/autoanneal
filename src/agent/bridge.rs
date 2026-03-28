@@ -113,6 +113,25 @@ fn resolve_openai() -> Result<Credentials> {
 }
 
 // ---------------------------------------------------------------------------
+// Provider:model parsing
+// ---------------------------------------------------------------------------
+
+/// Parse a "provider:model" string into (Option<provider_hint>, model_name).
+/// "openai:gpt-4o" -> (Some("openai"), "gpt-4o")
+/// "anthropic:sonnet" -> (Some("anthropic"), "sonnet")
+/// "sonnet" -> (None, "sonnet")
+pub fn parse_provider_model(s: &str) -> (Option<String>, String) {
+    if let Some((provider, model)) = s.split_once(':') {
+        match provider {
+            "anthropic" | "openai" => (Some(provider.to_string()), model.to_string()),
+            _ => (None, s.to_string()), // colon but not a known provider, treat as plain model
+        }
+    } else {
+        (None, s.to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Budget helpers
 // ---------------------------------------------------------------------------
 
@@ -289,7 +308,15 @@ pub async fn invoke<T: DeserializeOwned>(
     invocation: &LlmInvocation,
     timeout: Duration,
 ) -> Result<LlmResponse<T>> {
-    let creds = resolve_credentials()?;
+    let creds = if let Some(hint) = &invocation.provider_hint {
+        match hint.as_str() {
+            "anthropic" => resolve_anthropic()?,
+            "openai" => resolve_openai()?,
+            _ => resolve_credentials()?,
+        }
+    } else {
+        resolve_credentials()?
+    };
 
     info!(
         provider = ?creds.provider,
@@ -426,6 +453,7 @@ mod tests {
             json_schema: None,
             working_dir: PathBuf::from("/tmp"),
             context_window: crate::agent::context::DEFAULT_CONTEXT_WINDOW,
+            provider_hint: None,
         }
     }
 
@@ -641,6 +669,48 @@ mod tests {
         // Even with $0 budget, we should get sane minimums.
         assert!(input >= 10_000);
         assert!(output >= 4_000);
+    }
+
+    #[test]
+    fn test_parse_provider_model_openai() {
+        let (hint, model) = parse_provider_model("openai:gpt-4o");
+        assert_eq!(hint.as_deref(), Some("openai"));
+        assert_eq!(model, "gpt-4o");
+    }
+
+    #[test]
+    fn test_parse_provider_model_anthropic() {
+        let (hint, model) = parse_provider_model("anthropic:claude-sonnet");
+        assert_eq!(hint.as_deref(), Some("anthropic"));
+        assert_eq!(model, "claude-sonnet");
+    }
+
+    #[test]
+    fn test_parse_provider_model_plain() {
+        let (hint, model) = parse_provider_model("sonnet");
+        assert!(hint.is_none());
+        assert_eq!(model, "sonnet");
+    }
+
+    #[test]
+    fn test_parse_provider_model_plain_with_dash() {
+        let (hint, model) = parse_provider_model("kimi-k2-5");
+        assert!(hint.is_none());
+        assert_eq!(model, "kimi-k2-5");
+    }
+
+    #[test]
+    fn test_parse_provider_model_unknown_provider() {
+        let (hint, model) = parse_provider_model("unknown:model");
+        assert!(hint.is_none());
+        assert_eq!(model, "unknown:model");
+    }
+
+    #[test]
+    fn test_parse_provider_model_empty() {
+        let (hint, model) = parse_provider_model("");
+        assert!(hint.is_none());
+        assert_eq!(model, "");
     }
 
 }

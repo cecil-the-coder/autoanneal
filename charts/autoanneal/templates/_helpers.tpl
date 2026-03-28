@@ -103,6 +103,10 @@ Expects a dict with keys: repo (the repo entry), root (top-level context).
 - {{ (ternary $repo.fixConflicts $defaults.fixConflicts (hasKey $repo "fixConflicts")) | quote }}
 - "--critic-threshold"
 - {{ ($repo.criticThreshold | default $defaults.criticThreshold) | quote }}
+{{- if or $repo.criticModels $defaults.criticModels }}
+- "--critic-models"
+- {{ ($repo.criticModels | default $defaults.criticModels) | quote }}
+{{- end }}
 - "--improve-docs"
 - {{ (ternary $repo.improveDocs $defaults.improveDocs (hasKey $repo "improveDocs")) | quote }}
 - "--doc-critic-threshold"
