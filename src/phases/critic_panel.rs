@@ -1,5 +1,6 @@
 //! 3-gate critic deliberation pipeline.
 
+use crate::agent::bridge::parse_provider_model;
 use crate::llm::{self, LlmInvocation};
 use crate::models::*;
 use crate::prompts::critic_panel as prompts;
@@ -540,10 +541,12 @@ async fn invoke_critic<T: serde::de::DeserializeOwned + Send + 'static>(
     context_window: u64,
     clone_path: &Path,
 ) -> Result<(T, f64)> {
+    let (provider_hint, model_name) = parse_provider_model(&model);
+
     let invocation = LlmInvocation {
         prompt: user_prompt,
         system_prompt: Some(system_prompt),
-        model,
+        model: model_name,
         max_budget_usd: budget,
         max_turns: 1,
         effort: "high",
@@ -551,7 +554,7 @@ async fn invoke_critic<T: serde::de::DeserializeOwned + Send + 'static>(
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
         context_window,
-        provider_hint: None,
+        provider_hint,
     };
 
     let response = llm::invoke::<T>(&invocation, Duration::from_secs(300))
