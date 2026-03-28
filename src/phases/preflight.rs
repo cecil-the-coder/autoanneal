@@ -449,36 +449,26 @@ async fn check_newest_commit_age_api(repo_slug: &str) -> u64 {
         }
     }
 
-    // Also check autoanneal/ branches for recent commits
+    // Also check autoanneal/ branches for recent commits — single API call;
+    // the branches endpoint includes commit.commit.committer.date per branch,
+    // so we avoid N+1 per-branch calls.
     let branches_result = gh_command(
         dot,
         &[
             "api",
             &format!("repos/{repo_slug}/branches?per_page=100"),
             "--jq",
-            r#"[.[] | select(.name | startswith("autoanneal/"))] | .[].commit.sha"#,
+            r#"[.[] | select(.name | startswith("autoanneal/"))] | .[].commit.commit.committer.date"#,
         ],
     )
     .await;
 
     if let Ok(raw) = branches_result {
-        for sha in raw.lines().filter(|s| !s.is_empty()) {
-            let commit_result = gh_command(
-                dot,
-                &[
-                    "api",
-                    &format!("repos/{repo_slug}/commits/{sha}"),
-                    "--jq",
-                    ".commit.committer.date",
-                ],
-            )
-            .await;
-            if let Ok(date_raw) = commit_result {
-                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date_raw.trim()) {
-                    let dt_utc = dt.with_timezone(&chrono::Utc);
-                    if newest_date.map_or(true, |d| dt_utc > d) {
-                        newest_date = Some(dt_utc);
-                    }
+        for date_line in raw.lines().filter(|s| !s.is_empty() && s != "null") {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date_line.trim()) {
+                let dt_utc = dt.with_timezone(&chrono::Utc);
+                if newest_date.map_or(true, |d| dt_utc > d) {
+                    newest_date = Some(dt_utc);
                 }
             }
         }

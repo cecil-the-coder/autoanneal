@@ -198,6 +198,7 @@ pub async fn run(
 
 /// Safely truncates a string at a UTF-8 character boundary near the given byte limit.
 /// This prevents panics when slicing strings that contain multi-byte characters.
+/// Appends a truncation marker so the consumer knows the content was shortened.
 fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         s.to_string()
@@ -208,7 +209,9 @@ fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> String {
             .last()
             .map(|(idx, c)| idx + c.len_utf8())
             .unwrap_or(0);
-        s[..truncate_at].to_string()
+        let mut truncated = s[..truncate_at].to_string();
+        truncated.push_str("\n\n... (diff truncated) ...");
+        truncated
     }
 }
 
@@ -307,7 +310,7 @@ async fn commit_and_push(clone_dir: &PathBuf, branch: &str) -> Result<()> {
 
     // git push
     let output = tokio::process::Command::new("git")
-        .args(["push", "origin", &format!("HEAD:refs/heads/{branch}")])
+        .args(["push", "--force-with-lease", "origin", &format!("HEAD:refs/heads/{branch}")])
         .current_dir(clone_dir)
         .output()
         .await

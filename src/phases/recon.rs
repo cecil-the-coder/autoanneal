@@ -85,7 +85,7 @@ async fn clone_repo(repo_info: &RepoInfo, work_dir: &Path) -> Result<PathBuf> {
             "Large repo detected, using shallow clone"
         );
         args.push("--depth");
-        args.push("1");
+        args.push("250");
     }
     args.push(&clone_url);
     let clone_path_str = clone_path.to_string_lossy().to_string();

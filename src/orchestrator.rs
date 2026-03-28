@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
 use tracing::{error, info, warn};
@@ -399,6 +400,7 @@ async fn run_pipeline(
         worktree_mgr,
         repo_slug,
         &config.model,
+        *budget_remaining,
     )
     .await;
 
@@ -528,8 +530,8 @@ fn collect_work_items(
             if fix_budget <= 0.0 {
                 break;
             }
-            // Note: we don't reserve budget here; actual costs are subtracted
-            // when outcomes are processed to avoid double-counting.
+            // Budget caps are enforced at the shared level in run_work_queue
+            // to prevent concurrent overspend.
             items.push(WorkItem {
                 kind: WorkItemKind::CiFix {
                     pr: pr.clone(),
@@ -547,8 +549,7 @@ fn collect_work_items(
             if review_budget <= 0.5 {
                 break;
             }
-            // Note: we don't reserve budget here; actual costs are subtracted
-            // when outcomes are processed to avoid double-counting.
+            // Budget caps are enforced at the shared level in run_work_queue.
             items.push(WorkItem {
                 kind: WorkItemKind::PrReview {
                     pr: pr.clone(),
@@ -565,8 +566,7 @@ fn collect_work_items(
         if issue_budget <= 0.0 {
             break;
         }
-        // Note: we don't reserve budget here; actual costs are subtracted
-        // when outcomes are processed to avoid double-counting.
+        // Budget caps are enforced at the shared level in run_work_queue.
         items.push(WorkItem {
             kind: WorkItemKind::IssueInvestigation {
                 issue: issue.clone(),
@@ -603,8 +603,7 @@ fn collect_work_items(
     }
     if budget_remaining > 0.0 && !skip_analysis {
         let analysis_budget = budget_remaining; // analysis gets remaining budget
-        // Note: we don't reserve budget here; actual costs are subtracted
-        // when outcomes are processed to avoid double-counting.
+        // Budget caps are enforced at the shared level in run_work_queue.
         items.push(WorkItem {
             kind: WorkItemKind::Analysis {
                 clone_path: clone_path.clone(),
@@ -631,24 +630,54 @@ fn collect_work_items(
 // Work queue execution
 // ---------------------------------------------------------------------------
 
+/// Cost values in the shared tracker are stored as microdollars (cost_usd × 1_000_000).
+const MICRODOLLAR: f64 = 1_000_000.0;
+
 async fn run_work_queue(
     concurrency: usize,
     items: Vec<WorkItem>,
     worktree_mgr: Arc<WorktreeManager>,
     repo_slug: &str,
     model: &str,
+    total_budget: f64,
 ) -> Vec<WorkItemOutcome> {
     let concurrency = concurrency.max(1);
     let mut pending: VecDeque<WorkItem> = items.into();
     let mut join_set: JoinSet<WorkItemOutcome> = JoinSet::new();
     let mut outcomes: Vec<WorkItemOutcome> = Vec::new();
 
+    // Shared atomic cost tracker so concurrent items can see aggregate spending.
+    let shared_cost = Arc::new(AtomicU64::new(0));
+    let total_budget_microdollars = (total_budget * MICRODOLLAR) as u64;
+
+    /// Helper: check aggregate spend and optionally adjust/skip an item.
+    fn check_budget(
+        item: &mut WorkItem,
+        shared_cost: &AtomicU64,
+        total_budget_microdollars: u64,
+    ) -> bool {
+        let spent = shared_cost.load(Ordering::Relaxed);
+        if spent >= total_budget_microdollars {
+            return false; // budget exhausted, skip
+        }
+        let remaining = (total_budget_microdollars - spent) as f64 / MICRODOLLAR;
+        // Clamp the item's budget cap to what actually remains.
+        if item.budget_cap > remaining {
+            item.budget_cap = remaining;
+        }
+        true
+    }
+
     // Fill initial slots.
     while join_set.len() < concurrency {
-        let item = match pending.pop_front() {
+        let mut item = match pending.pop_front() {
             Some(item) => item,
             None => break,
         };
+        if !check_budget(&mut item, &shared_cost, total_budget_microdollars) {
+            info!(item = %item.name(), "skipping work item: shared budget exhausted");
+            continue;
+        }
         spawn_work_item(
             &mut join_set,
             item,
@@ -666,10 +695,19 @@ async fn run_work_queue(
             cost_usd: 0.0,
             duration: Duration::ZERO,
         });
+
+        // Update the shared cost tracker with actual spend.
+        let cost_microdollars = (outcome.cost_usd * MICRODOLLAR) as u64;
+        shared_cost.fetch_add(cost_microdollars, Ordering::Relaxed);
+
         outcomes.push(outcome);
 
         // Fill the freed slot.
-        if let Some(item) = pending.pop_front() {
+        while let Some(mut item) = pending.pop_front() {
+            if !check_budget(&mut item, &shared_cost, total_budget_microdollars) {
+                info!(item = %item.name(), "skipping work item: shared budget exhausted");
+                continue;
+            }
             spawn_work_item(
                 &mut join_set,
                 item,
@@ -677,6 +715,7 @@ async fn run_work_queue(
                 repo_slug.to_string(),
                 model.to_string(),
             );
+            break; // only fill one slot per completion
         }
     }
 
