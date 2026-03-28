@@ -189,7 +189,7 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
             "--state",
             "open",
             "--json",
-            "number,title,body,mergeable,files,headRefName,labels",
+            "number,title,body,mergeable,files,headRefName,labels,statusCheckRollup",
             "--limit",
             "500",
             "-R",
@@ -237,8 +237,8 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
             continue;
         }
 
-        // Check CI status (per-PR, unavoidable).
-        let ci_status = check_ci_status(repo_slug, number).await;
+        // Derive CI status from batch-fetched statusCheckRollup (no per-PR API call).
+        let ci_status = ci_status_from_rollup(pr);
 
         // Check for autoanneal:fixing label from already-fetched PR data.
         let mut has_fixing_label = pr["labels"]
@@ -313,7 +313,35 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
     result
 }
 
+/// Derive CI status from `statusCheckRollup` data included in the batch PR list response.
+/// This avoids a separate `gh pr checks` API call per PR.
+fn ci_status_from_rollup(pr: &serde_json::Value) -> CiStatus {
+    let checks = match pr["statusCheckRollup"].as_array() {
+        Some(arr) if !arr.is_empty() => arr,
+        _ => return CiStatus::Pending,
+    };
+
+    let any_failing = checks.iter().any(|c| {
+        let conclusion = c["conclusion"].as_str().unwrap_or("");
+        conclusion == "failure" || conclusion == "timed_out"
+    });
+
+    let all_complete = checks.iter().all(|c| {
+        let status = c["status"].as_str().unwrap_or("");
+        status == "completed"
+    });
+
+    if any_failing {
+        CiStatus::Failing
+    } else if all_complete {
+        CiStatus::Passing
+    } else {
+        CiStatus::Pending
+    }
+}
+
 /// Check CI status for a PR by inspecting check runs.
+#[allow(dead_code)]
 async fn check_ci_status(repo_slug: &str, pr_number: u64) -> CiStatus {
     let dot = Path::new(".");
     match gh_command(

@@ -1,7 +1,9 @@
 use crate::models::ClaudeOutput;
 use anyhow::{bail, Context, Result};
 use serde::de::DeserializeOwned;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
@@ -208,10 +210,26 @@ fn parse_response<T: DeserializeOwned>(
     })
 }
 
+/// Process-level cache for directory context strings, keyed by working directory path.
+/// Avoids re-running `find` on every Claude invocation for the same directory.
+static DIR_CONTEXT_CACHE: LazyLock<Mutex<HashMap<PathBuf, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// Generate a compact working directory context string.
 /// Uses `find` with depth limit, excludes common noise directories,
 /// and truncates to avoid wasting tokens.
+///
+/// Results are cached per working directory so the `find` command is only
+/// run once per directory per process lifetime.
 async fn get_dir_context(working_dir: &Path) -> String {
+    // Check cache first (fast path — no async, just a mutex lock).
+    {
+        let cache = DIR_CONTEXT_CACHE.lock().unwrap();
+        if let Some(cached) = cache.get(working_dir) {
+            return cached.clone();
+        }
+    }
+
     let output = tokio::process::Command::new("find")
         .args([
             ".",
@@ -242,11 +260,16 @@ async fn get_dir_context(working_dir: &Path) -> String {
         lines.join("\n")
     };
 
-    format!(
+    let result = format!(
         "## Working Directory: {}\n\n```\n{}\n```",
         working_dir.display(),
         truncated
-    )
+    );
+
+    // Store in cache for future calls.
+    DIR_CONTEXT_CACHE.lock().unwrap().insert(working_dir.to_path_buf(), result.clone());
+
+    result
 }
 
 /// Invoke the Claude CLI as a subprocess and parse its JSON response.
@@ -362,6 +385,7 @@ async fn invoke_once<T: DeserializeOwned>(
         use tokio::io::{AsyncBufReadExt, BufReader};
 
         let mut child = child;
+        child.kill_on_drop(true);
         let stdout = child.stdout.take().context("no stdout")?;
         let stderr_handle = child.stderr.take().context("no stderr")?;
 
@@ -431,6 +455,8 @@ async fn invoke_once<T: DeserializeOwned>(
         }
     } else {
         // Non-streaming: wait for full output
+        let mut child = child;
+        child.kill_on_drop(true);
         let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
             Ok(result) => result.context("failed to wait for claude process")?,
             Err(_) => {
