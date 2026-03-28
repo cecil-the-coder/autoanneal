@@ -51,12 +51,15 @@ defaults:
 # -- Optional environment variables (shared across all repos)
 # Uncomment and set as needed.
 env: {}
-  # ANTHROPIC_BASE_URL: ""
-  # ANTHROPIC_AUTH_TOKEN: ""
-  # ANTHROPIC_DEFAULT_SONNET_MODEL: ""
-  # CLAUDE_CODE_SUBAGENT_MODEL: ""
-  # ANTHROPIC_DEFAULT_OPUS_MODEL: ""
-  # ANTHROPIC_DEFAULT_HAIKU_MODEL: ""
+  # --- Anthropic provider (default) ---
+  # ANTHROPIC_BASE_URL: ""         # Custom API endpoint (e.g. proxy/gateway)
+  # ANTHROPIC_AUTH_TOKEN: ""       # Bearer token for proxy (takes precedence over API_KEY)
+  # --- OpenAI-compatible provider ---
+  # OPENAI_BASE_URL: ""            # Required when using OpenAI provider
+  # OPENAI_API_KEY: ""             # Required when using OpenAI provider
+  # --- Provider selection ---
+  # AUTOANNEAL_PROVIDER: ""        # "anthropic" or "openai" (auto-detected if unset)
+  # --- Debug ---
   # AUTOANNEAL_DEBUG_STREAM: "1"
 
 # -- Repos to target

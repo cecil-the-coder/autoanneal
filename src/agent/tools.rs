@@ -230,14 +230,16 @@ impl ToolExecutor {
         if case_insensitive {
             cmd.arg("-i");
         }
-        cmd.arg("-E").arg(pattern);
+        cmd.arg("-E");
 
         // File type filter via --include.
         if let Some(ft) = file_type {
             cmd.arg("--include").arg(format!("*.{ft}"));
         }
 
-        cmd.arg(&search_dir);
+        // -- separates options from pattern, preventing patterns starting
+        // with '-' from being interpreted as flags.
+        cmd.arg("--").arg(pattern).arg(&search_dir);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 

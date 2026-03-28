@@ -7,6 +7,10 @@ pub struct ApiClient {
     base_url: String,
     api_key: String,
     provider: Provider,
+    /// When true, always use `Authorization: Bearer` regardless of provider.
+    /// This supports Anthropic proxies/gateways that use bearer token auth
+    /// (matching Claude Code's ANTHROPIC_AUTH_TOKEN behavior).
+    use_bearer: bool,
     http: reqwest::Client,
     max_retries: u32,
 }
@@ -28,12 +32,13 @@ pub enum ApiError {
 }
 
 impl ApiClient {
-    pub fn new(base_url: String, api_key: String, provider: Provider) -> Self {
+    pub fn new(base_url: String, api_key: String, provider: Provider, use_bearer: bool) -> Self {
         let base_url = base_url.trim_end_matches('/').to_string();
         Self {
             base_url,
             api_key,
             provider,
+            use_bearer,
             http: reqwest::Client::new(),
             max_retries: 3,
         }
@@ -53,7 +58,7 @@ impl ApiClient {
                     retry_after_secs: retry_after,
                 }
             }
-            s @ (500 | 502 | 503 | 504) => ApiError::ServerError {
+            s @ (500 | 502 | 503 | 504 | 529) => ApiError::ServerError {
                 status: s,
                 body: body.to_string(),
             },
@@ -78,7 +83,7 @@ impl ApiClient {
     ) -> Result<MessagesResponse, ApiError> {
         let body_json = self.provider.serialize_request(request);
         let url = format!("{}{}", self.base_url, self.provider.url_path());
-        let auth_headers = self.provider.auth_headers(&self.api_key);
+        let auth_headers = self.provider.auth_headers(&self.api_key, self.use_bearer);
 
         let mut last_err = ApiError::RequestFailed("no attempts made".to_string());
 
@@ -181,7 +186,7 @@ struct ResponseHeaders {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+
 
     #[test]
     fn test_client_construction() {
@@ -189,6 +194,7 @@ mod tests {
             "https://api.anthropic.com".to_string(),
             "sk-ant-test-key".to_string(),
             Provider::Anthropic,
+            false,
         );
         assert_eq!(client.base_url, "https://api.anthropic.com");
         assert_eq!(client.api_key, "sk-ant-test-key");
@@ -201,6 +207,7 @@ mod tests {
             "https://api.anthropic.com/".to_string(),
             "key".to_string(),
             Provider::Anthropic,
+            false,
         );
         assert_eq!(client.base_url, "https://api.anthropic.com");
     }
@@ -211,13 +218,14 @@ mod tests {
             "https://api.anthropic.com///".to_string(),
             "key".to_string(),
             Provider::Anthropic,
+            false,
         );
         assert_eq!(client.base_url, "https://api.anthropic.com");
     }
 
     #[test]
     fn test_client_default_max_retries() {
-        let client = ApiClient::new("https://api.anthropic.com".to_string(), "key".to_string(), Provider::Anthropic);
+        let client = ApiClient::new("https://api.anthropic.com".to_string(), "key".to_string(), Provider::Anthropic, false);
         assert_eq!(client.max_retries, 3);
     }
 
@@ -392,13 +400,13 @@ mod tests {
     fn test_classify_error_529_overloaded() {
         let headers = ResponseHeaders { retry_after: None };
         let err = ApiClient::classify_error(529, &headers, "overloaded");
-        // 529 is not in the server-error match arm, so it falls through to RequestFailed
+        assert!(ApiClient::is_retryable(&err));
         match err {
-            ApiError::RequestFailed(msg) => {
-                assert!(msg.contains("529"));
-                assert!(msg.contains("overloaded"));
+            ApiError::ServerError { status, body } => {
+                assert_eq!(status, 529);
+                assert_eq!(body, "overloaded");
             }
-            other => panic!("expected RequestFailed, got {:?}", other),
+            other => panic!("expected ServerError, got {:?}", other),
         }
     }
 
@@ -408,6 +416,7 @@ mod tests {
             "https://api.anthropic.com".to_string(),
             "sk-ant-api03-test".to_string(),
             Provider::Anthropic,
+            false,
         );
         assert_eq!(client.base_url, "https://api.anthropic.com");
         assert_eq!(client.api_key, "sk-ant-api03-test");
@@ -420,6 +429,7 @@ mod tests {
             "https://openrouter.ai/api".to_string(),
             "sk-or-test-key".to_string(),
             Provider::OpenAi,
+            true,
         );
         assert_eq!(client.base_url, "https://openrouter.ai/api");
         assert_eq!(client.api_key, "sk-or-test-key");
@@ -430,7 +440,7 @@ mod tests {
     fn test_default_retry_count() {
         // Default max_retries = 3, the loop runs attempts 0..=3 which is 4 iterations
         // (1 initial + 3 retries).
-        let client = ApiClient::new("https://api.example.com".to_string(), "key".to_string(), Provider::Anthropic);
+        let client = ApiClient::new("https://api.example.com".to_string(), "key".to_string(), Provider::Anthropic, false);
         assert_eq!(client.max_retries, 3);
     }
 }

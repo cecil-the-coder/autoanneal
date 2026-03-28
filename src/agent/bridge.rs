@@ -16,50 +16,94 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
-// Provider detection
+// Provider detection and credentials
 // ---------------------------------------------------------------------------
 
-/// Detect the provider from the AUTOANNEAL_PROVIDER environment variable,
-/// falling back to URL-based heuristic on ANTHROPIC_BASE_URL.
-/// AUTOANNEAL_PROVIDER accepts "anthropic" or "openai".
-fn detect_provider() -> Provider {
-    // Explicit provider override takes precedence.
+/// Authentication credential resolved from environment variables.
+pub struct Credentials {
+    pub provider: Provider,
+    pub base_url: String,
+    pub api_key: String,
+    /// When true, use `Authorization: Bearer` even for Anthropic provider
+    /// (matches Claude Code's ANTHROPIC_AUTH_TOKEN behavior for proxies/gateways).
+    pub use_bearer: bool,
+}
+
+/// Resolve provider, base URL, and API key from environment variables.
+///
+/// Provider precedence:
+/// 1. `AUTOANNEAL_PROVIDER` explicit override ("anthropic" or "openai")
+/// 2. Presence of `OPENAI_BASE_URL` → OpenAI
+/// 3. Default → Anthropic
+///
+/// Anthropic auth (matches Claude Code precedence):
+/// - `ANTHROPIC_AUTH_TOKEN` → Bearer token (for proxies/gateways)
+/// - `ANTHROPIC_API_KEY` → x-api-key header (direct API)
+///
+/// OpenAI auth:
+/// - `OPENAI_API_KEY` → Bearer token
+fn resolve_credentials() -> Result<Credentials> {
+    // 1. Explicit provider override.
     if let Ok(val) = std::env::var("AUTOANNEAL_PROVIDER") {
         match val.to_lowercase().as_str() {
-            "anthropic" => return Provider::Anthropic,
-            "openai" => return Provider::OpenAi,
+            "anthropic" => return resolve_anthropic(),
+            "openai" => return resolve_openai(),
             other => {
                 warn!(
-                    "unknown AUTOANNEAL_PROVIDER value {:?}, falling back to URL heuristic",
+                    "unknown AUTOANNEAL_PROVIDER value {:?}, falling back to auto-detect",
                     other
                 );
             }
         }
     }
 
-    // Fall back to URL heuristic.
-    match std::env::var("ANTHROPIC_BASE_URL") {
-        Ok(url) => {
-            if url.contains("openai") || !url.contains("anthropic") {
-                Provider::OpenAi
-            } else {
-                Provider::Anthropic
-            }
-        }
-        Err(_) => Provider::Anthropic,
+    // 2. Auto-detect: if OPENAI_BASE_URL is set, use OpenAI.
+    if std::env::var("OPENAI_BASE_URL").is_ok() {
+        return resolve_openai();
     }
+
+    // 3. Default to Anthropic.
+    resolve_anthropic()
 }
 
-/// Get the API base URL, defaulting to Anthropic's endpoint.
-fn get_base_url() -> String {
-    std::env::var("ANTHROPIC_BASE_URL")
-        .unwrap_or_else(|_| "https://api.anthropic.com".to_string())
+fn resolve_anthropic() -> Result<Credentials> {
+    let base_url = std::env::var("ANTHROPIC_BASE_URL")
+        .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
+
+    // AUTH_TOKEN takes precedence (like Claude Code) — used for proxies/gateways.
+    if let Ok(token) = std::env::var("ANTHROPIC_AUTH_TOKEN") {
+        return Ok(Credentials {
+            provider: Provider::Anthropic,
+            base_url,
+            api_key: token,
+            use_bearer: true,
+        });
+    }
+
+    let api_key = std::env::var("ANTHROPIC_API_KEY")
+        .context("neither ANTHROPIC_AUTH_TOKEN nor ANTHROPIC_API_KEY is set")?;
+
+    Ok(Credentials {
+        provider: Provider::Anthropic,
+        base_url,
+        api_key,
+        use_bearer: false,
+    })
 }
 
-/// Get the API key from the environment.
-fn get_api_key() -> Result<String> {
-    std::env::var("ANTHROPIC_API_KEY")
-        .context("ANTHROPIC_API_KEY environment variable not set")
+fn resolve_openai() -> Result<Credentials> {
+    let base_url = std::env::var("OPENAI_BASE_URL")
+        .context("OPENAI_BASE_URL must be set when using OpenAI provider")?;
+
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .context("OPENAI_API_KEY must be set when using OpenAI provider")?;
+
+    Ok(Credentials {
+        provider: Provider::OpenAi,
+        base_url,
+        api_key,
+        use_bearer: true,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -238,12 +282,12 @@ pub async fn invoke<T: DeserializeOwned>(
     invocation: &LlmInvocation,
     timeout: Duration,
 ) -> Result<LlmResponse<T>> {
-    let provider = detect_provider();
-    let base_url = get_base_url();
-    let api_key = get_api_key()?;
+    let creds = resolve_credentials()?;
 
     info!(
-        provider = ?provider,
+        provider = ?creds.provider,
+        base_url = %creds.base_url,
+        use_bearer = creds.use_bearer,
         model = %invocation.model,
         budget = invocation.max_budget_usd,
         max_turns = invocation.max_turns,
@@ -251,7 +295,7 @@ pub async fn invoke<T: DeserializeOwned>(
     );
 
     // Build the pieces.
-    let client = ApiClient::new(base_url, api_key, provider);
+    let client = ApiClient::new(creds.base_url, creds.api_key, creds.provider, creds.use_bearer);
 
     let executor = ToolExecutor::new(
         invocation.working_dir.clone(),
@@ -422,29 +466,11 @@ mod tests {
         assert!(!config.tools_enabled);
     }
 
-    #[test]
-    fn test_bridge_detects_anthropic_provider() {
-        // With no env var set, should default to Anthropic.
-        // We test the function directly (env may or may not be set in CI).
-        let provider = detect_provider_from_url("https://api.anthropic.com");
-        assert_eq!(provider, Provider::Anthropic);
-
-        let provider = detect_provider_from_url("https://api.anthropic.com/v1");
-        assert_eq!(provider, Provider::Anthropic);
-    }
-
-    #[test]
-    fn test_bridge_detects_openai_provider() {
-        let provider = detect_provider_from_url("https://api.openai.com/v1");
-        assert_eq!(provider, Provider::OpenAi);
-
-        let provider = detect_provider_from_url("https://openrouter.ai/api");
-        assert_eq!(provider, Provider::OpenAi);
-
-        // Any URL that doesn't contain "anthropic" is treated as OpenAI-compatible.
-        let provider = detect_provider_from_url("https://my-custom-proxy.example.com");
-        assert_eq!(provider, Provider::OpenAi);
-    }
+    // Provider detection is now based on env vars (AUTOANNEAL_PROVIDER,
+    // OPENAI_BASE_URL presence) rather than URL heuristics. Integration
+    // tests for resolve_credentials() would need env var manipulation,
+    // so we test the individual resolve_* functions' logic via the
+    // end-to-end mock test instead.
 
     #[test]
     fn test_bridge_extracts_json_from_result() {
@@ -608,13 +634,4 @@ mod tests {
         assert!(output >= 4_000);
     }
 
-    // -- Helper for testing provider detection without touching env vars --
-
-    fn detect_provider_from_url(url: &str) -> Provider {
-        if url.contains("openai") || !url.contains("anthropic") {
-            Provider::OpenAi
-        } else {
-            Provider::Anthropic
-        }
-    }
 }

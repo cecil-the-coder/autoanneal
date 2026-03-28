@@ -17,9 +17,18 @@ impl Provider {
         }
     }
 
-    /// Return the required HTTP headers (excluding content-type, which is always set).
-    pub fn auth_headers(&self, api_key: &str) -> Vec<(&'static str, String)> {
+    /// Return the required HTTP headers.
+    ///
+    /// When `use_bearer` is true for the Anthropic provider, sends
+    /// `Authorization: Bearer` instead of `x-api-key`. This matches Claude
+    /// Code's ANTHROPIC_AUTH_TOKEN behavior for proxies/gateways.
+    pub fn auth_headers(&self, api_key: &str, use_bearer: bool) -> Vec<(&'static str, String)> {
         match self {
+            Provider::Anthropic if use_bearer => vec![
+                ("authorization", format!("Bearer {api_key}")),
+                ("anthropic-version", "2023-06-01".to_string()),
+                ("content-type", "application/json".to_string()),
+            ],
             Provider::Anthropic => vec![
                 ("x-api-key", api_key.to_string()),
                 ("anthropic-version", "2023-06-01".to_string()),
@@ -839,8 +848,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_anthropic_headers() {
-        let headers = Provider::Anthropic.auth_headers("sk-ant-key");
+    fn test_anthropic_headers_api_key() {
+        let headers = Provider::Anthropic.auth_headers("sk-ant-key", false);
 
         let map: std::collections::HashMap<&str, &str> = headers
             .iter()
@@ -850,13 +859,28 @@ mod tests {
         assert_eq!(map["x-api-key"], "sk-ant-key");
         assert_eq!(map["anthropic-version"], "2023-06-01");
         assert_eq!(map["content-type"], "application/json");
-        // Should NOT have Authorization: Bearer
         assert!(!map.contains_key("authorization"));
     }
 
     #[test]
+    fn test_anthropic_headers_bearer_token() {
+        let headers = Provider::Anthropic.auth_headers("my-auth-token", true);
+
+        let map: std::collections::HashMap<&str, &str> = headers
+            .iter()
+            .map(|(k, v)| (*k, v.as_str()))
+            .collect();
+
+        assert_eq!(map["authorization"], "Bearer my-auth-token");
+        assert_eq!(map["anthropic-version"], "2023-06-01");
+        assert_eq!(map["content-type"], "application/json");
+        // Should NOT have x-api-key when using bearer
+        assert!(!map.contains_key("x-api-key"));
+    }
+
+    #[test]
     fn test_openai_headers() {
-        let headers = Provider::OpenAi.auth_headers("sk-openai-key");
+        let headers = Provider::OpenAi.auth_headers("sk-openai-key", true);
 
         let map: std::collections::HashMap<&str, &str> = headers
             .iter()
@@ -865,8 +889,20 @@ mod tests {
 
         assert_eq!(map["authorization"], "Bearer sk-openai-key");
         assert_eq!(map["content-type"], "application/json");
-        // Should NOT have x-api-key
         assert!(!map.contains_key("x-api-key"));
+    }
+
+    #[test]
+    fn test_openai_headers_use_bearer_ignored() {
+        // OpenAI always uses bearer regardless of the flag
+        let headers = Provider::OpenAi.auth_headers("sk-key", false);
+
+        let map: std::collections::HashMap<&str, &str> = headers
+            .iter()
+            .map(|(k, v)| (*k, v.as_str()))
+            .collect();
+
+        assert_eq!(map["authorization"], "Bearer sk-key");
     }
 
     // -----------------------------------------------------------------------

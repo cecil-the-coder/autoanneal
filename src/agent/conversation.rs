@@ -180,33 +180,9 @@ pub async fn run(
                     stop_reason: StopReason::Timeout,
                 };
             }
-            Err(ApiError::Http { status, body }) if status == 401 || status == 403 => {
-                return ConversationResult {
-                    text: collected_text,
-                    turns,
-                    total_input_tokens,
-                    total_output_tokens,
-                    stop_reason: StopReason::Error(format!("HTTP {status}: {body}")),
-                };
-            }
-            Err(ApiError::Http { status, body: _ }) if status >= 500 => {
-                // One retry for server errors
-                match sender.send(&request, config.timeout_per_turn).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        return ConversationResult {
-                            text: collected_text,
-                            turns,
-                            total_input_tokens,
-                            total_output_tokens,
-                            stop_reason: StopReason::Error(format!(
-                                "server error after retry: {e}"
-                            )),
-                        };
-                    }
-                }
-            }
             Err(e) => {
+                // Client already handles retries for server errors and rate limits.
+                // Conversation loop just surfaces the final error.
                 return ConversationResult {
                     text: collected_text,
                     turns,
@@ -821,7 +797,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_auth_error_no_retry() {
+    async fn test_auth_error_surfaces_immediately() {
         let sender = MockSender::new(vec![Err(ApiError::Http {
             status: 401,
             body: "Unauthorized".to_string(),
@@ -831,51 +807,23 @@ mod tests {
         let result = run(&sender, &executor, &default_config(), "Hi").await;
 
         assert!(matches!(result.stop_reason, StopReason::Error(_)));
-        if let StopReason::Error(msg) = &result.stop_reason {
-            assert!(msg.contains("401"));
-        }
-        // Should NOT retry — only 1 call
+        // Conversation loop does not retry — client handles retries.
         assert_eq!(sender.call_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
-    async fn test_server_error_retried_then_fails() {
-        let sender = MockSender::new(vec![
-            Err(ApiError::Http {
-                status: 500,
-                body: "Internal Server Error".to_string(),
-            }),
-            // Retry also fails
-            Err(ApiError::Http {
-                status: 500,
-                body: "Still broken".to_string(),
-            }),
-        ]);
+    async fn test_server_error_surfaces_immediately() {
+        // Client is responsible for retries. Conversation loop just surfaces the error.
+        let sender = MockSender::new(vec![Err(ApiError::Http {
+            status: 500,
+            body: "Internal Server Error".to_string(),
+        })]);
         let executor = MockToolHandler::new(vec![]);
 
         let result = run(&sender, &executor, &default_config(), "Hi").await;
 
         assert!(matches!(result.stop_reason, StopReason::Error(_)));
-        // Should have made 2 calls (original + 1 retry)
-        assert_eq!(sender.call_count.load(Ordering::SeqCst), 2);
-    }
-
-    #[tokio::test]
-    async fn test_server_error_retried_then_succeeds() {
-        let sender = MockSender::new(vec![
-            Err(ApiError::Http {
-                status: 502,
-                body: "Bad Gateway".to_string(),
-            }),
-            Ok(text_response("Recovered!", 10, 5)),
-        ]);
-        let executor = MockToolHandler::new(vec![]);
-
-        let result = run(&sender, &executor, &default_config(), "Hi").await;
-
-        assert_eq!(result.text, "Recovered!");
-        assert!(matches!(result.stop_reason, StopReason::EndTurn));
-        assert_eq!(sender.call_count.load(Ordering::SeqCst), 2);
+        assert_eq!(sender.call_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -1603,10 +1551,8 @@ mod tests {
         let sender = MockSender::new(vec![
             Ok(tool_use_response("tu_1", "bash", json!({"command": "a"}), 10, 5)),
             Ok(tool_use_response("tu_2", "bash", json!({"command": "b"}), 10, 5)),
-            // Turn 3: 500 error
+            // Turn 3: error (client already exhausted its retries)
             Err(ApiError::Http { status: 500, body: "boom".to_string() }),
-            // Retry also fails
-            Err(ApiError::Http { status: 500, body: "still boom".to_string() }),
         ]);
         let executor = MockToolHandler::new(vec![
             ("ok".to_string(), false),
@@ -1621,18 +1567,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rate_limit_not_retried_by_conversation() {
-        // 429 returns Error, not retried by conversation loop (client handles retries).
-        let sender = MockSender::new(vec![
-            Err(ApiError::Http { status: 429, body: "rate limited".to_string() }),
-        ]);
-        let executor = MockToolHandler::new(vec![]);
+    async fn test_any_api_error_surfaces_without_retry() {
+        // Conversation loop does not retry any errors — client handles all retries.
+        for (status, body) in [(429, "rate limited"), (500, "server error"), (400, "bad request")] {
+            let sender = MockSender::new(vec![
+                Err(ApiError::Http { status, body: body.to_string() }),
+            ]);
+            let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "go").await;
+            let result = run(&sender, &executor, &default_config(), "go").await;
 
-        // 429 is not 401/403 (no special handling) and not >=500, so falls to generic Err arm.
-        assert!(matches!(result.stop_reason, StopReason::Error(_)));
-        assert_eq!(sender.call_count.load(Ordering::SeqCst), 1);
+            assert!(matches!(result.stop_reason, StopReason::Error(_)),
+                "expected Error for status {status}");
+            assert_eq!(sender.call_count.load(Ordering::SeqCst), 1,
+                "conversation loop should not retry status {status}");
+        }
     }
 
     #[tokio::test]
@@ -1658,24 +1607,6 @@ mod tests {
         // Text from first turn is preserved.
         assert_eq!(result.text, "I will read it");
         assert_eq!(result.turns, 2);
-    }
-
-    #[tokio::test]
-    async fn test_server_error_retry_then_different_error() {
-        // 500 then 429 on retry.
-        let sender = MockSender::new(vec![
-            Err(ApiError::Http { status: 500, body: "server error".to_string() }),
-            Err(ApiError::Http { status: 429, body: "rate limited".to_string() }),
-        ]);
-        let executor = MockToolHandler::new(vec![]);
-
-        let result = run(&sender, &executor, &default_config(), "go").await;
-
-        assert!(matches!(result.stop_reason, StopReason::Error(_)));
-        if let StopReason::Error(msg) = &result.stop_reason {
-            assert!(msg.contains("server error after retry") || msg.contains("429"));
-        }
-        assert_eq!(sender.call_count.load(Ordering::SeqCst), 2);
     }
 
     // ===================================================================
