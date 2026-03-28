@@ -180,6 +180,7 @@ pub async fn run_doc_analysis(
     model: &str,
     budget: f64,
     max_tasks: usize,
+    min_severity: &Severity,
 ) -> Result<AnalysisOutput> {
     // 1. Fetch recent commits and build doc-specific prompt.
     let recent_commits = get_recent_commits(clone_path).await;
@@ -215,12 +216,14 @@ pub async fn run_doc_analysis(
     let total_found = analysis.improvements.len();
     info!(total_found, "doc analysis phase: raw improvements from Claude");
 
-    // 4. Post-process: lighter filtering for docs (no severity filter, allow docs category).
+    // 4. Post-process: apply severity filter and standard filtering for docs.
+    let min_rank = severity_rank(min_severity);
     let mut filtered: Vec<Improvement> = analysis
         .improvements
         .into_iter()
         .filter(|imp| imp.risk != Risk::High)
         .filter(|imp| imp.estimated_lines_changed <= 500)
+        .filter(|imp| severity_rank(&imp.severity) >= min_rank)
         .collect();
 
     // Sort by severity descending, then risk ascending.
