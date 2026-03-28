@@ -55,6 +55,31 @@ Expects a dict with keys: repo (the repo entry), root (top-level context).
 - {{ ($repo.timeout | default $defaults.timeout) | quote }}
 - "--model"
 - {{ ($repo.model | default $defaults.model) | quote }}
+{{- $modelRecon := ($repo.modelRecon | default $defaults.modelRecon) }}
+{{- if $modelRecon }}
+- "--model-recon"
+- {{ $modelRecon | quote }}
+{{- end }}
+{{- $modelAnalysis := ($repo.modelAnalysis | default $defaults.modelAnalysis) }}
+{{- if $modelAnalysis }}
+- "--model-analysis"
+- {{ $modelAnalysis | quote }}
+{{- end }}
+{{- $modelImplement := ($repo.modelImplement | default $defaults.modelImplement) }}
+{{- if $modelImplement }}
+- "--model-implement"
+- {{ $modelImplement | quote }}
+{{- end }}
+{{- $modelCritic := ($repo.modelCritic | default $defaults.modelCritic) }}
+{{- if $modelCritic }}
+- "--model-critic"
+- {{ $modelCritic | quote }}
+{{- end }}
+{{- $modelPlan := ($repo.modelPlan | default $defaults.modelPlan) }}
+{{- if $modelPlan }}
+- "--model-plan"
+- {{ $modelPlan | quote }}
+{{- end }}
 - "--max-tasks"
 - {{ ($repo.maxTasks | default $defaults.maxTasks) | quote }}
 - "--min-severity"

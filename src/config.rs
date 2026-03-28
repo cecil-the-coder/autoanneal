@@ -15,9 +15,29 @@ pub struct Config {
     #[arg(long, default_value = "30m")]
     pub timeout: String,
 
-    /// Claude model alias or ID
+    /// Default Claude model alias or ID (used for phases without a specific override)
     #[arg(long, default_value = "sonnet")]
     pub model: String,
+
+    /// Model for recon phase (defaults to --model)
+    #[arg(long)]
+    pub model_recon: Option<String>,
+
+    /// Model for analysis phase (defaults to --model)
+    #[arg(long)]
+    pub model_analysis: Option<String>,
+
+    /// Model for implementation phase (defaults to --model)
+    #[arg(long)]
+    pub model_implement: Option<String>,
+
+    /// Model for critic review phase (defaults to --model)
+    #[arg(long)]
+    pub model_critic: Option<String>,
+
+    /// Model for plan/PR body generation (defaults to --model)
+    #[arg(long)]
+    pub model_plan: Option<String>,
 
     /// Maximum number of improvements to implement
     #[arg(long, default_value = "5")]
@@ -112,6 +132,18 @@ pub struct Config {
 }
 
 impl Config {
+    /// Get the model for a specific phase, falling back to the default.
+    pub fn model_for(&self, phase: &str) -> &str {
+        match phase {
+            "recon" => self.model_recon.as_deref().unwrap_or(&self.model),
+            "analysis" => self.model_analysis.as_deref().unwrap_or(&self.model),
+            "implement" => self.model_implement.as_deref().unwrap_or(&self.model),
+            "critic" => self.model_critic.as_deref().unwrap_or(&self.model),
+            "plan" => self.model_plan.as_deref().unwrap_or(&self.model),
+            _ => &self.model,
+        }
+    }
+
     /// Parse the repo string into "owner/repo" format.
     /// Handles both "owner/repo" and "https://github.com/owner/repo" formats.
     pub fn repo_slug(&self) -> String {
@@ -240,6 +272,11 @@ mod tests {
             max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
+            model_recon: None,
+            model_analysis: None,
+            model_implement: None,
+            model_critic: None,
+            model_plan: None,
             max_tasks: 5,
             dry_run: false,
             keep_on_failure: false,
@@ -273,6 +310,11 @@ mod tests {
             max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
+            model_recon: None,
+            model_analysis: None,
+            model_implement: None,
+            model_critic: None,
+            model_plan: None,
             max_tasks: 5,
             dry_run: false,
             keep_on_failure: false,
@@ -306,6 +348,11 @@ mod tests {
             max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
+            model_recon: None,
+            model_analysis: None,
+            model_implement: None,
+            model_critic: None,
+            model_plan: None,
             max_tasks: 5,
             dry_run: false,
             keep_on_failure: false,
@@ -339,6 +386,11 @@ mod tests {
             max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
+            model_recon: None,
+            model_analysis: None,
+            model_implement: None,
+            model_critic: None,
+            model_plan: None,
             max_tasks: 5,
             dry_run: false,
             keep_on_failure: false,
@@ -372,6 +424,11 @@ mod tests {
             max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
+            model_recon: None,
+            model_analysis: None,
+            model_implement: None,
+            model_critic: None,
+            model_plan: None,
             max_tasks: 5,
             dry_run: false,
             keep_on_failure: false,
@@ -405,6 +462,11 @@ mod tests {
             max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
+            model_recon: None,
+            model_analysis: None,
+            model_implement: None,
+            model_critic: None,
+            model_plan: None,
             max_tasks: 5,
             dry_run: false,
             keep_on_failure: false,
