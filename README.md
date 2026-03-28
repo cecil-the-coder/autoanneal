@@ -59,9 +59,23 @@ autoanneal <repo-url> [OPTIONS]
 | `--setup-command <cmd>` | — | Shell command run after clone (e.g. `npm install`) |
 | `--min-severity <level>` | `minor` | Filter threshold: `minor`, `moderate`, `major` |
 | `--log-level <level>` | `info` | `off`, `error`, `warn`, `info`, `debug`, `trace` |
-| `--critic-threshold <score>` | `6` | Min quality score to mark PR ready (v2) |
-| `--ci-retries <N>` | `3` | Max CI fix attempts (v2) |
 | `--output <format>` | `text` | Output format: `text` or `json` |
+| `--skip-after <N>` | `3` | Skip analysis if no commits in N×cron-interval; set 0 to disable |
+| `--cron-interval <mins>` | `10` | Cron interval in minutes (used with --skip-after) |
+| `--fix-ci` | `true` | Fix PRs with failing CI before new improvements |
+| `--fix-conflicts` | `true` | Rebase PRs with merge conflicts before new improvements |
+| `--critic-threshold <score>` | `6` | Min critic score (1–10) to create a PR; set 0 to disable |
+| `--ci-retries <N>` | `3` | Max CI fix attempts |
+| `--improve-docs` | `true` | Fall back to doc improvements when no code improvements found |
+| `--doc-critic-threshold <score>` | `7` | Min critic score for documentation changes |
+| `--review-prs` | `false` | Review external PRs (not created by autoanneal) |
+| `--review-filter <filter>` | `all` | PR review filter: `all`, `labeled:<label>`, or `recent` |
+| `--review-fix-threshold <score>` | `7` | If critic score below this, attempt fixes instead of just commenting |
+| `--concurrency <N>` | `3` | Maximum concurrent work items |
+| `--max-open-prs <N>` | `5` | Max open autoanneal PRs before skipping; 0 = unlimited |
+| `--investigate-issues <labels>` | `""` | Investigate issues with these labels (comma-separated); empty = disabled |
+| `--max-issues <N>` | `2` | Max issues to investigate per run |
+| `--issue-budget <USD>` | `3.00` | Budget per issue investigation (USD) |
 
 ## How it works
 
@@ -71,7 +85,7 @@ The tool runs five sequential phases:
 2. **Analysis** — Claude explores the codebase with read-only tools and returns a ranked list of improvements with severity, risk, and scope estimates.
 3. **Plan + PR** — Creates a branch, generates a PR description from the improvement list, and opens a draft PR.
 4. **Implement** — Iterates through each improvement: Claude makes the changes, guardrails validate scope (file allowlist, line count caps), a build check runs, and the result is committed and pushed.
-5. **Critic + CI** (v2) — Planned: independent review scoring and CI failure auto-fix.
+5. **Critic + CI** — Independent review scoring and CI failure auto-fix.
 
 Each phase has its own budget allocation and timeout. High-risk or oversized changes are automatically skipped.
 
