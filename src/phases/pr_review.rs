@@ -188,6 +188,21 @@ pub async fn run(
                 "guardrail violation, discarding PR review fix changes"
             );
             let _ = guardrails::discard_changes(&clone_dir).await;
+            // Leave a comment so the PR author knows fixes were attempted but rejected.
+            let comment = format!(
+                "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes were generated but discarded due to safety guardrails ({}). Please review the suggestions above._",
+                critic.score, critic.verdict, critic.summary, violation
+            );
+            leave_comment(repo_slug, pr.number, &comment).await;
+            add_reviewed_label(repo_slug, pr.number).await;
+
+            return Ok(PrReviewOutput {
+                pr_number: pr.number,
+                score: critic.score,
+                fixed: false,
+                commented: true,
+                cost_usd: total_cost,
+            });
         } else {
             // Stage and commit changes.
             let commit_ok = commit_changes(&clone_dir).await.is_ok();

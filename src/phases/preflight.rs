@@ -166,19 +166,11 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
     };
 
     // Filter for autoanneal/ branches from newline-delimited output.
-    struct BranchInfo {
-        name: String,
-        commit_date: Option<String>,
-    }
-
-    let branches: Vec<BranchInfo> = branches_raw
+    let branches: Vec<String> = branches_raw
         .lines()
         .filter(|line| !line.is_empty())
         .filter(|line| line.starts_with("autoanneal/"))
-        .map(|name| BranchInfo {
-            name: name.to_string(),
-            commit_date: None,
-        })
+        .map(|s| s.to_string())
         .collect();
 
     if branches.is_empty() {
@@ -230,15 +222,8 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
         })
         .collect();
 
-    // Build a map of branch name -> commit date for stale detection.
-    let branch_commit_dates: std::collections::HashMap<String, String> = branches
-        .iter()
-        .filter_map(|b| b.commit_date.as_ref().map(|d| (b.name.clone(), d.clone())))
-        .collect();
-
     // For each branch, look up the associated PR from our batch result.
-    for branch_info in &branches {
-        let branch = &branch_info.name;
+    for branch in &branches {
 
         let pr = match pr_by_branch.get(branch) {
             Some(pr) => *pr,
@@ -266,20 +251,7 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
 
         // If label present but latest commit >30 min old, remove stale label.
         if has_fixing_label {
-            let stale = match branch_commit_dates.get(branch) {
-                Some(date_str) => {
-                    if let Ok(commit_time) = chrono::DateTime::parse_from_rfc3339(date_str) {
-                        let age = chrono::Utc::now().signed_duration_since(commit_time);
-                        age.num_minutes() > 30
-                    } else {
-                        false
-                    }
-                }
-                None => {
-                    // Fallback: per-branch API call if commit date unavailable.
-                    is_stale_fixing(repo_slug, branch).await
-                }
-            };
+            let stale = is_stale_fixing(repo_slug, branch).await;
 
             if stale {
                 info!(
