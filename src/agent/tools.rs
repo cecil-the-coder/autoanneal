@@ -330,7 +330,13 @@ impl ToolExecutor {
                                 let mut stdout =
                                     String::from_utf8_lossy(&stdout_buf).into_owned();
                                 if stdout.len() > MAX_OUTPUT_BYTES {
-                                    stdout.truncate(MAX_OUTPUT_BYTES);
+                                    let truncate_at = stdout
+                                        .char_indices()
+                                        .take_while(|(i, _)| *i <= MAX_OUTPUT_BYTES)
+                                        .last()
+                                        .map(|(i, _)| i)
+                                        .unwrap_or(0);
+                                    stdout.truncate(truncate_at);
                                     stdout.push_str("\n... [output truncated]");
                                 }
                                 Ok(stdout)

@@ -121,11 +121,10 @@ pub async fn run(
 
     loop {
         // --- guard: turn limit ---
-        turns += 1;
-        if turns > config.max_turns {
+        if turns >= config.max_turns {
             return ConversationResult {
                 text: collected_text,
-                turns: turns - 1,
+                turns,
                 total_input_tokens,
                 total_output_tokens,
                 stop_reason: StopReason::MaxTurns,
@@ -138,12 +137,14 @@ pub async fn run(
         {
             return ConversationResult {
                 text: collected_text,
-                turns: turns - 1,
+                turns,
                 total_input_tokens,
                 total_output_tokens,
                 stop_reason: StopReason::BudgetExhausted,
             };
         }
+
+        turns += 1;
 
         // --- build request ---
         let tools = if config.tools_enabled {
@@ -218,9 +219,15 @@ pub async fn run(
                     let (mut result_content, is_error) =
                         executor.execute(name, input).await;
 
-                    // Truncate very large tool results
+                    // Truncate very large tool results (safe at char boundary)
                     if result_content.len() > MAX_TOOL_RESULT_BYTES {
-                        result_content.truncate(MAX_TOOL_RESULT_BYTES);
+                        let truncate_at = result_content
+                            .char_indices()
+                            .take_while(|(i, _)| *i <= MAX_TOOL_RESULT_BYTES)
+                            .last()
+                            .map(|(i, _)| i)
+                            .unwrap_or(0);
+                        result_content.truncate(truncate_at);
                         result_content
                             .push_str("\n... [truncated, result too large]");
                     }
@@ -248,7 +255,7 @@ pub async fn run(
 
         // --- decide what to do next ---
         match response.stop_reason.as_str() {
-            "end_turn" => {
+            "end_turn" | "stop_sequence" => {
                 return ConversationResult {
                     text: collected_text,
                     turns,
