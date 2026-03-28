@@ -213,6 +213,7 @@ pub async fn run(
                     &[
                         "pr",
                         "create",
+                        "--draft",
                         "--title",
                         &pr_title,
                         "--body",
@@ -227,8 +228,20 @@ pub async fn run(
                 {
                     Ok(url) => {
                         let url = url.trim().to_string();
-                        info!(pr_url = %url, issue = issue.number, "created PR for issue fix");
-                        pr_url = Some(url);
+                        info!(pr_url = %url, issue = issue.number, "created draft PR for issue fix");
+                        pr_url = Some(url.clone());
+
+                        // Mark PR as ready for review.
+                        if let Ok(pr_number) = url.rsplit('/').next().unwrap_or("").parse::<u64>() {
+                            if let Err(e) = gh_command(
+                                worktree_path,
+                                &["pr", "ready", &pr_number.to_string(), "-R", repo_slug],
+                            )
+                            .await
+                            {
+                                warn!(error = %e, issue = issue.number, "failed to mark PR as ready (non-fatal)");
+                            }
+                        }
                     }
                     Err(e) => {
                         warn!(error = %e, issue = issue.number, "failed to create PR for issue fix");

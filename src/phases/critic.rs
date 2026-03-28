@@ -1,4 +1,4 @@
-use crate::claude::{self, ClaudeInvocation, generate_session_id};
+use crate::claude::{self, truncate_to_char_boundary, ClaudeInvocation, generate_session_id};
 use crate::models::CriticResult;
 use crate::prompts::critic::{CRITIC_FIX_PROMPT, CRITIC_PROMPT};
 use crate::prompts::system::{critic_fix_system_prompt, critic_system_prompt};
@@ -243,20 +243,3 @@ async fn get_diff(clone_path: &Path, default_branch: &str) -> Result<String> {
     Ok(truncate_to_char_boundary(&diff, MAX_DIFF_CHARS))
 }
 
-/// Safely truncates a string at a UTF-8 character boundary near the given byte limit.
-/// This prevents panics when truncating strings that contain multi-byte characters.
-fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        s.to_string()
-    } else {
-        let truncate_at = s
-            .char_indices()
-            .take_while(|(idx, _)| *idx < max_bytes)
-            .last()
-            .map(|(idx, c)| idx + c.len_utf8())
-            .unwrap_or(0);
-        let mut truncated = s[..truncate_at].to_string();
-        truncated.push_str("\n\n... (diff truncated) ...");
-        truncated
-    }
-}

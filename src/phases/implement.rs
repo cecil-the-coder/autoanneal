@@ -303,7 +303,7 @@ async fn run_group_in_worktree(
             Ok(result) => {
                 let cost = result.cost_usd;
                 // Track cost in the shared atomic counter (stored as microdollars).
-                let microdollars = (cost * 1_000_000.0) as u64;
+                let microdollars = (cost * 1_000_000.0).round() as u64;
                 shared_cost.fetch_add(microdollars, Ordering::Relaxed);
                 group_cost += cost;
 
