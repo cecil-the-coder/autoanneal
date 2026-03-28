@@ -647,6 +647,22 @@ fn collect_work_items(
 /// Cost values in the shared tracker are stored as microdollars (cost_usd × 1_000_000).
 const MICRODOLLAR: f64 = 1_000_000.0;
 
+/// Maximum dollar value that can be safely converted to microdollars (u64::MAX / MICRODOLLAR).
+const MAX_CONVERTIBLE_BUDGET: f64 = (u64::MAX as f64) / MICRODOLLAR;
+
+/// Convert a dollar value to microdollars with overflow/negative protection.
+///
+/// Returns `None` if the value is negative or would overflow u64.
+fn usd_to_microdollars(value: f64) -> Option<u64> {
+    if value < 0.0 {
+        return None;
+    }
+    if value > MAX_CONVERTIBLE_BUDGET {
+        return None;
+    }
+    Some((value * MICRODOLLAR).round() as u64)
+}
+
 async fn run_work_queue(
     concurrency: usize,
     items: Vec<WorkItem>,
@@ -662,7 +678,7 @@ async fn run_work_queue(
 
     // Shared atomic cost tracker so concurrent items can see aggregate spending.
     let shared_cost = Arc::new(AtomicU64::new(0));
-    let total_budget_microdollars = (total_budget * MICRODOLLAR).round() as u64;
+    let total_budget_microdollars = usd_to_microdollars(total_budget).unwrap_or(u64::MAX);
 
     /// Helper: check aggregate spend and optionally adjust/skip an item.
     fn check_budget(
@@ -719,7 +735,7 @@ async fn run_work_queue(
         });
 
         // Update the shared cost tracker with actual spend.
-        let cost_microdollars = (outcome.cost_usd * MICRODOLLAR).round() as u64;
+        let cost_microdollars = usd_to_microdollars(outcome.cost_usd).unwrap_or(0);
         shared_cost.fetch_add(cost_microdollars, Ordering::Relaxed);
 
         outcomes.push(outcome);

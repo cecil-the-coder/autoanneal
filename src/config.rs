@@ -176,8 +176,19 @@ impl Config {
 
     /// Parse the timeout string into a Duration.
     /// Supports strings like "30m", "1h", "1h30m", "90s".
+    /// Falls back to 30 minutes for empty strings (silent) or invalid strings (with warning).
     pub fn timeout_duration(&self) -> std::time::Duration {
-        parse_duration(&self.timeout).unwrap_or(std::time::Duration::from_secs(30 * 60))
+        match parse_duration(&self.timeout) {
+            Ok(duration) => duration,
+            Err(DurationError::Empty) => std::time::Duration::from_secs(30 * 60),
+            Err(DurationError::Invalid) => {
+                eprintln!(
+                    "Warning: Invalid timeout string '{}', using default 30m",
+                    self.timeout
+                );
+                std::time::Duration::from_secs(30 * 60)
+            }
+        }
     }
 
     /// Parse min_severity string into Severity enum.
@@ -191,12 +202,23 @@ impl Config {
     }
 }
 
+/// Error type for duration parsing failures.
+#[derive(Debug, PartialEq)]
+pub enum DurationError {
+    /// Input was empty or whitespace-only.
+    Empty,
+    /// Input was invalid or unparseable.
+    Invalid,
+}
+
 /// Parse a duration string like "30m", "1h", "1h30m", "90s" into a Duration.
-/// Supports `h`, `m`, `s` suffixes. Returns None if the string is unparseable.
-fn parse_duration(s: &str) -> Option<std::time::Duration> {
+/// Supports `h`, `m`, `s` suffixes.
+/// Returns Err(DurationError::Empty) for empty strings,
+/// or Err(DurationError::Invalid) for unparseable strings.
+pub fn parse_duration(s: &str) -> Result<std::time::Duration, DurationError> {
     let s = s.trim();
     if s.is_empty() {
-        return None;
+        return Err(DurationError::Empty);
     }
 
     let mut total_secs: u64 = 0;
@@ -206,29 +228,29 @@ fn parse_duration(s: &str) -> Option<std::time::Duration> {
         if c.is_ascii_digit() {
             current_num.push(c);
         } else {
-            let n: u64 = current_num.parse().ok()?;
+            let n: u64 = current_num.parse().map_err(|_| DurationError::Invalid)?;
             current_num.clear();
 
             match c {
                 'h' | 'H' => total_secs += n * 3600,
                 'm' | 'M' => total_secs += n * 60,
                 's' | 'S' => total_secs += n,
-                _ => return None,
+                _ => return Err(DurationError::Invalid),
             }
         }
     }
 
     // Handle bare number (no suffix) — treat as seconds
     if !current_num.is_empty() {
-        let n: u64 = current_num.parse().ok()?;
+        let n: u64 = current_num.parse().map_err(|_| DurationError::Invalid)?;
         total_secs += n;
     }
 
     if total_secs == 0 {
-        return None;
+        return Err(DurationError::Invalid);
     }
 
-    Some(std::time::Duration::from_secs(total_secs))
+    Ok(std::time::Duration::from_secs(total_secs))
 }
 
 #[cfg(test)]
@@ -237,32 +259,39 @@ mod tests {
 
     #[test]
     fn test_parse_duration_minutes() {
-        assert_eq!(parse_duration("30m"), Some(std::time::Duration::from_secs(1800)));
+        assert_eq!(parse_duration("30m"), Ok(std::time::Duration::from_secs(1800)));
     }
 
     #[test]
     fn test_parse_duration_hours() {
-        assert_eq!(parse_duration("1h"), Some(std::time::Duration::from_secs(3600)));
+        assert_eq!(parse_duration("1h"), Ok(std::time::Duration::from_secs(3600)));
     }
 
     #[test]
     fn test_parse_duration_combined() {
-        assert_eq!(parse_duration("1h30m"), Some(std::time::Duration::from_secs(5400)));
+        assert_eq!(parse_duration("1h30m"), Ok(std::time::Duration::from_secs(5400)));
     }
 
     #[test]
     fn test_parse_duration_seconds() {
-        assert_eq!(parse_duration("90s"), Some(std::time::Duration::from_secs(90)));
+        assert_eq!(parse_duration("90s"), Ok(std::time::Duration::from_secs(90)));
     }
 
     #[test]
     fn test_parse_duration_bare_number() {
-        assert_eq!(parse_duration("120"), Some(std::time::Duration::from_secs(120)));
+        assert_eq!(parse_duration("120"), Ok(std::time::Duration::from_secs(120)));
     }
 
     #[test]
     fn test_parse_duration_empty() {
-        assert_eq!(parse_duration(""), None);
+        assert_eq!(parse_duration(""), Err(DurationError::Empty));
+    }
+
+    #[test]
+    fn test_parse_duration_invalid() {
+        assert_eq!(parse_duration("30x"), Err(DurationError::Invalid));
+        assert_eq!(parse_duration("abc"), Err(DurationError::Invalid));
+        assert_eq!(parse_duration("1h2x3m"), Err(DurationError::Invalid));
     }
 
     #[test]

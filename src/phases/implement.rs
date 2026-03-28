@@ -233,7 +233,7 @@ async fn run_batch(
     }
 
     // Sort results by title for deterministic output.
-    all_results.sort_by_key(|r| r.title.clone());
+    all_results.sort_by(|a, b| a.title.cmp(&b.title));
 
     Ok(BatchOutput {
         results: all_results,
