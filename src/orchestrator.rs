@@ -915,6 +915,7 @@ async fn run_analysis_pipeline(
                 model,
                 doc_budget,
                 max_tasks,
+                min_severity,
             ),
         )
         .await
