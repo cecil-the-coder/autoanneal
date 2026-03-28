@@ -31,6 +31,35 @@ fn risk_rank(r: &Risk) -> u8 {
     }
 }
 
+/// Filter and sort improvements by severity/risk, then truncate to max_tasks.
+/// Filters out high-risk items, large changes (>500 lines), and items below min_severity.
+fn filter_and_sort_improvements(
+    improvements: Vec<Improvement>,
+    min_severity: &Severity,
+    max_tasks: usize,
+) -> Vec<Improvement> {
+    let min_rank = severity_rank(min_severity);
+
+    let mut filtered: Vec<Improvement> = improvements
+        .into_iter()
+        .filter(|imp| imp.risk != Risk::High)
+        .filter(|imp| imp.estimated_lines_changed <= 500)
+        .filter(|imp| severity_rank(&imp.severity) >= min_rank)
+        .collect();
+
+    // Sort by severity descending, then risk ascending.
+    filtered.sort_by(|a, b| {
+        severity_rank(&b.severity)
+            .cmp(&severity_rank(&a.severity))
+            .then_with(|| risk_rank(&a.risk).cmp(&risk_rank(&b.risk)))
+    });
+
+    // Truncate to max_tasks.
+    filtered.truncate(max_tasks);
+
+    filtered
+}
+
 /// Format `StackInfo` into a human-readable summary for the prompt.
 fn format_stack_info(stack: &StackInfo) -> String {
     let mut lines = Vec::new();
@@ -140,25 +169,7 @@ pub async fn run(
     info!(total_found, "analysis phase: raw improvements from Claude");
 
     // 4. Post-process improvements.
-    let min_rank = severity_rank(min_severity);
-
-    let mut filtered: Vec<Improvement> = analysis
-        .improvements
-        .into_iter()
-        .filter(|imp| imp.risk != Risk::High)
-        .filter(|imp| imp.estimated_lines_changed <= 500)
-        .filter(|imp| severity_rank(&imp.severity) >= min_rank)
-        .collect();
-
-    // Sort by severity descending, then risk ascending.
-    filtered.sort_by(|a, b| {
-        severity_rank(&b.severity)
-            .cmp(&severity_rank(&a.severity))
-            .then_with(|| risk_rank(&a.risk).cmp(&risk_rank(&b.risk)))
-    });
-
-    // Truncate to max_tasks.
-    filtered.truncate(max_tasks);
+    let filtered = filter_and_sort_improvements(analysis.improvements, min_severity, max_tasks);
 
     info!(
         total_found,
@@ -217,24 +228,7 @@ pub async fn run_doc_analysis(
     info!(total_found, "doc analysis phase: raw improvements from Claude");
 
     // 4. Post-process: apply severity filter and standard filtering for docs.
-    let min_rank = severity_rank(min_severity);
-    let mut filtered: Vec<Improvement> = analysis
-        .improvements
-        .into_iter()
-        .filter(|imp| imp.risk != Risk::High)
-        .filter(|imp| imp.estimated_lines_changed <= 500)
-        .filter(|imp| severity_rank(&imp.severity) >= min_rank)
-        .collect();
-
-    // Sort by severity descending, then risk ascending.
-    filtered.sort_by(|a, b| {
-        severity_rank(&b.severity)
-            .cmp(&severity_rank(&a.severity))
-            .then_with(|| risk_rank(&a.risk).cmp(&risk_rank(&b.risk)))
-    });
-
-    // Truncate to max_tasks.
-    filtered.truncate(max_tasks);
+    let filtered = filter_and_sort_improvements(analysis.improvements, min_severity, max_tasks);
 
     info!(
         total_found,

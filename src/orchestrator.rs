@@ -412,8 +412,6 @@ async fn run_pipeline(
     .await;
 
     // ─── Process outcomes ────────────────────────────────────────────────
-    let exit_code = 0;
-
     for outcome in &outcomes {
         *total_cost += outcome.cost_usd;
         *budget_remaining -= outcome.cost_usd;
@@ -490,6 +488,13 @@ async fn run_pipeline(
             status,
         });
     }
+
+    // Return non-zero exit code if any work item failed
+    let exit_code = if outcomes.iter().any(|o| o.result.is_err()) {
+        1
+    } else {
+        0
+    };
 
     Ok(exit_code)
 }

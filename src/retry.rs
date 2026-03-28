@@ -144,8 +144,8 @@ async fn check_rate_limit() {
         .output()
         .await;
 
-    if let Ok(out) = output {
-        if out.status.success() {
+    match output {
+        Ok(out) if out.status.success() => {
             let s = String::from_utf8_lossy(&out.stdout);
             let parts: Vec<&str> = s.trim().split_whitespace().collect();
             if parts.len() >= 2 {
@@ -161,6 +161,19 @@ async fn check_rate_limit() {
                     "GitHub rate limit check"
                 );
             }
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            tracing::warn!(
+                stderr = %stderr,
+                "GitHub rate limit check failed: gh command returned error"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "GitHub rate limit check failed: could not execute gh command"
+            );
         }
     }
 }
