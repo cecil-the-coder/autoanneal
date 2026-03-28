@@ -101,6 +101,7 @@ pub async fn run(
     budget: f64,
     max_tasks: usize,
     min_severity: &Severity,
+    context_window: u64,
 ) -> Result<AnalysisOutput> {
     // 1. Fetch recent commits for context.
     let recent_commits = get_recent_commits(clone_path).await;
@@ -123,6 +124,7 @@ pub async fn run(
         tools: "Read,Glob,Grep,Agent",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
+        context_window,
     };
 
     // 3. Invoke Claude.
@@ -179,6 +181,7 @@ pub async fn run_doc_analysis(
     budget: f64,
     max_tasks: usize,
     min_severity: &Severity,
+    context_window: u64,
 ) -> Result<AnalysisOutput> {
     // 1. Fetch recent commits and build doc-specific prompt.
     let recent_commits = get_recent_commits(clone_path).await;
@@ -198,6 +201,7 @@ pub async fn run_doc_analysis(
         tools: "Read,Glob,Grep,Agent",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
+        context_window,
     };
 
     // 3. Invoke Claude.

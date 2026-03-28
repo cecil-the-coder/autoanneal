@@ -47,6 +47,7 @@ pub async fn run(
     model: &str,
     budget: f64,
     default_branch: &str,
+    context_window: u64,
 ) -> Result<CiFixOutput> {
     let dot = Path::new(".");
     let clone_dir = worktree_path.to_path_buf();
@@ -171,6 +172,7 @@ pub async fn run(
         tools: "Read,Glob,Grep,Bash,Edit,Write",
         json_schema: None,
         working_dir: clone_dir.clone(),
+        context_window,
     };
 
     let response: llm::LlmResponse<serde_json::Value> =

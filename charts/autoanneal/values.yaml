@@ -47,6 +47,7 @@ defaults:
   investigateIssues: ""  # Investigate open GitHub issues with this label (comma-separated). Empty = disabled.
   maxIssues: 2           # Maximum issues to investigate per run
   issueBudget: "3.00"    # Budget per issue investigation (USD)
+  contextWindow: 128000   # Context window size in tokens (old results evicted near limit)
 
 # -- Optional environment variables (shared across all repos)
 # Uncomment and set as needed.

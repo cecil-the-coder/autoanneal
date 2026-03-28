@@ -214,6 +214,7 @@ fn build_config(invocation: &LlmInvocation, timeout: Duration) -> ConversationCo
         timeout_per_turn: timeout,
         tools_enabled: !invocation.tools.is_empty(),
         temperature: effort_to_temperature(invocation.effort),
+        context_window: invocation.context_window,
     }
 }
 
@@ -418,6 +419,7 @@ mod tests {
             tools: "read_file,write_file,bash",
             json_schema: None,
             working_dir: PathBuf::from("/tmp"),
+            context_window: crate::agent::context::DEFAULT_CONTEXT_WINDOW,
         }
     }
 
@@ -600,6 +602,7 @@ mod tests {
             timeout_per_turn: Duration::from_secs(30),
             tools_enabled: true,
             temperature: None,
+            context_window: crate::agent::context::DEFAULT_CONTEXT_WINDOW,
         };
 
         let result = conversation::run(&sender, &tool_handler, &config, "hello").await;

@@ -88,6 +88,7 @@ pub async fn create_pr(
     model: &str,
     budget: f64,
     critic_summary: Option<&str>,
+    context_window: u64,
 ) -> Result<PrOutput> {
     // 1. Generate PR body via Claude.
     let improvements_text = improvements
@@ -119,6 +120,7 @@ pub async fn create_pr(
         tools: "",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
+        context_window,
     };
 
     let response = invoke::<PrBody>(&invocation, Duration::from_secs(120))

@@ -25,6 +25,7 @@ pub async fn run(
     model: &str,
     budget: f64,
     setup_command: Option<&str>,
+    context_window: u64,
 ) -> Result<ReconOutput> {
     // 1. Clone the repository.
     let clone_path = clone_repo(repo_info, work_dir).await?;
@@ -49,7 +50,7 @@ pub async fn run(
 
     // 7. Claude architecture summary.
     let (arch_summary, cost_usd) =
-        llm_recon(&clone_path, model, budget, &mut stack_info).await?;
+        llm_recon(&clone_path, model, budget, &mut stack_info, context_window).await?;
 
     Ok(ReconOutput {
         clone_path,
@@ -344,6 +345,7 @@ async fn llm_recon(
     model: &str,
     budget: f64,
     stack_info: &mut StackInfo,
+    context_window: u64,
 ) -> Result<(String, f64)> {
     let invocation = LlmInvocation {
         prompt: RECON_PROMPT.to_string(),
@@ -355,6 +357,7 @@ async fn llm_recon(
         tools: "Read,Glob,Grep,Bash",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
+        context_window,
     };
 
     let timeout = Duration::from_secs(300);

@@ -15,6 +15,9 @@ pub struct LlmInvocation {
     pub tools: &'static str,
     pub json_schema: Option<String>,
     pub working_dir: PathBuf,
+    /// Context window size in tokens. Old tool results are evicted when the
+    /// conversation approaches this limit.
+    pub context_window: u64,
 }
 
 /// Parsed response from an LLM invocation.

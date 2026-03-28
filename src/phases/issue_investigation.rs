@@ -25,6 +25,7 @@ pub async fn run(
     stack_info: &StackInfo,
     model: &str,
     budget: f64,
+    context_window: u64,
 ) -> Result<IssueOutput> {
     let dot = Path::new(".");
 
@@ -83,6 +84,7 @@ pub async fn run(
         tools: "Read,Glob,Grep,Bash,Edit,Write",
         json_schema: None,
         working_dir: worktree_path.to_path_buf(),
+        context_window,
     };
 
     let response: llm::LlmResponse<serde_json::Value> =

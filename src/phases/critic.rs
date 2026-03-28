@@ -41,6 +41,7 @@ pub async fn run(
     default_branch: &str,
     model: &str,
     budget: f64,
+    context_window: u64,
 ) -> Result<CriticOutput> {
     let mut total_cost = 0.0;
     let remaining_budget = budget;
@@ -69,6 +70,7 @@ pub async fn run(
         tools: "",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
+        context_window,
     };
 
     let response = llm::invoke::<CriticResult>(&invocation, Duration::from_secs(600)).await?;
@@ -124,6 +126,7 @@ pub async fn run(
         tools: "Read,Glob,Grep,Bash,Edit,Write",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
+        context_window,
     };
 
     let fix_response = llm::invoke::<serde_json::Value>(&fix_invocation, Duration::from_secs(600)).await;
@@ -190,6 +193,7 @@ pub async fn run(
                         tools: "",
                         json_schema: None,
                         working_dir: clone_path.to_path_buf(),
+                        context_window,
                     };
 
                     if let Ok(re_response) = llm::invoke::<CriticResult>(

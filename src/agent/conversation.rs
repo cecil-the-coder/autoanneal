@@ -1,4 +1,5 @@
 use crate::agent::api_types::*;
+use crate::agent::context::{self, ContextManager};
 use std::time::Duration;
 use tracing::trace;
 
@@ -58,6 +59,10 @@ pub struct ConversationConfig {
     pub timeout_per_turn: Duration,
     pub tools_enabled: bool,
     pub temperature: Option<f64>,
+    /// Maximum context window in tokens. Old tool results are evicted when
+    /// usage approaches this limit, and a `recall_result` tool is provided
+    /// so the model can retrieve them on demand.
+    pub context_window: u64,
 }
 
 impl Default for ConversationConfig {
@@ -72,6 +77,7 @@ impl Default for ConversationConfig {
             timeout_per_turn: Duration::from_secs(120),
             tools_enabled: true,
             temperature: None,
+            context_window: context::DEFAULT_CONTEXT_WINDOW,
         }
     }
 }
@@ -118,6 +124,7 @@ pub async fn run(
     let mut total_output_tokens: u64 = 0;
     let mut turns: u32 = 0;
     let mut collected_text = String::new();
+    let mut ctx_mgr = ContextManager::new(config.context_window);
 
     loop {
         // --- guard: turn limit ---
@@ -148,7 +155,11 @@ pub async fn run(
 
         // --- build request ---
         let tools = if config.tools_enabled {
-            let defs = executor.definitions();
+            let mut defs = executor.definitions();
+            // Inject the recall_result tool when results have been evicted.
+            if ctx_mgr.has_evicted() {
+                defs.push(ContextManager::tool_definition());
+            }
             if defs.is_empty() {
                 None
             } else {
@@ -196,10 +207,14 @@ pub async fn run(
 
         // --- accumulate tokens ---
         trace!(msg_id = %response.id, turn = turns, "received API response");
-        total_input_tokens += response.usage.input_tokens
+        let last_input_tokens = response.usage.input_tokens
             + response.usage.cache_creation_input_tokens
             + response.usage.cache_read_input_tokens;
+        total_input_tokens += last_input_tokens;
         total_output_tokens += response.usage.output_tokens;
+
+        // --- evict old tool results if context is getting large ---
+        ctx_mgr.maybe_evict(&mut messages, last_input_tokens);
 
         // --- process content blocks ---
         let mut has_tool_use = false;
@@ -216,8 +231,15 @@ pub async fn run(
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     has_tool_use = true;
+
+                    // Intercept recall_result — handled by context manager, not executor.
                     let (mut result_content, is_error) =
-                        executor.execute(name, input).await;
+                        if name == context::RECALL_TOOL_NAME {
+                            let recall_id = input["id"].as_str().unwrap_or("");
+                            (ctx_mgr.recall(recall_id), false)
+                        } else {
+                            executor.execute(name, input).await
+                        };
 
                     // Truncate very large tool results (safe at char boundary)
                     if result_content.len() > MAX_TOOL_RESULT_BYTES {
@@ -265,6 +287,13 @@ pub async fn run(
                 };
             }
             "tool_use" => {
+                // Track tool results for potential eviction later.
+                let result_msg_idx = messages.len();
+                for block in &tool_results {
+                    if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                        ctx_mgr.track(result_msg_idx, tool_use_id);
+                    }
+                }
                 // Append tool results as a user message and loop.
                 messages.push(Message {
                     role: "user".to_string(),
@@ -277,6 +306,12 @@ pub async fn run(
                 // tool calls we still need to handle them, otherwise ask to
                 // continue.
                 if has_tool_use {
+                    let result_msg_idx = messages.len();
+                    for block in &tool_results {
+                        if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                            ctx_mgr.track(result_msg_idx, tool_use_id);
+                        }
+                    }
                     messages.push(Message {
                         role: "user".to_string(),
                         content: tool_results,
