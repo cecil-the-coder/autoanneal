@@ -65,11 +65,22 @@ pub fn print_summary(
 
     println!();
 
-    // Column widths
-    let w_name = 15;
+    // Compute dynamic column widths from actual data so long names don't overflow.
     let w_dur = 10;
     let w_cost = 7;
-    let w_status = 8;
+    let w_name = phases
+        .iter()
+        .map(|p| p.name.len())
+        .chain(std::iter::once("Phase".len()))
+        .chain(std::iter::once("Total".len()))
+        .max()
+        .unwrap_or(15);
+    let w_status = phases
+        .iter()
+        .map(|p| p.status.len())
+        .chain(std::iter::once("Status".len()))
+        .max()
+        .unwrap_or(8);
 
     // Header
     println!(
