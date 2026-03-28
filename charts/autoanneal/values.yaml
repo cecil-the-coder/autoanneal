@@ -22,6 +22,11 @@ defaults:
   maxBudget: "5.00"
   timeout: "30m"
   model: "sonnet"
+  modelRecon: ""          # Per-phase model overrides (empty = use default model)
+  modelAnalysis: ""
+  modelImplement: ""
+  modelCritic: ""
+  modelPlan: ""
   maxTasks: 5
   minSeverity: "minor"
   logLevel: "info"
