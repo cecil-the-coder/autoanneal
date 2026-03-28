@@ -108,7 +108,7 @@ pub async fn run(
     };
 
     // 3. Invoke Claude.
-    let response = claude::invoke::<AnalysisResult>(&invocation, Duration::from_secs(600)).await?;
+    let response = claude::invoke::<AnalysisResult>(&invocation, Duration::from_secs(900)).await?;
 
     let analysis = response
         .structured
@@ -182,7 +182,7 @@ pub async fn run_doc_analysis(
     };
 
     // 3. Invoke Claude.
-    let response = claude::invoke::<AnalysisResult>(&invocation, Duration::from_secs(600)).await?;
+    let response = claude::invoke::<AnalysisResult>(&invocation, Duration::from_secs(900)).await?;
 
     let analysis = response
         .structured
