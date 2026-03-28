@@ -11,6 +11,10 @@ pub const DOC_ANALYSIS_PROMPT: &str = r#"You are analyzing a codebase for docume
 
 {stack_info}
 
+## Recently Merged Changes (do NOT contradict these)
+
+{recent_commits}
+
 Do NOT suggest:
 - Trivial comment additions (e.g., "// increment counter")
 - Formatting-only changes

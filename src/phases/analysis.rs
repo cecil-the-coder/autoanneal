@@ -76,6 +76,22 @@ fn format_open_prs(prs: &[OpenPr]) -> String {
         .join("\n")
 }
 
+/// Get the last 20 commit messages from the repo for context.
+async fn get_recent_commits(clone_path: &Path) -> String {
+    let output = tokio::process::Command::new("git")
+        .args(["log", "--oneline", "-20"])
+        .current_dir(clone_path)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        _ => "(could not fetch recent commits)".to_string(),
+    }
+}
+
 pub async fn run(
     clone_path: &Path,
     arch_summary: &str,
@@ -86,11 +102,15 @@ pub async fn run(
     max_tasks: usize,
     min_severity: &Severity,
 ) -> Result<AnalysisOutput> {
-    // 1. Build the prompt.
+    // 1. Fetch recent commits for context.
+    let recent_commits = get_recent_commits(clone_path).await;
+
+    // 2. Build the prompt.
     let prompt = ANALYSIS_PROMPT
         .replace("{arch_summary}", arch_summary)
         .replace("{stack_info}", &format_stack_info(stack_info))
-        .replace("{open_prs}", &format_open_prs(open_prs));
+        .replace("{open_prs}", &format_open_prs(open_prs))
+        .replace("{recent_commits}", &recent_commits);
 
     // 2. Build the invocation.
     let invocation = ClaudeInvocation {
@@ -161,10 +181,12 @@ pub async fn run_doc_analysis(
     budget: f64,
     max_tasks: usize,
 ) -> Result<AnalysisOutput> {
-    // 1. Build the doc-specific prompt.
+    // 1. Fetch recent commits and build doc-specific prompt.
+    let recent_commits = get_recent_commits(clone_path).await;
     let prompt = DOC_ANALYSIS_PROMPT
         .replace("{arch_summary}", arch_summary)
-        .replace("{stack_info}", &format_stack_info(stack_info));
+        .replace("{stack_info}", &format_stack_info(stack_info))
+        .replace("{recent_commits}", &recent_commits);
 
     // 2. Build the invocation.
     let invocation = ClaudeInvocation {

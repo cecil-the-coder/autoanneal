@@ -12,6 +12,12 @@ pub const ANALYSIS_PROMPT: &str = r#"You are analyzing a codebase to find concre
 
 {open_prs}
 
+## Recently Merged Changes (do NOT revert these)
+
+The following changes were recently merged. They represent intentional design decisions. Do NOT suggest changes that undo or contradict them:
+
+{recent_commits}
+
 ## Your Task
 
 Explore the codebase thoroughly and identify specific improvements that can be made. Focus on:
