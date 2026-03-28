@@ -85,8 +85,8 @@ pub async fn run(
         // Pick the lowest-confidence reasoning as summary
         let summary = g1_responses
             .iter()
-            .filter(|(r, _)| !r.proceed)
-            .min_by(|a, b| a.0.confidence.partial_cmp(&b.0.confidence).unwrap_or(std::cmp::Ordering::Equal))
+            .filter(|(r, _)| r.verdict == "reject")
+            .max_by(|a, b| a.0.confidence.partial_cmp(&b.0.confidence).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(r, _)| r.reasoning.clone())
             .unwrap_or_else(|| "Gate 1 rejected: changes not worthwhile.".to_string());
 
@@ -223,27 +223,37 @@ async fn run_gate1(
     while let Some(result) = set.join_next().await {
         match result {
             Ok(Ok((resp, cost))) => {
+                let preview: String = resp.reasoning.chars().take(120).collect();
+                info!(
+                    gate = "worthwhile",
+                    critic = responses.len() + 1,
+                    verdict = %resp.verdict,
+                    confidence = resp.confidence,
+                    cost_usd = cost,
+                    reasoning = %preview,
+                    "gate1 critic responded"
+                );
                 total_cost += cost;
                 responses.push((resp, cost));
             }
             Ok(Err(e)) => {
-                warn!(error = %e, "gate1 critic invocation failed, using default");
+                warn!(error = %e, critic = responses.len() + 1, "gate1 critic failed");
                 responses.push((
                     WorthwhileResponse {
-                        proceed: false,
+                        verdict: "needs_work".to_string(),
                         confidence: 0.1,
-                        reasoning: "(critic unavailable — defaulting to reject)".into(),
+                        reasoning: "(critic unavailable — defaulting to needs_work)".into(),
                     },
                     0.0,
                 ));
             }
             Err(e) => {
-                warn!(error = %e, "gate1 critic task panicked, using default");
+                warn!(error = %e, critic = responses.len() + 1, "gate1 critic panicked");
                 responses.push((
                     WorthwhileResponse {
-                        proceed: false,
+                        verdict: "needs_work".to_string(),
                         confidence: 0.1,
-                        reasoning: "(critic unavailable — defaulting to reject)".into(),
+                        reasoning: "(critic unavailable — defaulting to needs_work)".into(),
                     },
                     0.0,
                 ));
@@ -252,26 +262,27 @@ async fn run_gate1(
     }
 
     // Check for unanimous decision
-    let proceed_count = responses.iter().filter(|(r, _)| r.proceed).count();
-    let reject_count = responses.len() - proceed_count;
+    let reject_count = responses.iter().filter(|(r, _)| r.verdict == "reject").count();
+    let needs_work_count = responses.iter().filter(|(r, _)| r.verdict == "needs_work").count();
+    let worthwhile_count = responses.len() - reject_count - needs_work_count;
 
-    if proceed_count == responses.len() || reject_count == responses.len() {
-        let passed = proceed_count == responses.len();
-        info!(
-            passed,
-            unanimous = true,
-            proceed_count,
-            reject_count,
-            "gate1 round 1 — unanimous"
-        );
-        return Ok((passed, responses, total_cost));
+    if reject_count == responses.len() {
+        // Unanimous reject — abort immediately
+        info!(reject_count, "gate1 round 1 — unanimous reject");
+        return Ok((false, responses, total_cost));
+    }
+    if reject_count == 0 {
+        // No rejects — proceed (even if some say needs_work)
+        info!(worthwhile_count, needs_work_count, "gate1 round 1 — no rejects");
+        return Ok((true, responses, total_cost));
     }
 
-    // Split vote — run rebuttal round
+    // Mixed votes with some rejects — run rebuttal round
     info!(
-        proceed_count,
         reject_count,
-        "gate1 round 1 — split, running rebuttal"
+        needs_work_count,
+        worthwhile_count,
+        "gate1 round 1 — mixed votes, running rebuttal"
     );
 
     let peer_text = format_responses_for_rebuttal(&responses);
@@ -303,11 +314,24 @@ async fn run_gate1(
     while let Some(result) = rebuttal_set.join_next().await {
         match result {
             Ok(Ok((resp, cost))) => {
+                let preview: String = resp.reasoning.chars().take(120).collect();
+                info!(
+                    gate = "worthwhile_rebuttal",
+                    critic = rebuttal_responses.len() + 1,
+                    verdict = %resp.verdict,
+                    confidence = resp.confidence,
+                    cost_usd = cost,
+                    reasoning = %preview,
+                    "gate1 rebuttal responded"
+                );
                 total_cost += cost;
                 rebuttal_responses.push((resp, cost));
             }
-            _ => {
-                // On failure, keep original vote
+            Ok(Err(e)) => {
+                warn!(error = %e, "gate1 rebuttal critic failed, keeping original vote");
+            }
+            Err(e) => {
+                warn!(error = %e, "gate1 rebuttal task panicked, keeping original vote");
             }
         }
     }
@@ -325,12 +349,14 @@ async fn run_gate1(
         merged
     };
 
-    let proceed_count = final_responses.iter().filter(|(r, _)| r.proceed).count();
-    let passed = proceed_count > final_responses.len() / 2;
+    let reject_count = final_responses.iter().filter(|(r, _)| r.verdict == "reject").count();
+    // Only a majority of explicit "reject" votes kills the PR.
+    // "needs_work" means "proceed but fix issues" — not a rejection.
+    let passed = reject_count <= final_responses.len() / 2;
 
     info!(
         passed,
-        proceed_count,
+        reject_count,
         total = final_responses.len(),
         "gate1 after rebuttal — majority vote"
     );
@@ -377,11 +403,21 @@ async fn run_gate2(
     while let Some(result) = set.join_next().await {
         match result {
             Ok(Ok((resp, cost))) => {
+                let preview: String = resp.reasoning.chars().take(120).collect();
+                info!(
+                    gate = "ready",
+                    critic = responses.len() + 1,
+                    verdict = %resp.verdict,
+                    issues = resp.issues.len(),
+                    cost_usd = cost,
+                    reasoning = %preview,
+                    "gate2 critic responded"
+                );
                 total_cost += cost;
                 responses.push((resp, cost));
             }
             Ok(Err(e)) => {
-                warn!(error = %e, "gate2 critic invocation failed, using default");
+                warn!(error = %e, critic = responses.len() + 1, "gate2 critic failed");
                 responses.push((
                     ReadyResponse {
                         verdict: "needs_fix".to_string(),
@@ -392,7 +428,7 @@ async fn run_gate2(
                 ));
             }
             Err(e) => {
-                warn!(error = %e, "gate2 critic task panicked, using default");
+                warn!(error = %e, critic = responses.len() + 1, "gate2 critic panicked");
                 responses.push((
                     ReadyResponse {
                         verdict: "needs_fix".to_string(),
@@ -484,11 +520,19 @@ async fn run_gate3(
     while let Some(result) = set.join_next().await {
         match result {
             Ok(Ok((resp, cost))) => {
+                info!(
+                    gate = "verdict",
+                    critic = responses.len() + 1,
+                    score = resp.score,
+                    cost_usd = cost,
+                    summary = %resp.summary,
+                    "gate3 critic responded"
+                );
                 total_cost += cost;
                 responses.push((resp, cost));
             }
             Ok(Err(e)) => {
-                warn!(error = %e, "gate3 critic invocation failed, using default");
+                warn!(error = %e, critic = responses.len() + 1, "gate3 critic failed");
                 responses.push((
                     VerdictResponse {
                         score: 5,
@@ -498,7 +542,7 @@ async fn run_gate3(
                 ));
             }
             Err(e) => {
-                warn!(error = %e, "gate3 critic task panicked, using default");
+                warn!(error = %e, critic = responses.len() + 1, "gate3 critic panicked");
                 responses.push((
                     VerdictResponse {
                         score: 5,
@@ -567,19 +611,77 @@ async fn invoke_critic<T: serde::de::DeserializeOwned + Send + 'static>(
 
     // Fallback: try to extract JSON from the text response
     if !response.text.is_empty() {
-        if let Some(json_block) = llm::extract_json_block(&response.text) {
-            let parsed: T = serde_json::from_str(json_block)
-                .context("failed to parse JSON block from critic response")?;
-            return Ok((parsed, response.cost_usd));
-        }
+        // Try extracting from code fence first, then the whole text
+        let candidates = [
+            llm::extract_json_block(&response.text).map(|s| s.to_string()),
+            Some(response.text.clone()),
+        ];
 
-        // Try parsing the whole text as JSON
-        if let Ok(parsed) = serde_json::from_str::<T>(&response.text) {
-            return Ok((parsed, response.cost_usd));
+        for candidate in candidates.into_iter().flatten() {
+            // Try direct parse
+            if let Ok(parsed) = serde_json::from_str::<T>(&candidate) {
+                return Ok((parsed, response.cost_usd));
+            }
+
+            // Sanitize common LLM JSON issues: unescaped newlines inside strings
+            let sanitized = sanitize_json(&candidate);
+            if let Ok(parsed) = serde_json::from_str::<T>(&sanitized) {
+                return Ok((parsed, response.cost_usd));
+            }
         }
     }
 
-    anyhow::bail!("critic returned neither structured output nor parseable JSON")
+    // Log the full response for debugging parse failures
+    warn!(
+        text_len = response.text.len(),
+        text = %response.text,
+        "critic response could not be parsed as JSON"
+    );
+    let preview: String = response.text.chars().take(300).collect();
+    anyhow::bail!("critic returned unparseable response: {preview}")
+}
+
+/// Sanitize common JSON issues from LLM output.
+/// LLMs frequently produce JSON with unescaped newlines, tabs, or control
+/// characters inside string values, which is invalid JSON.
+fn sanitize_json(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+
+    for ch in input.chars() {
+        if prev_was_escape {
+            result.push(ch);
+            prev_was_escape = false;
+            continue;
+        }
+
+        if ch == '\\' && in_string {
+            result.push(ch);
+            prev_was_escape = true;
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = !in_string;
+            result.push(ch);
+            continue;
+        }
+
+        if in_string {
+            match ch {
+                '\n' => result.push_str("\\n"),
+                '\r' => result.push_str("\\r"),
+                '\t' => result.push_str("\\t"),
+                c if c.is_control() => {} // strip other control chars
+                c => result.push(c),
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
 }
 
 /// Compute the median of a mutable slice of u32 values.
@@ -600,9 +702,9 @@ fn format_responses_for_rebuttal(responses: &[(WorthwhileResponse, f64)]) -> Str
         .enumerate()
         .map(|(i, (resp, _))| {
             format!(
-                "Critic {}: proceed={}, confidence={:.2}, reasoning={}",
+                "Critic {}: verdict={}, confidence={:.2}, reasoning={}",
                 i + 1,
-                resp.proceed,
+                resp.verdict,
                 resp.confidence,
                 resp.reasoning
             )

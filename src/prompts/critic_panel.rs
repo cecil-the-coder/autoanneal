@@ -5,30 +5,42 @@ pub const GATE1_SYSTEM_A: &str = r#"You are a code reviewer evaluating whether p
 
 Focus on: Is the underlying issue genuine? Could these changes cause regressions? Is the diagnosis correct?
 
-You will receive a diff and improvement descriptions. Evaluate whether this PR should exist at all. Output JSON:
+You will receive a diff. Evaluate whether this PR is worthwhile. Output JSON:
 ```json
-{"proceed": true/false, "confidence": 0.0-1.0, "reasoning": "..."}
-```"#;
+{"verdict": "worthwhile|needs_work|reject", "confidence": 0.0-1.0, "reasoning": "..."}
+```
+
+- "worthwhile": The PR solves a real problem and the approach is sound
+- "needs_work": The PR addresses a real problem but the implementation has issues that should be fixed (use this when the concept is good but execution needs improvement)
+- "reject": The PR should not exist — the underlying idea is wrong, the problem is imaginary, or it's pure churn"#;
 
 /// Gate 1 system prompt variant B — focus on whether the changes are worth the complexity.
 pub const GATE1_SYSTEM_B: &str = r#"You are a code reviewer evaluating whether proposed changes justify their complexity.
 
 Focus on: Is the scope proportional to the value? Would a senior engineer spend time reviewing this? Is this meaningful or busywork?
 
-You will receive a diff and improvement descriptions. Evaluate whether this PR should exist at all. Output JSON:
+You will receive a diff. Evaluate whether this PR is worthwhile. Output JSON:
 ```json
-{"proceed": true/false, "confidence": 0.0-1.0, "reasoning": "..."}
-```"#;
+{"verdict": "worthwhile|needs_work|reject", "confidence": 0.0-1.0, "reasoning": "..."}
+```
+
+- "worthwhile": The PR solves a real problem and the approach is sound
+- "needs_work": The PR addresses a real problem but the implementation has issues that should be fixed (use this when the concept is good but execution needs improvement)
+- "reject": The PR should not exist — the underlying idea is wrong, the problem is imaginary, or it's pure churn"#;
 
 /// Gate 1 system prompt variant C — focus on whether the approach is right.
 pub const GATE1_SYSTEM_C: &str = r#"You are a code reviewer evaluating whether proposed changes take the right approach.
 
 Focus on: Is there a simpler way? Does this fix the symptom or the root cause? Is this just churn dressed up as an improvement?
 
-You will receive a diff and improvement descriptions. Evaluate whether this PR should exist at all. Output JSON:
+You will receive a diff. Evaluate whether this PR is worthwhile. Output JSON:
 ```json
-{"proceed": true/false, "confidence": 0.0-1.0, "reasoning": "..."}
-```"#;
+{"verdict": "worthwhile|needs_work|reject", "confidence": 0.0-1.0, "reasoning": "..."}
+```
+
+- "worthwhile": The PR solves a real problem and the approach is sound
+- "needs_work": The PR addresses a real problem but the implementation has issues that should be fixed (use this when the concept is good but execution needs improvement)
+- "reject": The PR should not exist — the underlying idea is wrong, the problem is imaginary, or it's pure churn"#;
 
 /// Gate 1 rebuttal prompt template. Placeholders: {peer_responses}, {research_findings}
 pub const GATE1_REBUTTAL: &str = r#"You previously assessed this PR. Here are all critics' assessments:
@@ -39,8 +51,12 @@ pub const GATE1_REBUTTAL: &str = r#"You previously assessed this PR. Here are al
 
 Revise your assessment considering these perspectives. You may maintain your position if you believe it is correct, but address the other critics' specific points. Output JSON:
 ```json
-{"proceed": true/false, "confidence": 0.0-1.0, "reasoning": "..."}
-```"#;
+{"verdict": "worthwhile|needs_work|reject", "confidence": 0.0-1.0, "reasoning": "..."}
+```
+
+- "worthwhile": The PR solves a real problem and the approach is sound
+- "needs_work": The concept is good but the implementation has issues
+- "reject": The PR should not exist"#;
 
 /// Gate 2 system prompt — shared across all critics (implementation review).
 pub const GATE2_SYSTEM: &str = r#"You are a code reviewer evaluating the implementation quality of proposed changes.

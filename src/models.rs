@@ -230,7 +230,8 @@ pub struct PhaseReport {
 /// Gate 1 (WORTHWHILE) critic response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorthwhileResponse {
-    pub proceed: bool,
+    /// "worthwhile" | "needs_work" | "reject"
+    pub verdict: String,
     pub confidence: f64,
     pub reasoning: String,
 }
