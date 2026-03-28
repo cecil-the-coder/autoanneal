@@ -143,14 +143,17 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
     let dot = Path::new(".");
     let mut result = Vec::new();
 
-    // List all remote branches (paginate first, then filter in Rust to avoid
-    // missing branches that may be split across pages when using --jq with --paginate).
+    // Use --jq with --paginate to get newline-delimited branch names.
+    // This avoids the issue where gh api --paginate concatenates JSON arrays
+    // from multiple pages (e.g. [page1][page2]), which is not valid JSON.
     let branches_raw = match gh_command(
         dot,
         &[
             "api",
             &format!("repos/{repo_slug}/branches"),
             "--paginate",
+            "--jq",
+            ".[].name",
         ],
     )
     .await
@@ -162,21 +165,13 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
         }
     };
 
-    // Parse the JSON and filter for autoanneal/ branches in Rust.
-    let branches: Vec<String> = match serde_json::from_str::<Vec<serde_json::Value>>(&branches_raw)
-    {
-        Ok(all_branches) => all_branches
-            .into_iter()
-            .filter_map(|b| b["name"].as_str().map(|s| s.to_string()))
-            .filter(|name| name.starts_with("autoanneal/"))
-            .collect(),
-        Err(e) => {
-            warn!(error = %e, "failed to parse branches JSON (non-fatal)");
-            return result;
-        }
-    };
-
-    let branches: Vec<&str> = branches.iter().map(|s| s.as_str()).collect();
+    // Filter for autoanneal/ branches from newline-delimited output.
+    let branches: Vec<String> = branches_raw
+        .lines()
+        .filter(|line| !line.is_empty())
+        .filter(|line| line.starts_with("autoanneal/"))
+        .map(|s| s.to_string())
+        .collect();
 
     if branches.is_empty() {
         return result;
@@ -184,107 +179,134 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
 
     info!(count = branches.len(), "found existing autoanneal branches");
 
-    // For each branch, check for an associated open PR.
-    for branch in branches {
-        match gh_command(
-            dot,
-            &[
-                "pr",
-                "list",
-                "--head",
-                branch,
-                "--state",
-                "open",
-                "--json",
-                "number,title,body,mergeable,files",
-                "--limit",
-                "1",
-                "-R",
-                repo_slug,
-            ],
-        )
-        .await
-        {
-            Ok(raw) => {
-                let prs: Vec<serde_json::Value> = match serde_json::from_str(&raw) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                if let Some(pr) = prs.first() {
-                    let number = pr["number"].as_u64().unwrap_or(0);
-                    let title = pr["title"].as_str().unwrap_or("").to_string();
-                    let body = pr["body"].as_str().unwrap_or("").to_string();
-                    if number > 0 {
-                        // Check CI status
-                        let ci_status = check_ci_status(repo_slug, number).await;
+    // Batch-fetch all open PRs in a single call, including labels to avoid
+    // per-PR label lookups (reduces API calls from 3N+1 to ~N+2).
+    let prs_raw = match gh_command(
+        dot,
+        &[
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,title,body,mergeable,files,headRefName,labels",
+            "--limit",
+            "500",
+            "-R",
+            repo_slug,
+        ],
+    )
+    .await
+    {
+        Ok(raw) => raw,
+        Err(e) => {
+            warn!(error = %e, "failed to list open PRs for in-flight detection (non-fatal)");
+            return result;
+        }
+    };
 
-                        // Check for autoanneal:fixing label and stale detection
-                        let mut has_fixing_label =
-                            check_fixing_label(repo_slug, number).await;
+    let all_prs: Vec<serde_json::Value> = match serde_json::from_str(&prs_raw) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "failed to parse PR list JSON (non-fatal)");
+            return result;
+        }
+    };
 
-                        // If label present but latest commit >30 min old, remove stale label
-                        if has_fixing_label {
-                            if is_stale_fixing(repo_slug, branch).await {
-                                info!(
-                                    pr_number = number,
-                                    "removing stale autoanneal:fixing label"
-                                );
-                                let _ = gh_command(
-                                    dot,
-                                    &[
-                                        "pr",
-                                        "edit",
-                                        &number.to_string(),
-                                        "--remove-label",
-                                        "autoanneal:fixing",
-                                        "-R",
-                                        repo_slug,
-                                    ],
-                                )
-                                .await;
-                                has_fixing_label = false;
-                            }
-                        }
+    // Index PRs by head ref name for O(1) lookup.
+    let pr_by_branch: std::collections::HashMap<String, &serde_json::Value> = all_prs
+        .iter()
+        .filter_map(|pr| {
+            let head = pr["headRefName"].as_str()?.to_string();
+            Some((head, pr))
+        })
+        .collect();
 
-                        let ci_status = if has_fixing_label {
-                            CiStatus::Fixing
-                        } else {
-                            ci_status
-                        };
+    // For each branch, look up the associated PR from our batch result.
+    for branch in &branches {
 
-                        // Check merge conflict status
-                        let has_merge_conflicts = pr["mergeable"]
-                            .as_str()
-                            .map(|m| m == "CONFLICTING")
-                            .unwrap_or(false);
+        let pr = match pr_by_branch.get(branch) {
+            Some(pr) => *pr,
+            None => continue,
+        };
 
-                        // Extract changed file paths from PR.
-                        let files: Vec<String> = pr["files"]
-                            .as_array()
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|f| f["path"].as_str().map(|s| s.to_string()))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
+        let number = pr["number"].as_u64().unwrap_or(0);
+        let title = pr["title"].as_str().unwrap_or("").to_string();
+        let body = pr["body"].as_str().unwrap_or("").to_string();
+        if number == 0 {
+            continue;
+        }
 
-                        result.push(InFlightPr {
-                            number,
-                            title,
-                            body,
-                            branch: branch.to_string(),
-                            ci_status,
-                            has_fixing_label,
-                            has_merge_conflicts,
-                            files,
-                        });
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(branch = %branch, error = %e, "failed to check PR for branch (non-fatal)");
+        // Check CI status (per-PR, unavoidable).
+        let ci_status = check_ci_status(repo_slug, number).await;
+
+        // Check for autoanneal:fixing label from already-fetched PR data.
+        let mut has_fixing_label = pr["labels"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .any(|l| l["name"].as_str() == Some("autoanneal:fixing"))
+            })
+            .unwrap_or(false);
+
+        // If label present but latest commit >30 min old, remove stale label.
+        if has_fixing_label {
+            let stale = is_stale_fixing(repo_slug, branch).await;
+
+            if stale {
+                info!(
+                    pr_number = number,
+                    "removing stale autoanneal:fixing label"
+                );
+                let _ = gh_command(
+                    dot,
+                    &[
+                        "pr",
+                        "edit",
+                        &number.to_string(),
+                        "--remove-label",
+                        "autoanneal:fixing",
+                        "-R",
+                        repo_slug,
+                    ],
+                )
+                .await;
+                has_fixing_label = false;
             }
         }
+
+        let ci_status = if has_fixing_label {
+            CiStatus::Fixing
+        } else {
+            ci_status
+        };
+
+        // Check merge conflict status
+        let has_merge_conflicts = pr["mergeable"]
+            .as_str()
+            .map(|m| m == "CONFLICTING")
+            .unwrap_or(false);
+
+        // Extract changed file paths from PR.
+        let files: Vec<String> = pr["files"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|f| f["path"].as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        result.push(InFlightPr {
+            number,
+            title,
+            body,
+            branch: branch.to_string(),
+            ci_status,
+            has_fixing_label,
+            has_merge_conflicts,
+            files,
+        });
     }
 
     info!(count = result.len(), "found in-flight autoanneal PRs");
@@ -340,6 +362,7 @@ async fn check_ci_status(repo_slug: &str, pr_number: u64) -> CiStatus {
 }
 
 /// Check if a PR has the autoanneal:fixing label.
+#[allow(dead_code)]
 async fn check_fixing_label(repo_slug: &str, pr_number: u64) -> bool {
     let dot = Path::new(".");
     match gh_command(

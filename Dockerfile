@@ -40,9 +40,7 @@ USER worker
 # Rust (via rustup, as worker)
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
-# Claude Code CLI (native installer)
-RUN curl -fsSL https://claude.ai/install.sh | bash
-ENV PATH="/home/worker/.local/bin:/home/worker/.cargo/bin:${PATH}"
+ENV PATH="/home/worker/.cargo/bin:${PATH}"
 
 WORKDIR /work
 

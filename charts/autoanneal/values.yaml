@@ -22,6 +22,11 @@ defaults:
   maxBudget: "5.00"
   timeout: "30m"
   model: "sonnet"
+  modelRecon: ""          # Per-phase model overrides (empty = use default model)
+  modelAnalysis: ""
+  modelImplement: ""
+  modelCritic: ""
+  modelPlan: ""
   maxTasks: 5
   minSeverity: "minor"
   logLevel: "info"
@@ -42,16 +47,20 @@ defaults:
   investigateIssues: ""  # Investigate open GitHub issues with this label (comma-separated). Empty = disabled.
   maxIssues: 2           # Maximum issues to investigate per run
   issueBudget: "3.00"    # Budget per issue investigation (USD)
+  contextWindow: 128000   # Context window size in tokens (old results evicted near limit)
 
 # -- Optional environment variables (shared across all repos)
 # Uncomment and set as needed.
 env: {}
-  # ANTHROPIC_BASE_URL: ""
-  # ANTHROPIC_AUTH_TOKEN: ""
-  # ANTHROPIC_DEFAULT_SONNET_MODEL: ""
-  # CLAUDE_CODE_SUBAGENT_MODEL: ""
-  # ANTHROPIC_DEFAULT_OPUS_MODEL: ""
-  # ANTHROPIC_DEFAULT_HAIKU_MODEL: ""
+  # --- Anthropic provider (default) ---
+  # ANTHROPIC_BASE_URL: ""         # Custom API endpoint (e.g. proxy/gateway)
+  # ANTHROPIC_AUTH_TOKEN: ""       # Bearer token for proxy (takes precedence over API_KEY)
+  # --- OpenAI-compatible provider ---
+  # OPENAI_BASE_URL: ""            # Required when using OpenAI provider
+  # OPENAI_API_KEY: ""             # Required when using OpenAI provider
+  # --- Provider selection ---
+  # AUTOANNEAL_PROVIDER: ""        # "anthropic" or "openai" (auto-detected if unset)
+  # --- Debug ---
   # AUTOANNEAL_DEBUG_STREAM: "1"
 
 # -- Repos to target

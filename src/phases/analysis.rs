@@ -1,4 +1,4 @@
-use crate::claude::{self, ClaudeInvocation};
+use crate::llm::{self, LlmInvocation};
 use crate::models::{AnalysisResult, Improvement, OpenPr, Risk, Severity, StackInfo};
 use crate::prompts::analysis::ANALYSIS_PROMPT;
 use crate::prompts::doc_analysis::DOC_ANALYSIS_PROMPT;
@@ -101,6 +101,7 @@ pub async fn run(
     budget: f64,
     max_tasks: usize,
     min_severity: &Severity,
+    context_window: u64,
 ) -> Result<AnalysisOutput> {
     // 1. Fetch recent commits for context.
     let recent_commits = get_recent_commits(clone_path).await;
@@ -113,7 +114,7 @@ pub async fn run(
         .replace("{recent_commits}", &recent_commits);
 
     // 2. Build the invocation.
-    let invocation = ClaudeInvocation {
+    let invocation = LlmInvocation {
         prompt,
         system_prompt: Some(analysis_system_prompt()),
         model: model.to_string(),
@@ -123,12 +124,11 @@ pub async fn run(
         tools: "Read,Glob,Grep,Agent",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
-        session_id: None,
-        resume_session_id: None,
+        context_window,
     };
 
     // 3. Invoke Claude.
-    let response = claude::invoke::<AnalysisResult>(&invocation, Duration::from_secs(900)).await?;
+    let response = llm::invoke::<AnalysisResult>(&invocation, Duration::from_secs(900)).await?;
 
     let analysis = response
         .structured
@@ -180,6 +180,8 @@ pub async fn run_doc_analysis(
     model: &str,
     budget: f64,
     max_tasks: usize,
+    min_severity: &Severity,
+    context_window: u64,
 ) -> Result<AnalysisOutput> {
     // 1. Fetch recent commits and build doc-specific prompt.
     let recent_commits = get_recent_commits(clone_path).await;
@@ -189,7 +191,7 @@ pub async fn run_doc_analysis(
         .replace("{recent_commits}", &recent_commits);
 
     // 2. Build the invocation.
-    let invocation = ClaudeInvocation {
+    let invocation = LlmInvocation {
         prompt,
         system_prompt: Some(analysis_system_prompt()),
         model: model.to_string(),
@@ -199,12 +201,11 @@ pub async fn run_doc_analysis(
         tools: "Read,Glob,Grep,Agent",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
-        session_id: None,
-        resume_session_id: None,
+        context_window,
     };
 
     // 3. Invoke Claude.
-    let response = claude::invoke::<AnalysisResult>(&invocation, Duration::from_secs(900)).await?;
+    let response = llm::invoke::<AnalysisResult>(&invocation, Duration::from_secs(900)).await?;
 
     let analysis = response
         .structured
@@ -215,12 +216,14 @@ pub async fn run_doc_analysis(
     let total_found = analysis.improvements.len();
     info!(total_found, "doc analysis phase: raw improvements from Claude");
 
-    // 4. Post-process: lighter filtering for docs (no severity filter, allow docs category).
+    // 4. Post-process: apply severity filter and standard filtering for docs.
+    let min_rank = severity_rank(min_severity);
     let mut filtered: Vec<Improvement> = analysis
         .improvements
         .into_iter()
         .filter(|imp| imp.risk != Risk::High)
         .filter(|imp| imp.estimated_lines_changed <= 500)
+        .filter(|imp| severity_rank(&imp.severity) >= min_rank)
         .collect();
 
     // Sort by severity descending, then risk ascending.

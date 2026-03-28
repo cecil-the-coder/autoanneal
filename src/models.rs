@@ -189,31 +189,6 @@ pub struct DiffReport {
     pub extra_files: Vec<String>,
 }
 
-/// Raw JSON envelope from `claude -p --output-format json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClaudeOutput {
-    #[serde(rename = "type")]
-    pub type_field: String,
-    #[serde(default)]
-    pub subtype: String,
-    #[serde(default)]
-    pub is_error: bool,
-    #[serde(default)]
-    pub result: String,
-    #[serde(default)]
-    pub total_cost_usd: f64,
-    #[serde(default)]
-    pub num_turns: u32,
-    #[serde(default)]
-    pub duration_ms: u64,
-    #[serde(default)]
-    pub session_id: String,
-    #[serde(default)]
-    pub structured_output: Option<serde_json::Value>,
-    /// Catch-all for forward compatibility with new fields.
-    #[serde(flatten)]
-    pub _extra: serde_json::Value,
-}
 
 /// Result of a critic review of code changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]

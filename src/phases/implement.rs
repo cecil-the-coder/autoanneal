@@ -1,4 +1,4 @@
-use crate::claude::{self, ClaudeInvocation, ClaudeResponse};
+use crate::llm::{self, LlmInvocation};
 use crate::guardrails;
 use crate::models::{Category, Improvement, StackInfo, TaskResult, TaskStatus};
 use crate::prompts::implement::IMPLEMENT_PROMPT;
@@ -34,6 +34,7 @@ pub async fn run(
     branch_name: &str,
     model: &str,
     budget: f64,
+    context_window: u64,
 ) -> Result<ImplementOutput> {
     if improvements.is_empty() {
         return Ok(ImplementOutput {
@@ -66,6 +67,7 @@ pub async fn run(
             branch_name,
             model,
             remaining_budget,
+            context_window,
         )
         .await?;
 
@@ -151,6 +153,7 @@ async fn run_batch(
     branch_name: &str,
     model: &str,
     budget: f64,
+    context_window: u64,
 ) -> Result<BatchOutput> {
     let num_groups = batch_groups.len();
     let per_group_budget = budget / num_groups as f64;
@@ -184,6 +187,7 @@ async fn run_batch(
                 &model,
                 per_group_budget,
                 &shared_cost,
+                context_window,
             )
             .await;
 
@@ -260,6 +264,7 @@ async fn run_group_in_worktree(
     model: &str,
     group_budget: f64,
     shared_cost: &Arc<AtomicU64>,
+    context_window: u64,
 ) -> Result<GroupOutput> {
     let mut results: Vec<TaskResult> = Vec::new();
     let mut group_cost: f64 = 0.0;
@@ -296,6 +301,7 @@ async fn run_group_in_worktree(
             stack_info,
             model,
             per_task_budget,
+            context_window,
         )
         .await;
 
@@ -344,6 +350,7 @@ async fn run_single_task(
     stack_info: &StackInfo,
     model: &str,
     per_task_budget: f64,
+    context_window: u64,
 ) -> Result<TaskResult> {
     // Step 1: Verify clean state.
     let status_output = tokio::process::Command::new("git")
@@ -392,7 +399,7 @@ async fn run_single_task(
         .replace("{test_command}", test_command);
 
     // Step 3: Invoke Claude.
-    let invocation = ClaudeInvocation {
+    let invocation = LlmInvocation {
         prompt,
         system_prompt: Some(implement_system_prompt()),
         model: model.to_string(),
@@ -402,23 +409,22 @@ async fn run_single_task(
         tools: "Read,Glob,Grep,Bash,Edit,Write",
         json_schema: None,
         working_dir: working_dir.to_path_buf(),
-        session_id: Some(claude::generate_session_id()),
-        resume_session_id: None,
+        context_window,
     };
 
-    let response: ClaudeResponse<serde_json::Value> =
-        match claude::invoke(&invocation, TASK_TIMEOUT).await {
+    let response: llm::LlmResponse<serde_json::Value> =
+        match llm::invoke(&invocation, TASK_TIMEOUT).await {
             Ok(resp) => resp,
             Err(e) => {
                 warn!(
                     task = %improvement.title,
                     error = %e,
-                    "claude invocation failed, skipping task"
+                    "LLM invocation failed, skipping task"
                 );
                 guardrails::discard_changes(working_dir).await?;
                 return Ok(TaskResult {
                     title: improvement.title.clone(),
-                    status: TaskStatus::Failed(format!("claude invocation failed: {e}")),
+                    status: TaskStatus::Failed(format!("LLM invocation failed: {e}")),
                     cost_usd: 0.0,
                     files_changed: vec![],
                 });

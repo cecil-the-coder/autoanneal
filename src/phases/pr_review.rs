@@ -1,8 +1,9 @@
-use crate::claude::{self, ClaudeInvocation, generate_session_id};
+use crate::llm::{self, LlmInvocation};
 use crate::models::{CriticResult, ExternalPr};
 use crate::prompts::critic::CRITIC_PROMPT;
 use crate::prompts::pr_review::PR_REVIEW_FIX_PROMPT;
 use crate::prompts::system::{critic_system_prompt, pr_review_fix_system_prompt};
+use crate::guardrails;
 use crate::retry::gh_command;
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -28,6 +29,7 @@ pub async fn run(
     model: &str,
     budget: f64,
     fix_threshold: u32,
+    context_window: u64,
 ) -> Result<PrReviewOutput> {
     let dot = Path::new(".");
     let clone_dir = worktree_path.to_path_buf();
@@ -82,7 +84,7 @@ pub async fn run(
     let critic_prompt = CRITIC_PROMPT.replace("{diff}", &diff);
     let critic_budget = budget * 0.30;
 
-    let critic_invocation = ClaudeInvocation {
+    let critic_invocation = LlmInvocation {
         prompt: critic_prompt,
         system_prompt: Some(critic_system_prompt()),
         model: model.to_string(),
@@ -92,12 +94,11 @@ pub async fn run(
         tools: "Read,Glob,Grep,Bash",
         json_schema: None,
         working_dir: clone_dir.clone(),
-        session_id: None,
-        resume_session_id: None,
+        context_window,
     };
 
     let critic_response =
-        claude::invoke::<CriticResult>(&critic_invocation, Duration::from_secs(300)).await?;
+        llm::invoke::<CriticResult>(&critic_invocation, Duration::from_secs(300)).await?;
 
     let mut total_cost = critic_response.cost_usd;
 
@@ -153,9 +154,7 @@ pub async fn run(
         .replace("{summary}", &critic.summary)
         .replace("{diff}", &diff);
 
-    let session_id = generate_session_id();
-
-    let fix_invocation = ClaudeInvocation {
+    let fix_invocation = LlmInvocation {
         prompt: fix_prompt,
         system_prompt: Some(pr_review_fix_system_prompt()),
         model: model.to_string(),
@@ -165,12 +164,11 @@ pub async fn run(
         tools: "Read,Glob,Grep,Bash,Edit,Write",
         json_schema: None,
         working_dir: clone_dir.clone(),
-        session_id: Some(session_id),
-        resume_session_id: None,
+        context_window,
     };
 
-    let fix_response: claude::ClaudeResponse<serde_json::Value> =
-        claude::invoke(&fix_invocation, Duration::from_secs(600)).await?;
+    let fix_response: llm::LlmResponse<serde_json::Value> =
+        llm::invoke(&fix_invocation, Duration::from_secs(600)).await?;
 
     total_cost += fix_response.cost_usd;
 
@@ -178,45 +176,71 @@ pub async fn run(
     let has_changes = check_has_changes(&clone_dir).await;
 
     if has_changes {
-        // Stage and commit changes.
-        let commit_ok = commit_changes(&clone_dir).await.is_ok();
+        // Validate diff against guardrails before committing.
+        info!(pr_number = pr.number, "validating PR review fix diff against guardrails");
+        if let Err(violation) = guardrails::validate_diff(&clone_dir, &[], 500, false).await {
+            warn!(
+                pr_number = pr.number,
+                violation = %violation,
+                "guardrail violation, discarding PR review fix changes"
+            );
+            let _ = guardrails::discard_changes(&clone_dir).await;
+            // Leave a comment so the PR author knows fixes were attempted but rejected.
+            let comment = format!(
+                "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes were generated but discarded due to safety guardrails ({}). Please review the suggestions above._",
+                critic.score, critic.verdict, critic.summary, violation
+            );
+            leave_comment(repo_slug, pr.number, &comment).await;
+            add_reviewed_label(repo_slug, pr.number).await;
 
-        if commit_ok {
-            // Try to push.
-            let push_ok = push_changes(&clone_dir, &pr.branch).await.is_ok();
+            return Ok(PrReviewOutput {
+                pr_number: pr.number,
+                score: critic.score,
+                fixed: false,
+                commented: true,
+                cost_usd: total_cost,
+            });
+        } else {
+            // Stage and commit changes.
+            let commit_ok = commit_changes(&clone_dir).await.is_ok();
 
-            if push_ok {
-                // Leave a comment summarizing what was fixed.
-                let comment = format!(
-                    "## Autoanneal Review & Fix\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes have been pushed to this branch._",
-                    critic.score, critic.verdict, critic.summary
-                );
-                leave_comment(repo_slug, pr.number, &comment).await;
-                add_reviewed_label(repo_slug, pr.number).await;
+            if commit_ok {
+                // Try to push.
+                let push_ok = push_changes(&clone_dir, &pr.branch).await.is_ok();
 
-                return Ok(PrReviewOutput {
-                    pr_number: pr.number,
-                    score: critic.score,
-                    fixed: true,
-                    commented: true,
-                    cost_usd: total_cost,
-                });
-            } else {
-                // Push failed (no permission / protected branch). Leave review comment.
-                let comment = format!(
-                    "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes were prepared but could not be pushed (insufficient permissions or protected branch). Please review the suggestions above._",
-                    critic.score, critic.verdict, critic.summary
-                );
-                leave_comment(repo_slug, pr.number, &comment).await;
-                add_reviewed_label(repo_slug, pr.number).await;
+                if push_ok {
+                    // Leave a comment summarizing what was fixed.
+                    let comment = format!(
+                        "## Autoanneal Review & Fix\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes have been pushed to this branch._",
+                        critic.score, critic.verdict, critic.summary
+                    );
+                    leave_comment(repo_slug, pr.number, &comment).await;
+                    add_reviewed_label(repo_slug, pr.number).await;
 
-                return Ok(PrReviewOutput {
-                    pr_number: pr.number,
-                    score: critic.score,
-                    fixed: false,
-                    commented: true,
-                    cost_usd: total_cost,
-                });
+                    return Ok(PrReviewOutput {
+                        pr_number: pr.number,
+                        score: critic.score,
+                        fixed: true,
+                        commented: true,
+                        cost_usd: total_cost,
+                    });
+                } else {
+                    // Push failed (no permission / protected branch). Leave review comment.
+                    let comment = format!(
+                        "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes were prepared but could not be pushed (insufficient permissions or protected branch). Please review the suggestions above._",
+                        critic.score, critic.verdict, critic.summary
+                    );
+                    leave_comment(repo_slug, pr.number, &comment).await;
+                    add_reviewed_label(repo_slug, pr.number).await;
+
+                    return Ok(PrReviewOutput {
+                        pr_number: pr.number,
+                        score: critic.score,
+                        fixed: false,
+                        commented: true,
+                        cost_usd: total_cost,
+                    });
+                }
             }
         }
     }
