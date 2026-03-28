@@ -36,8 +36,8 @@ pub async fn create_branch(
     clone_path: &Path,
     improvements: &[Improvement],
 ) -> Result<BranchOutput> {
-    // 1. Generate branch name: autoanneal/{date}-{hash}
-    let date = chrono::Utc::now().format("%Y%m%d");
+    // 1. Generate branch name: autoanneal/{date}-{time}-{hash}
+    let datetime = chrono::Utc::now().format("%Y%m%d-%H%M%S");
     let improvements_json = serde_json::to_string(improvements)
         .context("failed to serialize improvements for hashing")?;
     let hash = {
@@ -46,7 +46,7 @@ pub async fn create_branch(
         let digest = hasher.finalize();
         hex::encode(&digest[..3]) // first 3 bytes = 6 hex chars
     };
-    let branch_name = format!("autoanneal/{date}-{hash}");
+    let branch_name = format!("autoanneal/{datetime}-{hash}");
 
     // 2. Create local branch.
     let checkout_output = tokio::process::Command::new("git")

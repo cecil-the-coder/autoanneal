@@ -20,7 +20,8 @@ pub enum GuardrailViolation {
 ///
 /// Runs `git diff --numstat HEAD` in `repo_dir`, parses the output, and checks:
 /// 1. Total lines changed (added + removed) does not exceed `max_lines`.
-/// 2. Extra files (not in `allowed_files`) do not exceed `max(2, allowed_files.len() / 5)`.
+/// 2. Extra files (not in `allowed_files`) do not exceed `max(2, allowed_files.len() / 5)`,
+///    or 5 when `allowed_files` is empty.
 /// 3. If `!allow_deletions`, no files have been deleted.
 pub async fn validate_diff(
     repo_dir: &Path,
@@ -98,7 +99,13 @@ pub async fn validate_diff(
     }
 
     // --- 5. Check extra_files count ---
-    let max_extra = std::cmp::max(2, allowed_files.len() / 5);
+    // When allowed_files is empty (e.g. issue fixes with no pre-approved files),
+    // use a more generous limit so legitimate multi-file fixes aren't rejected.
+    let max_extra = if allowed_files.is_empty() {
+        5
+    } else {
+        std::cmp::max(2, allowed_files.len() / 5)
+    };
     if extra_files.len() > max_extra {
         return Err(GuardrailViolation::UnauthorizedFiles {
             files: extra_files,
