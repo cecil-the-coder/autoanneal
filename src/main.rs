@@ -1,3 +1,4 @@
+mod agent;
 mod claude;
 mod cleanup;
 mod config;
