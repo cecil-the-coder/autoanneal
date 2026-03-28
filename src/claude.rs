@@ -374,6 +374,7 @@ async fn invoke_once<T: DeserializeOwned>(
         .current_dir(&invocation.working_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .context("failed to spawn claude process — is `claude` on PATH?")?;
 
@@ -385,7 +386,6 @@ async fn invoke_once<T: DeserializeOwned>(
         use tokio::io::{AsyncBufReadExt, BufReader};
 
         let mut child = child;
-        child.kill_on_drop(true);
         let stdout = child.stdout.take().context("no stdout")?;
         let stderr_handle = child.stderr.take().context("no stderr")?;
 
@@ -455,8 +455,7 @@ async fn invoke_once<T: DeserializeOwned>(
         }
     } else {
         // Non-streaming: wait for full output
-        let mut child = child;
-        child.kill_on_drop(true);
+        let child = child;
         let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
             Ok(result) => result.context("failed to wait for claude process")?,
             Err(_) => {
