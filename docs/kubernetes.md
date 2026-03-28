@@ -66,6 +66,21 @@ Global defaults applied to all repos. Individual repos can override any of these
 | `defaults.logLevel` | `"info"` | Log level |
 | `defaults.dryRun` | `false` | Analysis only, no PR |
 | `defaults.setupCommand` | `""` | Shell command run after clone |
+| `defaults.skipAfter` | `3` | Skip repo if no commits in `skipAfter` × `cronInterval` minutes |
+| `defaults.cronInterval` | `10` | Cron interval in minutes (used for staleness calculation) |
+| `defaults.fixCi` | `true` | Fix PRs with failing CI before looking for new improvements |
+| `defaults.fixConflicts` | `true` | Rebase PRs with merge conflicts |
+| `defaults.criticThreshold` | `6` | Minimum critic score (1–10) to create a PR. `0` disables the critic. |
+| `defaults.improveDocs` | `true` | Fall back to documentation improvements when no code improvements found |
+| `defaults.docCriticThreshold` | `7` | Minimum critic score for documentation changes |
+| `defaults.reviewPrs` | `false` | Review external PRs (not created by autoanneal) |
+| `defaults.reviewFilter` | `"all"` | Filter for external PRs: `"all"`, `"labeled:<label>"`, or `"recent"` |
+| `defaults.reviewFixThreshold` | `7` | If critic score is below this, attempt to fix instead of just commenting |
+| `defaults.concurrency` | `3` | Maximum concurrent work items |
+| `defaults.maxOpenPrs` | `5` | Skip new analysis if this many autoanneal PRs are already open |
+| `defaults.investigateIssues` | `""` | Investigate open GitHub issues with this label (comma-separated). Empty = disabled. |
+| `defaults.maxIssues` | `2` | Maximum issues to investigate per run |
+| `defaults.issueBudget` | `"3.00"` | Budget per issue investigation (USD) |
 
 ### `env`
 

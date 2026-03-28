@@ -1,80 +1,126 @@
 # Architecture
 
-## Overview
+## High-level flow
 
-autoanneal uses a **concurrent work queue** architecture. After a shared Preflight and Recon phase, the orchestrator builds a queue of heterogeneous work items and executes them concurrently using a `JoinSet`, bounded by `--concurrency` slots (default 3). Each concurrent work item receives its own **git worktree** for filesystem isolation.
+1. **Preflight** validates the environment and collects repo state (open PRs, external PRs, issues, CI-failing branches).
+2. **Recon** clones the repo and produces an architecture summary plus tech-stack detection.
+3. A **work queue** is built from prioritized work items (CI fixes > PR reviews > issue investigations > new analysis).
+4. Work items execute **concurrently** via a `JoinSet`, each in its own **git worktree** for isolation.
+5. Each item type runs its own phase pipeline independently.
 
 ```
-Preflight ──> Recon ──> Early-exit checks ──> Build work queue ──> Concurrent execution (JoinSet)
-               │                                      │                        │
-          RepoInfo                            ┌───────┴───────┐          ┌──────┴──────┐
-          StackInfo                           │               │          │             │
-          ArchSummary                     CiFix items    PrReview items  IssueInv.   Analysis
-          open PRs                         (worktree)     (worktree)    (worktree)   (main clone)
-                                                                                      │
-                                                                           Analysis→Plan→Implement→Critic→PR
+Preflight ──> Recon ──> Early-exit checks ──> collect_work_items() ──> run_work_queue()
+                                                       │                              │
+                      ┌────────────────────────────────┤          Concurrent JoinSet   │
+                      │                                │                              │
+                   CI Fix      PR Review    Issue Inv.   Analysis                     │
+                     │            │            │           │                           │
+                  (worktree)  (worktree)   (worktree)  (clone dir)                    │
+                     │            │            │           │                           │
+                   fix+push   review+fix   investigate  Analysis→Plan→                │
+                     │            │            │        Implement→Critic→PR            │
+                   clean up    clean up     clean up      │                           │
+                      │            │            │        clean up                     │
+                      └────────────┴────────────┴─────────┘                            │
+                                  outcomes aggregated                                   │
 ```
+
+## Concurrent work queue model
+
+Work items are represented as `WorkItem` enums and executed through a bounded-concurrency `tokio::task::JoinSet` (controlled by `--concurrency`, default 3). Each work item gets an independent budget cap. The `collect_work_items()` function builds the queue with this priority order:
+
+1. **CI fixes** — autoanneal PRs with failing CI or merge conflicts (`--fix-ci`, `--fix-conflicts`).
+2. **PR reviews** — external PRs not created by autoanneal (`--review-prs`, `--review-filter`).
+3. **Issue investigations** — open GitHub issues matching a label filter (`--investigate-issues`, `--max-issues`).
+4. **Analysis pipeline** — the original analysis→plan→implement→critic→PR flow (skipped if `--max-open-prs` is reached).
+
+Budget is not pre-reserved; actual costs are deducted when outcomes are processed, which allows sharing the global budget fairly across concurrent items.
+
+## Git worktree isolation
+
+Implemented in `src/worktree.rs`. The `WorktreeManager` creates detached git worktrees from the canonical clone, giving each concurrent work item its own isolated working directory. This avoids lock contention and allows parallel git operations.
+
+- `create_from_head(name)` — creates a worktree at HEAD (used for issue investigations).
+- `create_at_branch(name, remote_branch)` — creates a worktree, fetches a remote branch, and checks it out (used for CI fixes and PR reviews).
+- `remove(path)` — cleans up the worktree via `git worktree remove --force` plus `git worktree prune`.
+
+Worktrees are created in `/tmp/autoanneal-<timestamp>/.worktree-<name>` and removed after the work item completes.
 
 ### Early-exit checks (before work queue)
 
 After Preflight, before Recon costs money:
 
-1. **PR limit** — If `--max-open-prs > 0` and in-flight autoanneal PRs ≥ limit, skip unless there is maintenance/review/issue work to do.
-2. **Staleness** — If `--skip-after > 0` and no external work items exist: compute threshold as `skip_after × cron_interval × 60` seconds. If the newest commit across all branches is older than this threshold, skip the run entirely.
+### Phase 1: Preflight
+
+No Claude calls. Pure validation and data collection:
+
+1. Check `ANTHROPIC_API_KEY` and `GH_TOKEN` are set.
+2. `gh auth status` — fail fast on invalid token.
+3. Fetch repo metadata via `gh repo view` (archived status, permissions, disk usage, default branch).
+4. Reject archived repos and repos where the token lacks write permission.
+5. Fetch open PRs to avoid duplicate work.
+6. Identify autoanneal in-flight PRs needing CI fixes or merge conflict resolution.
+7. Fetch external PRs eligible for review (filtered by `--review-filter`: `all`, `labeled:<label>`, or `recent`).
+8. Fetch open GitHub issues matching the `--investigate-issues` label filter.
+9. Check staleness: skip if no recent commits and no maintenance/review/issue work.
+
+### Phase 2: Recon
+
+1. Clone: shallow (`--depth 1`) if disk usage > 500 MB, full clone otherwise.
+2. Disable git hooks: `git config core.hooksPath /dev/null`.
+3. Set git identity to `autoanneal[bot]` / `autoanneal[bot]@users.noreply.github.com`.
+4. Run `--setup-command` if provided (5 min timeout).
+5. Detect tech stack by scanning for `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `pom.xml`, etc.
+6. Detect CI by scanning `.github/workflows/*.yml`.
+7. A single Claude invocation produces an architecture summary (2-3 paragraphs), identifies the primary language, and extracts build/test/lint commands.
 
 ## Work item types
 
-The orchestrator (`orchestrator.rs`) defines four `WorkItemKind` variants, each with its own budget cap and execution logic:
+The orchestrator (`orchestrator.rs`) defines four `WorkItemKind` variants, each with its own budget cap and execution logic. Work items run concurrently via a `JoinSet`, bounded by `--concurrency` slots (default 3).
 
-### 1. CiFix — Fix failing CI or merge conflicts on existing PRs
+### Phase 3: CI Fix
 
-**Triggered when:** `--fix-ci` is enabled and in-flight PRs have failing CI, or `--fix-conflicts` is enabled and in-flight PRs have merge conflicts (excluding PRs already labeled `autoanneal:fixing`).
+Each CI fix runs in its own worktree checked out at the PR's branch:
 
-**Execution:**
-1. Creates a git worktree at the PR's branch via `WorktreeManager::create_at_branch`.
-2. Adds `autoanneal:fixing` label to the PR (removed on drop via `FixingLabelGuard`).
-3. For merge conflicts: attempts `git merge origin/{default_branch}`. If clean, pushes the merge commit directly (no Claude). If conflicts remain, invokes Claude to resolve them.
-4. For CI failures: fetches failed CI logs via `gh run view --log-failed`, invokes Claude with the logs to produce a fix.
-5. Commits and pushes any changes back to the PR branch.
-6. Removes the worktree.
+1. Add `autoanneal:fixing` label to the PR (with a drop guard that removes it on exit).
+2. If merge conflicts: fetch and merge the default branch. If clean merge, push and done (no Claude needed).
+3. If CI failure or unresolved conflicts: fetch CI logs via `gh run view --log-failed` or conflict diff.
+4. Invoke Claude with full tool access to fix the issue (15 min timeout, high effort, up to 100 turns).
+5. Commit (`autoanneal: fix CI failures`) and push.
 
-**Budget cap:** min(remaining, $2.00).
+Budget cap: $2.00 per fix. Controlled by `--fix-ci` and `--fix-conflicts` flags.
 
-### 2. PrReview — Review external PRs with optional auto-fix
+### Phase 4: PR Review
 
-**Triggered when:** `--review-prs` is enabled. Considers up to 3 external PRs (non-autoanneal), filtered by `--review-filter` (`all`, `labeled:<label>`, or `recent`).
+Reviews external (non-autoanneal) PRs in isolated worktrees:
 
-**Execution:**
-1. Creates a git worktree at the PR's branch.
-2. Fetches the PR diff via `gh pr diff` (truncated to 50,000 characters).
-3. Runs the critic prompt on the diff to produce a score (1–10) and summary.
-4. If score ≥ `--review-fix-threshold` (default 7): adds `autoanneal:reviewed` label, no changes needed.
-5. If score < threshold: invokes Claude with a fix prompt to address the issues. If changes are produced, commits and pushes to the PR branch.
-6. Leaves a comment on the PR with the review summary. Adds `autoanneal:reviewed` label.
-7. Removes the worktree.
+1. Fetch PR diff via `gh pr diff` (truncated at 50,000 characters).
+2. Run the critic model on the diff — produces a score (1-10), verdict, and summary.
+3. If score ≥ `--review-fix-threshold` (default 7): add `autoanneal:reviewed` label and skip.
+4. If score < threshold and budget allows: invoke Claude with a fix prompt to address issues directly in the worktree.
+5. If Claude made changes: commit and push to the PR branch; leave a comment summarizing fixes.
+6. If push fails (protected branch / no permission): leave a review comment with suggestions instead.
+7. If no changes needed: leave a comment with the review summary.
+8. Add `autoanneal:reviewed` label.
 
-**Budget cap:** min(remaining, $2.00).
+Budget cap: $2.00 per review. Controlled by `--review-prs` and `--review-filter` flags.
 
-### 3. IssueInvestigation — Investigate labeled GitHub issues
+### Phase 5: Issue Investigation
 
-**Triggered when:** `--investigate-issues` is set to a comma-separated label list. Up to `--max-issues` (default 2) per run.
+Investigates open GitHub issues matching a configurable label:
 
-**Execution:**
-1. Creates a git worktree from HEAD.
-2. Adds `autoanneal:investigating` label to the issue.
-3. Invokes Claude with the issue body, architecture summary, and build/test commands. Claude has full tool access to explore the codebase and produce a fix.
-4. If Claude reports `fixed: true`: creates a branch (`autoanneal/issue-{number}-{timestamp}`), commits, pushes, and opens a PR referencing the issue.
-5. If not fixed: leaves a comment on the issue with the investigation findings.
-6. Replaces `autoanneal:investigating` label with `autoanneal:attempted`.
-7. Removes the worktree.
+1. Add `autoanneal:investigating` label to the issue.
+2. Invoke Claude with the issue title, body, architecture summary, and build/test commands.
+3. Claude explores the codebase and attempts to produce a fix (15 min timeout, high effort, up to 100 turns).
+4. If fix produced: create branch (`autoanneal/issue-<number>-<timestamp>`), commit, push, and open a PR referencing the issue.
+5. If no fix: leave a comment on the issue with investigation findings.
+6. Replace `autoanneal:investigating` label with `autoanneal:attempted`.
 
-**Budget cap:** min(remaining, `--issue-budget`).
+Budget: `--issue-budget` per investigation (default $3.00), up to `--max-issues` per run (default 2). Controlled by `--investigate-issues` label filter.
 
-### 4. Analysis — The main improvement pipeline
+### Phase 6: Analysis Pipeline
 
-**Triggered when:** budget remains and the run is not at the PR limit (skipped if `--max-open-prs` is reached). The analysis pipeline uses the main clone (not a worktree) since it needs to push branches.
-
-**Sub-phases (sequential within this work item):**
+The original sequential pipeline, now running as a single work item:
 
 #### Analysis sub-phase
 
@@ -110,24 +156,21 @@ For each improvement task, in order:
 
 #### Critic sub-phase
 
-A separate Claude invocation reviews the full diff as a skeptical reviewer. Scores the PR 1–10. Uses `--doc-critic-threshold` for documentation-only PRs (higher bar), `--critic-threshold` for code PRs. Below threshold: branch is pushed but no PR is created; cleanup guard deletes the branch.
+A separate Claude invocation reviews the full diff as a skeptical reviewer. Three-pass process:
+
+1. **Pass 1: Review** (40% of critic budget, read-only tools) — Produces a score (1-10), verdict (`approve`, `needs_work`, `reject`), and summary.
+2. **Pass 2: Fix** (35% of critic budget, full tool access) — If verdict is `needs_work` and score is 4-7, Claude attempts to address the issues and commits fixes.
+3. **Pass 3: Re-review** (25% of critic budget) — If fixes were applied, re-reviews the updated diff for a new score.
+
+Uses `--doc-critic-threshold` for documentation-only PRs (higher bar), `--critic-threshold` for code PRs. Below threshold: branch is deleted, no PR is created. Set to 0 to disable critic.
 
 #### Push + PR creation
 
-Only after critic approval:
-1. `git push -u origin <branch> --force-with-lease`.
+Only executed after critic approval:
+
+1. Push branch with `--force-with-lease`.
 2. Claude generates a PR title and markdown body (no tools, single turn).
-3. Open draft PR via `gh pr create --draft`.
-
-## Worktree isolation
-
-Implemented in `worktree.rs`. The `WorktreeManager` creates isolated git worktrees off the canonical clone directory:
-
-- **`create_from_head(name)`** — Creates a detached worktree at HEAD. Used by IssueInvestigation.
-- **`create_at_branch(name, branch)`** — Creates a worktree, fetches the remote branch, and checks it out. Used by CiFix and PrReview.
-- **`remove(path)`** — Force-removes the worktree and prunes.
-
-Each worktree gets its own git identity (`autoanneal[bot]`). Worktrees are cleaned up after the work item completes, even on failure.
+3. Open draft PR via `gh pr create --draft` with critic review summary included.
 
 ## Concurrency model
 
@@ -139,31 +182,6 @@ The `run_work_queue` function in `orchestrator.rs`:
 4. Outcomes are collected and processed sequentially after all items complete.
 
 Budget is shared across all concurrent items. Actual costs are subtracted when outcomes are processed (not pre-reserved), so items may exceed their nominal cap if many run concurrently.
-
-## Shared phases (Preflight and Recon)
-
-### Phase 1: Preflight
-
-No Claude calls. Pure validation:
-
-1. Check `ANTHROPIC_API_KEY` and `GH_TOKEN` are set.
-2. `gh auth status` — fail fast on invalid token.
-3. Fetch repo metadata via `gh repo view` (archived status, permissions, disk usage, default branch).
-4. Reject archived repos and repos where the token lacks write permission.
-5. Fetch in-flight autoanneal PRs, external PRs (if `--review-prs`), and labeled issues (if `--investigate-issues`).
-6. Compute newest commit age across all branches for staleness check.
-
-### Phase 2: Recon
-
-Single Claude invocation (5% of `--max-budget`, i.e. $0.25 at default $5; low effort; 25 turns max) produces an architecture summary (2-3 paragraphs), identifies the primary language, and extracts build/test/lint commands. Also:
-
-1. Clone: shallow (`--depth 1`) if disk usage > 500 MB, full clone otherwise.
-2. Disable git hooks: `git config core.hooksPath /dev/null`.
-3. Set git identity to `autoanneal[bot]` / `autoanneal[bot]@users.noreply.github.com`.
-4. Run `--setup-command` if provided (5 min timeout).
-5. Detect tech stack by scanning for `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `pom.xml`, etc.
-6. Detect CI by scanning `.github/workflows/*.yml`.
-7. Fetch open PRs to avoid duplicate work.
 
 ## Claude invocation details
 
@@ -230,17 +248,20 @@ Key fields:
 | Work item / Phase | Timeout | Budget | Notes |
 |-------------------|---------|--------|-------|
 | Preflight | 60s | $0 | No Claude calls |
-| Recon | 5 min | 5% of `--max-budget` ($0.25 at default $5) | Low effort, 25 turns max |
-| **CiFix** | 15 min | min(remaining, $2.00) | High effort, 100 turns max |
-| **PrReview** | 5 min (critic) + 10 min (fix) | min(remaining, $2.00) | 30% for critic, 70% for fix |
-| **IssueInvestigation** | 15 min | min(remaining, `--issue-budget`) | High effort, 100 turns max |
+| Recon | 5 min | 5% of `--max-budget` ($0.25 at default $5) | Low effort, architecture summary |
+| **CI Fix** (per PR) | 15 min | min(remaining, $2.00) | High effort, up to 100 turns |
+| **PR Review** (per PR) | 5 min (critic) + 10 min (fix) | min(remaining, $2.00) | 30% for critic, 70% for fix |
+| **Issue Investigation** (per issue) | 15 min | min(remaining, `--issue-budget`) | Default $3.00, up to `--max-issues` per run |
 | **Analysis** sub-phase | 10 min | 20% of remaining (min $0.50) | High effort, 25 turns max |
 | **Analysis** doc fallback | 10 min | 20% of remaining (min $0.50) | Only if code analysis yields nothing and `--improve-docs` is on |
-| **Analysis** implement | 30 min | 60% of remaining | Per-task budget: remaining / tasks (cap $1.50/task) |
-| **Analysis** critic | 5 min | min(remaining, $1.50) | Separate threshold for doc PRs |
+| **Analysis** implement (per task) | 30 min | 60% of remaining | Per-task budget: remaining / tasks (cap $1.50/task) |
+| **Analysis** build fix (per attempt) | — | $0.50 | Up to 2 attempts per task |
+| **Analysis** critic | 15 min | min(remaining, $1.50) | 3-pass: review (40%) → fix (35%) → re-review (25%) |
 | **Analysis** PR creation | 2 min | min(remaining, $0.10) | Low effort, 1 turn, no tools |
 
-Global caps: `--max-budget` (default $5) and `--timeout` (default 30 min) apply across all phases and work items. Budget is shared across concurrent items; actual costs are deducted when outcomes are processed.
+Concurrent work items share the global budget; costs are deducted from the remaining total as each item completes. The `--concurrency` flag (default 3) limits how many items run simultaneously.
+
+Global caps: `--max-budget` (default $5) and `--timeout` (default 30 min) apply across all phases and work items.
 
 ## Guardrails
 
