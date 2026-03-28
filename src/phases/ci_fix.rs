@@ -26,17 +26,24 @@ impl Drop for FixingLabelGuard {
             pr_number = self.pr_number,
             "removing autoanneal:fixing label"
         );
-        let _ = std::process::Command::new("gh")
-            .args([
-                "pr",
-                "edit",
-                &self.pr_number.to_string(),
-                "--remove-label",
-                "autoanneal:fixing",
-                "-R",
-                &self.repo_slug,
-            ])
-            .output();
+        let remove_label = || {
+            let _ = std::process::Command::new("gh")
+                .args([
+                    "pr",
+                    "edit",
+                    &self.pr_number.to_string(),
+                    "--remove-label",
+                    "autoanneal:fixing",
+                    "-R",
+                    &self.repo_slug,
+                ])
+                .output();
+        };
+        if let Ok(_handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(remove_label);
+        } else {
+            remove_label();
+        }
     }
 }
 

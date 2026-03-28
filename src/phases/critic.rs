@@ -148,6 +148,35 @@ pub async fn run(
                 .unwrap_or(false);
 
             if has_changes {
+                // Validate fixes against guardrails before staging.
+                match crate::guardrails::validate_diff(clone_path, &[], 500, false).await {
+                    Ok(diff_report) => {
+                        info!(
+                            files_changed = ?diff_report.files_changed,
+                            lines_added = diff_report.lines_added,
+                            lines_removed = diff_report.lines_removed,
+                            "critic fix diff validation passed"
+                        );
+                    }
+                    Err(violation) => {
+                        warn!(violation = %violation, "critic fix guardrail violation, discarding changes");
+                        if let Err(e) = crate::guardrails::discard_changes(clone_path).await {
+                            warn!(error = %e, "critic: failed to discard changes after guardrail violation");
+                        }
+                        return Ok(CriticOutput {
+                            score: initial_review.score,
+                            verdict: initial_review.verdict,
+                            summary: format!(
+                                "Initial: {}/10 — {}. Fixes discarded due to guardrail violation: {violation}",
+                                initial_review.score, initial_review.summary
+                            ),
+                            cost_usd: total_cost,
+                            made_fixes: false,
+                            score_unverified: false,
+                        });
+                    }
+                }
+
                 // Stage the fixes.
                 let add_succeeded = tokio::process::Command::new("git")
                     .args(["add", "-A"])

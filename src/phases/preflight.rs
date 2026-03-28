@@ -237,10 +237,7 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
             continue;
         }
 
-        // Check CI status (per-PR, unavoidable).
-        let ci_status = check_ci_status(repo_slug, number).await;
-
-        // Check for autoanneal:fixing label from already-fetched PR data.
+        // Check for autoanneal:fixing label from already-fetched PR data (no API call).
         let mut has_fixing_label = pr["labels"]
             .as_array()
             .map(|arr| {
@@ -275,10 +272,13 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
             }
         }
 
+        // Only call check_ci_status when the fixing label is absent or was
+        // removed due to staleness — avoids a wasted GitHub API call per
+        // actively-fixing PR.
         let ci_status = if has_fixing_label {
             CiStatus::Fixing
         } else {
-            ci_status
+            check_ci_status(repo_slug, number).await
         };
 
         // Check merge conflict status
