@@ -190,6 +190,8 @@ pub struct DiffReport {
 }
 
 /// Raw JSON envelope from `claude -p --output-format json`.
+/// Retained for potential CLI fallback or debugging use.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaudeOutput {
     #[serde(rename = "type")]
