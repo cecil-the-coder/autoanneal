@@ -8,6 +8,12 @@ pub struct MessagesRequest {
     pub messages: Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_sequences: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,12 +40,15 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MessagesResponse {
     pub id: String,
     pub content: Vec<ContentBlock>,
+    #[serde(default)]
     pub stop_reason: String,
     pub usage: Usage,
     // Allow unknown fields for forward compatibility — serde ignores them by default
@@ -81,6 +90,9 @@ mod tests {
                 }],
             }],
             tools: None,
+            temperature: None,
+            stop_sequences: None,
+            tool_choice: None,
         };
 
         let serialized = serde_json::to_value(&req).unwrap();
@@ -112,6 +124,9 @@ mod tests {
                     "required": ["command"]
                 }),
             }]),
+            temperature: None,
+            stop_sequences: None,
+            tool_choice: None,
         };
 
         let serialized = serde_json::to_value(&req).unwrap();
@@ -320,5 +335,192 @@ mod tests {
 
         let deserialized: ContentBlock = serde_json::from_value(serialized).unwrap();
         assert_eq!(deserialized, block);
+    }
+
+    // --- New tests ---
+
+    #[test]
+    fn test_request_with_temperature() {
+        let req = MessagesRequest {
+            model: "claude-sonnet-4-20250514".to_string(),
+            max_tokens: 1024,
+            system: None,
+            messages: vec![],
+            tools: None,
+            temperature: Some(0.7),
+            stop_sequences: None,
+            tool_choice: None,
+        };
+        let serialized = serde_json::to_value(&req).unwrap();
+        assert_eq!(serialized["temperature"], 0.7);
+    }
+
+    #[test]
+    fn test_request_with_stop_sequences() {
+        let req = MessagesRequest {
+            model: "claude-sonnet-4-20250514".to_string(),
+            max_tokens: 1024,
+            system: None,
+            messages: vec![],
+            tools: None,
+            temperature: None,
+            stop_sequences: Some(vec!["STOP".to_string(), "END".to_string()]),
+            tool_choice: None,
+        };
+        let serialized = serde_json::to_value(&req).unwrap();
+        let seqs = serialized["stop_sequences"].as_array().unwrap();
+        assert_eq!(seqs.len(), 2);
+        assert_eq!(seqs[0], "STOP");
+        assert_eq!(seqs[1], "END");
+    }
+
+    #[test]
+    fn test_request_without_optional_fields() {
+        let req = MessagesRequest {
+            model: "claude-sonnet-4-20250514".to_string(),
+            max_tokens: 1024,
+            system: None,
+            messages: vec![],
+            tools: None,
+            temperature: None,
+            stop_sequences: None,
+            tool_choice: None,
+        };
+        let serialized = serde_json::to_value(&req).unwrap();
+        // system serializes as null (no skip_serializing_if on it)
+        assert!(serialized["system"].is_null());
+        // All other optional fields are omitted via skip_serializing_if
+        assert!(serialized.get("tools").is_none());
+        assert!(serialized.get("temperature").is_none());
+        assert!(serialized.get("stop_sequences").is_none());
+        assert!(serialized.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn test_request_with_tool_choice_auto() {
+        let req = MessagesRequest {
+            model: "claude-sonnet-4-20250514".to_string(),
+            max_tokens: 1024,
+            system: None,
+            messages: vec![],
+            tools: None,
+            temperature: None,
+            stop_sequences: None,
+            tool_choice: Some(json!({"type": "auto"})),
+        };
+        let serialized = serde_json::to_value(&req).unwrap();
+        assert_eq!(serialized["tool_choice"]["type"], "auto");
+    }
+
+    #[test]
+    fn test_request_with_tool_choice_specific_tool() {
+        let req = MessagesRequest {
+            model: "claude-sonnet-4-20250514".to_string(),
+            max_tokens: 1024,
+            system: None,
+            messages: vec![],
+            tools: None,
+            temperature: None,
+            stop_sequences: None,
+            tool_choice: Some(json!({"type": "tool", "name": "bash"})),
+        };
+        let serialized = serde_json::to_value(&req).unwrap();
+        assert_eq!(serialized["tool_choice"]["type"], "tool");
+        assert_eq!(serialized["tool_choice"]["name"], "bash");
+    }
+
+    #[test]
+    fn test_response_stop_sequence_stop_reason() {
+        let raw = json!({
+            "id": "msg_stop_seq",
+            "content": [{ "type": "text", "text": "partial output" }],
+            "stop_reason": "stop_sequence",
+            "usage": { "input_tokens": 5, "output_tokens": 3 }
+        });
+        let resp: MessagesResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(resp.stop_reason, "stop_sequence");
+    }
+
+    #[test]
+    fn test_response_empty_content_array() {
+        let raw = json!({
+            "id": "msg_empty",
+            "content": [],
+            "stop_reason": "end_turn",
+            "usage": { "input_tokens": 1, "output_tokens": 0 }
+        });
+        let resp: MessagesResponse = serde_json::from_value(raw).unwrap();
+        assert!(resp.content.is_empty());
+        assert_eq!(resp.stop_reason, "end_turn");
+    }
+
+    #[test]
+    fn test_response_with_model_field() {
+        // Extra fields like "model" should be silently ignored
+        let raw = json!({
+            "id": "msg_model",
+            "content": [{ "type": "text", "text": "hi" }],
+            "stop_reason": "end_turn",
+            "usage": { "input_tokens": 1, "output_tokens": 1 },
+            "model": "claude-sonnet-4-20250514"
+        });
+        let resp: MessagesResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(resp.id, "msg_model");
+    }
+
+    #[test]
+    fn test_response_null_stop_reason() {
+        // Streaming edge case: stop_reason may be missing entirely
+        let raw = json!({
+            "id": "msg_null_sr",
+            "content": [{ "type": "text", "text": "streaming..." }],
+            "usage": { "input_tokens": 1, "output_tokens": 1 }
+        });
+        let resp: MessagesResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(resp.stop_reason, "");
+    }
+
+    #[test]
+    fn test_content_block_unknown_type_ignored() {
+        // An unknown content block type should deserialize without crashing
+        let raw = json!({
+            "id": "msg_unk",
+            "content": [
+                { "type": "text", "text": "hello" },
+                { "type": "thinking", "thinking": "some internal thought" },
+                { "type": "text", "text": "world" }
+            ],
+            "stop_reason": "end_turn",
+            "usage": { "input_tokens": 10, "output_tokens": 5 }
+        });
+        let resp: MessagesResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(resp.content.len(), 3);
+        assert!(matches!(&resp.content[0], ContentBlock::Text { text } if text == "hello"));
+        assert_eq!(resp.content[1], ContentBlock::Unknown);
+        assert!(matches!(&resp.content[2], ContentBlock::Text { text } if text == "world"));
+    }
+
+    #[test]
+    fn test_tool_result_with_is_error_true() {
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "tu_err".to_string(),
+            content: "command failed".to_string(),
+            is_error: Some(true),
+        };
+        let serialized = serde_json::to_value(&block).unwrap();
+        assert_eq!(serialized["is_error"], true);
+        assert_eq!(serialized["tool_use_id"], "tu_err");
+        assert_eq!(serialized["content"], "command failed");
+    }
+
+    #[test]
+    fn test_tool_result_with_is_error_none() {
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "tu_ok".to_string(),
+            content: "success".to_string(),
+            is_error: None,
+        };
+        let serialized = serde_json::to_value(&block).unwrap();
+        assert!(serialized.get("is_error").is_none());
     }
 }

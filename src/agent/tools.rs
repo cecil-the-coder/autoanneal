@@ -929,4 +929,486 @@ mod tests {
             "expected InvalidInput for missing field, got: {err}"
         );
     }
+
+    // ===================================================================
+    // Path security edge-case tests
+    // ===================================================================
+
+    #[test]
+    #[cfg(unix)]
+    fn test_symlink_escape() {
+        let (exec, tmp) = make_executor();
+        // Create a symlink inside working_dir that points outside it.
+        let outside = tempfile::tempdir().expect("create outside dir");
+        let outside_file = outside.path().join("secret.txt");
+        fs::write(&outside_file, "top secret").unwrap();
+
+        let link_path = tmp.path().join("escape_link");
+        std::os::unix::fs::symlink(&outside_file, &link_path).unwrap();
+
+        let err = exec.read_file("escape_link", None, None).unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidInput(_)),
+            "symlink escaping working_dir should be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_absolute_path_inside_working_dir() {
+        let (exec, tmp) = make_executor();
+        let file = tmp.path().join("inside.txt");
+        fs::write(&file, "I am inside").unwrap();
+
+        // Use the full absolute path.
+        let abs = file.to_string_lossy().to_string();
+        let content = exec.read_file(&abs, None, None).unwrap();
+        assert_eq!(content, "I am inside");
+    }
+
+    #[test]
+    fn test_path_with_dot_components() {
+        let (exec, tmp) = make_executor();
+        let sub = tmp.path().join("foo");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("bar.txt"), "dot-dot").unwrap();
+
+        let content = exec.read_file("./foo/./bar.txt", None, None).unwrap();
+        assert_eq!(content, "dot-dot");
+    }
+
+    #[test]
+    fn test_double_slash_path() {
+        let (exec, tmp) = make_executor();
+        let sub = tmp.path().join("foo");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("bar.txt"), "double slash").unwrap();
+
+        let content = exec.read_file("foo//bar.txt", None, None).unwrap();
+        assert_eq!(content, "double slash");
+    }
+
+    #[test]
+    fn test_safe_path_boundary() {
+        // working_dir is e.g. /tmp/abc; a sibling /tmp/abcdef must be rejected.
+        let parent = tempfile::tempdir().expect("create parent dir");
+        let wd = parent.path().join("abc");
+        fs::create_dir(&wd).unwrap();
+        let sibling = parent.path().join("abcdef");
+        fs::create_dir(&sibling).unwrap();
+        fs::write(sibling.join("secret.txt"), "nope").unwrap();
+
+        let exec = ToolExecutor::new(wd, Duration::from_secs(30));
+        let sibling_file = sibling.join("secret.txt");
+        let err = exec
+            .read_file(&sibling_file.to_string_lossy(), None, None)
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidInput(_)),
+            "sibling path sharing prefix should be rejected, got: {err}"
+        );
+    }
+
+    // ===================================================================
+    // read_file edge-case tests
+    // ===================================================================
+
+    #[test]
+    fn test_read_file_unicode_filename() {
+        let (exec, tmp) = make_executor();
+        let file = tmp.path().join("日本語.txt");
+        fs::write(&file, "unicode name works").unwrap();
+
+        let content = exec.read_file("日本語.txt", None, None).unwrap();
+        assert_eq!(content, "unicode name works");
+    }
+
+    #[test]
+    fn test_read_file_no_trailing_newline() {
+        let (exec, tmp) = make_executor();
+        fs::write(tmp.path().join("notail.txt"), "line1\nline2").unwrap();
+
+        let content = exec.read_file("notail.txt", None, None).unwrap();
+        assert_eq!(content, "line1\nline2");
+    }
+
+    #[test]
+    fn test_read_file_offset_0_limit_0() {
+        let (exec, tmp) = make_executor();
+        fs::write(tmp.path().join("some.txt"), "a\nb\nc\n").unwrap();
+
+        let content = exec.read_file("some.txt", Some(0), Some(0)).unwrap();
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn test_read_file_limit_exceeds_file() {
+        let (exec, tmp) = make_executor();
+        fs::write(tmp.path().join("short.txt"), "one\ntwo\nthree").unwrap();
+
+        let content = exec.read_file("short.txt", Some(0), Some(9999)).unwrap();
+        assert_eq!(content, "one\ntwo\nthree");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_read_file_readonly_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let (exec, tmp) = make_executor();
+        let file = tmp.path().join("noperm.txt");
+        fs::write(&file, "secret").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = exec.read_file("noperm.txt", None, None);
+        // Restore permissions so cleanup can remove the file.
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(
+            result.is_err(),
+            "reading a 0o000 file should produce an IO error"
+        );
+    }
+
+    // ===================================================================
+    // edit_file edge-case tests
+    // ===================================================================
+
+    #[test]
+    fn test_edit_at_start_of_file() {
+        let (exec, tmp) = make_executor();
+        let file = tmp.path().join("start.txt");
+        fs::write(&file, "ABCDEF").unwrap();
+
+        exec.edit_file("start.txt", "ABC", "XYZ").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "XYZDEF");
+    }
+
+    #[test]
+    fn test_edit_at_end_of_file() {
+        let (exec, tmp) = make_executor();
+        let file = tmp.path().join("end.txt");
+        fs::write(&file, "ABCDEF").unwrap();
+
+        exec.edit_file("end.txt", "DEF", "123").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "ABC123");
+    }
+
+    #[test]
+    fn test_edit_spanning_multiple_lines() {
+        let (exec, tmp) = make_executor();
+        let file = tmp.path().join("multi.txt");
+        fs::write(&file, "line1\nline2\nline3\n").unwrap();
+
+        exec.edit_file("multi.txt", "line1\nline2", "replaced")
+            .unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "replaced\nline3\n");
+    }
+
+    #[test]
+    fn test_edit_changes_line_count() {
+        let (exec, tmp) = make_executor();
+        let file = tmp.path().join("grow.txt");
+        fs::write(&file, "before\noriginal\nafter\n").unwrap();
+
+        exec.edit_file("grow.txt", "original", "one\ntwo\nthree")
+            .unwrap();
+        let updated = fs::read_to_string(&file).unwrap();
+        assert_eq!(updated, "before\none\ntwo\nthree\nafter\n");
+    }
+
+    #[test]
+    fn test_edit_removes_lines() {
+        let (exec, tmp) = make_executor();
+        let file = tmp.path().join("shrink.txt");
+        fs::write(&file, "keep\nremove1\nremove2\nremove3\nkeep2\n").unwrap();
+
+        exec.edit_file("shrink.txt", "remove1\nremove2\nremove3", "single")
+            .unwrap();
+        let updated = fs::read_to_string(&file).unwrap();
+        assert_eq!(updated, "keep\nsingle\nkeep2\n");
+    }
+
+    #[test]
+    fn test_edit_old_equals_new() {
+        let (exec, tmp) = make_executor();
+        let file = tmp.path().join("noop.txt");
+        fs::write(&file, "unchanged content here").unwrap();
+
+        // Same old and new should succeed (it is a valid single match).
+        exec.edit_file("noop.txt", "unchanged", "unchanged")
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "unchanged content here"
+        );
+    }
+
+    #[test]
+    fn test_edit_empty_old_string() {
+        let (exec, tmp) = make_executor();
+        let file = tmp.path().join("empty_old.txt");
+        fs::write(&file, "some content").unwrap();
+
+        // Empty string matches at every position in a non-empty file,
+        // so the match count will exceed 1 and be rejected as ambiguous.
+        let err = exec
+            .edit_file("empty_old.txt", "", "inserted")
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidInput(_)),
+            "empty old_string should be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_edit_regex_special_chars() {
+        let (exec, tmp) = make_executor();
+        let file = tmp.path().join("regex.txt");
+        fs::write(&file, "match this: .*+?()[]\n").unwrap();
+
+        exec.edit_file("regex.txt", ".*+?()[]", "REPLACED")
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "match this: REPLACED\n"
+        );
+    }
+
+    // ===================================================================
+    // write_file edge-case tests
+    // ===================================================================
+
+    #[test]
+    fn test_write_preserves_exact_bytes() {
+        let (exec, tmp) = make_executor();
+        let content = "col1\tcol2\r\nval\x00ue\n";
+        exec.write_file("exact.bin", content).unwrap();
+
+        let on_disk = fs::read(tmp.path().join("exact.bin")).unwrap();
+        assert_eq!(on_disk, content.as_bytes());
+    }
+
+    #[test]
+    fn test_write_path_is_existing_directory() {
+        let (exec, tmp) = make_executor();
+        fs::create_dir(tmp.path().join("adir")).unwrap();
+
+        let err = exec.write_file("adir", "contents").unwrap_err();
+        assert!(
+            matches!(err, ToolError::IoError(_)),
+            "writing to an existing directory should produce an IO error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_write_unicode_content() {
+        let (exec, tmp) = make_executor();
+        let content = "日本語テスト 🦀 émojis café";
+        exec.write_file("uni.txt", content).unwrap();
+
+        let on_disk = fs::read_to_string(tmp.path().join("uni.txt")).unwrap();
+        assert_eq!(on_disk, content);
+    }
+
+    // ===================================================================
+    // run_command edge-case tests
+    // ===================================================================
+
+    #[test]
+    fn test_command_stderr_only() {
+        let (exec, _tmp) = make_executor();
+        // Command that writes to stderr and exits 0.
+        let result = exec.run_command("echo error >&2", None);
+        // The command exits 0, so it succeeds. stdout should be empty.
+        let output = result.unwrap();
+        assert!(
+            output.trim().is_empty(),
+            "stdout should be empty when only stderr is written, got: {:?}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_command_working_dir() {
+        let (exec, tmp) = make_executor();
+        let output = exec.run_command("pwd", None).unwrap();
+        let canonical_wd = tmp.path().canonicalize().unwrap();
+        assert_eq!(
+            output.trim(),
+            canonical_wd.to_string_lossy(),
+            "pwd should output the working directory"
+        );
+    }
+
+    #[test]
+    fn test_command_background_process() {
+        let (exec, _tmp) = make_executor();
+        // Background process should not block the command from returning.
+        // Redirect background stdout/stderr to /dev/null so the shell does not
+        // keep the pipe open waiting for it.
+        let output = exec
+            .run_command("sleep 100 >/dev/null 2>&1 & echo foreground", Some(Duration::from_secs(5)))
+            .unwrap();
+        assert!(output.contains("foreground"));
+    }
+
+    #[test]
+    fn test_command_killed_by_signal() {
+        let (exec, _tmp) = make_executor();
+        // A process killed by signal has a non-success exit status.
+        let err = exec.run_command("kill -9 $$", None).unwrap_err();
+        assert!(
+            matches!(err, ToolError::CommandFailed { .. }),
+            "signal-killed process should report failure, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_command_output_exact_max() {
+        let (exec, _tmp) = make_executor();
+        // Generate exactly MAX_OUTPUT_BYTES of output.
+        let cmd = format!("head -c {} /dev/zero | tr '\\0' 'A'", MAX_OUTPUT_BYTES);
+        let output = exec.run_command(&cmd, None).unwrap();
+        assert_eq!(output.len(), MAX_OUTPUT_BYTES);
+        assert!(!output.contains("[output truncated]"));
+    }
+
+    #[test]
+    fn test_command_output_max_plus_one() {
+        let (exec, _tmp) = make_executor();
+        let cmd = format!(
+            "head -c {} /dev/zero | tr '\\0' 'B'",
+            MAX_OUTPUT_BYTES + 1
+        );
+        let output = exec.run_command(&cmd, None).unwrap();
+        assert!(output.contains("[output truncated]"));
+        // The non-truncation-message portion should be exactly MAX_OUTPUT_BYTES.
+        let truncated_prefix = &output[..MAX_OUTPUT_BYTES];
+        assert!(truncated_prefix.chars().all(|c| c == 'B'));
+    }
+
+    #[test]
+    fn test_command_invalid_utf8() {
+        let (exec, _tmp) = make_executor();
+        // printf bytes that are not valid UTF-8.
+        let output = exec
+            .run_command("printf '\\x80\\x81\\xfe\\xff'", None)
+            .unwrap();
+        // from_utf8_lossy replaces invalid bytes with U+FFFD.
+        assert!(
+            output.contains('\u{FFFD}'),
+            "invalid UTF-8 should be replaced with replacement chars"
+        );
+    }
+
+    // ===================================================================
+    // execute_tool dispatch edge-case tests
+    // ===================================================================
+
+    #[test]
+    fn test_dispatch_wrong_type_for_path() {
+        let (exec, _tmp) = make_executor();
+        let err = exec
+            .execute_tool("read_file", &serde_json::json!({ "path": 123 }))
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidInput(_)),
+            "numeric path should be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_dispatch_null_required_field() {
+        let (exec, _tmp) = make_executor();
+        let err = exec
+            .execute_tool("read_file", &serde_json::json!({ "path": null }))
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidInput(_)),
+            "null path should be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_dispatch_extra_unknown_fields() {
+        let (exec, tmp) = make_executor();
+        fs::write(tmp.path().join("extra.txt"), "extra test").unwrap();
+
+        // Unknown fields should be silently ignored.
+        let result = exec
+            .execute_tool(
+                "read_file",
+                &serde_json::json!({
+                    "path": "extra.txt",
+                    "unknown_field": "ignored",
+                    "another": 42
+                }),
+            )
+            .unwrap();
+        assert_eq!(result, "extra test");
+    }
+
+    #[test]
+    fn test_dispatch_all_tools() {
+        let (exec, tmp) = make_executor();
+        // Set up a file for tools that need it.
+        fs::write(tmp.path().join("dispatch.txt"), "dispatch content").unwrap();
+
+        // read_file
+        let r = exec.execute_tool(
+            "read_file",
+            &serde_json::json!({ "path": "dispatch.txt" }),
+        );
+        assert!(r.is_ok(), "read_file dispatch failed: {:?}", r);
+
+        // write_file
+        let r = exec.execute_tool(
+            "write_file",
+            &serde_json::json!({ "path": "new_dispatch.txt", "content": "new" }),
+        );
+        assert!(r.is_ok(), "write_file dispatch failed: {:?}", r);
+
+        // edit_file
+        let r = exec.execute_tool(
+            "edit_file",
+            &serde_json::json!({
+                "path": "dispatch.txt",
+                "old_string": "dispatch content",
+                "new_string": "edited"
+            }),
+        );
+        assert!(r.is_ok(), "edit_file dispatch failed: {:?}", r);
+
+        // search_files
+        let r = exec.execute_tool(
+            "search_files",
+            &serde_json::json!({ "pattern": "*.txt" }),
+        );
+        assert!(r.is_ok(), "search_files dispatch failed: {:?}", r);
+
+        // search_content
+        let r = exec.execute_tool(
+            "search_content",
+            &serde_json::json!({ "pattern": "edited" }),
+        );
+        assert!(r.is_ok(), "search_content dispatch failed: {:?}", r);
+
+        // run_command
+        let r = exec.execute_tool(
+            "run_command",
+            &serde_json::json!({ "command": "echo hi" }),
+        );
+        assert!(r.is_ok(), "run_command dispatch failed: {:?}", r);
+    }
+
+    #[test]
+    fn test_dispatch_boolean_as_path() {
+        let (exec, _tmp) = make_executor();
+        let err = exec
+            .execute_tool("read_file", &serde_json::json!({ "path": true }))
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidInput(_)),
+            "boolean path should be rejected, got: {err}"
+        );
+    }
 }

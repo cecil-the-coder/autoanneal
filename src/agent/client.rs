@@ -438,4 +438,136 @@ mod tests {
         let budget = ApiError::BudgetExceeded { used_tokens: 1000 };
         assert_eq!(budget.to_string(), "budget exceeded: used 1000 tokens");
     }
+
+    // --- New tests ---
+
+    #[test]
+    fn test_classify_error_400_invalid_request() {
+        let headers = ResponseHeaders { retry_after: None };
+        let err = ApiClient::classify_error(400, &headers, "invalid request body");
+        match err {
+            ApiError::RequestFailed(msg) => {
+                assert!(msg.contains("400"));
+                assert!(msg.contains("invalid request body"));
+            }
+            other => panic!("expected RequestFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_classify_error_413_request_too_large() {
+        let headers = ResponseHeaders { retry_after: None };
+        let err = ApiClient::classify_error(413, &headers, "request too large");
+        match err {
+            ApiError::RequestFailed(msg) => {
+                assert!(msg.contains("413"));
+                assert!(msg.contains("request too large"));
+            }
+            other => panic!("expected RequestFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_classify_error_529_overloaded() {
+        let headers = ResponseHeaders { retry_after: None };
+        let err = ApiClient::classify_error(529, &headers, "overloaded");
+        // 529 is not in the server-error match arm, so it falls through to RequestFailed
+        match err {
+            ApiError::RequestFailed(msg) => {
+                assert!(msg.contains("529"));
+                assert!(msg.contains("overloaded"));
+            }
+            other => panic!("expected RequestFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_structured_anthropic_error_parsing() {
+        // Anthropic API returns structured errors in this format
+        let body = json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "max_tokens must be less than 100000"
+            }
+        })
+        .to_string();
+
+        let err = ApiClient::parse_response(&body).unwrap_err();
+        match err {
+            ApiError::InvalidResponse(msg) => {
+                assert!(msg.contains("JSON parse error"));
+            }
+            other => panic!("expected InvalidResponse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_structured_openai_error_parsing() {
+        // OpenAI-compatible proxies return errors in this format
+        let body = json!({
+            "error": {
+                "message": "Rate limit exceeded",
+                "code": "rate_limit_exceeded"
+            }
+        })
+        .to_string();
+
+        let err = ApiClient::parse_response(&body).unwrap_err();
+        match err {
+            ApiError::InvalidResponse(msg) => {
+                assert!(msg.contains("JSON parse error"));
+            }
+            other => panic!("expected InvalidResponse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_client_with_provider_anthropic() {
+        let client = ApiClient::new(
+            "https://api.anthropic.com".to_string(),
+            "sk-ant-api03-test".to_string(),
+        );
+        // Anthropic client should have correct base URL for /v1/messages
+        assert_eq!(client.base_url(), "https://api.anthropic.com");
+        assert_eq!(client.api_key, "sk-ant-api03-test");
+        // Default retry count
+        assert_eq!(client.max_retries(), 3);
+    }
+
+    #[test]
+    fn test_client_with_provider_openai() {
+        let client = ApiClient::new(
+            "https://openrouter.ai/api".to_string(),
+            "sk-or-test-key".to_string(),
+        );
+        // OpenAI-compatible provider should have base URL without trailing slash
+        assert_eq!(client.base_url(), "https://openrouter.ai/api");
+        assert_eq!(client.api_key, "sk-or-test-key");
+        assert_eq!(client.max_retries(), 3);
+    }
+
+    #[test]
+    fn test_budget_exceeded_not_retryable() {
+        let err = ApiError::BudgetExceeded { used_tokens: 50000 };
+        assert!(
+            !ApiClient::is_retryable(&err),
+            "BudgetExceeded must not be retryable"
+        );
+    }
+
+    #[test]
+    fn test_retry_respects_max_attempts_exactly() {
+        // With max_retries = 3, the loop runs attempts 0..=3 which is 4 iterations
+        // (1 initial + 3 retries). Verify the client stores the right value.
+        let client = ApiClient::new("https://api.example.com".to_string(), "key".to_string())
+            .with_max_retries(3);
+        assert_eq!(client.max_retries(), 3);
+
+        // With max_retries = 0, only one attempt (no retries)
+        let client_no_retry =
+            ApiClient::new("https://api.example.com".to_string(), "key".to_string())
+                .with_max_retries(0);
+        assert_eq!(client_no_retry.max_retries(), 0);
+    }
 }

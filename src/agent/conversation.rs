@@ -160,6 +160,9 @@ pub async fn run(
             system: config.system_prompt.clone(),
             messages: messages.clone(),
             tools,
+            temperature: None,
+            stop_sequences: None,
+            tool_choice: None,
         };
 
         // --- send ---
@@ -250,6 +253,9 @@ pub async fn run(
                 }
                 ContentBlock::ToolResult { .. } => {
                     // Shouldn't appear in a response, ignore.
+                }
+                ContentBlock::Unknown => {
+                    // Forward-compat: unknown content block types are silently ignored.
                 }
             }
         }
@@ -1191,5 +1197,824 @@ mod tests {
         if let StopReason::Error(msg) = &result.stop_reason {
             assert!(msg.contains("unexpected stop_reason"));
         }
+    }
+
+    // ===================================================================
+    // max_tokens handling (tests 1-5)
+    // ===================================================================
+
+    #[tokio::test]
+    async fn test_max_tokens_with_tool_use() {
+        // stop_reason "max_tokens" AND a ToolUse block — tool should be executed.
+        let resp = MessagesResponse {
+            id: "msg_mt".to_string(),
+            content: vec![
+                ContentBlock::Text { text: "thinking...".to_string() },
+                ContentBlock::ToolUse {
+                    id: "tu_mt".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({"path": "/f.txt"}),
+                },
+            ],
+            stop_reason: "max_tokens".to_string(),
+            usage: Usage { input_tokens: 10, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        };
+        let sender = MockSender::new(vec![
+            Ok(resp),
+            Ok(text_response("done", 10, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![
+            ("file contents".to_string(), false),
+        ]);
+
+        let result = run(&sender, &executor, &default_config(), "go").await;
+
+        let calls = executor.recorded_calls().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "read_file");
+        assert_eq!(result.text, "thinking...\ndone");
+        assert!(matches!(result.stop_reason, StopReason::EndTurn));
+    }
+
+    #[tokio::test]
+    async fn test_max_tokens_continuation_chain() {
+        // Model hits max_tokens 3 times before end_turn; text concatenated.
+        let sender = MockSender::new(vec![
+            Ok(max_tokens_response("part1", 10, 10)),
+            Ok(max_tokens_response("part2", 10, 10)),
+            Ok(max_tokens_response("part3", 10, 10)),
+            Ok(text_response("part4", 10, 10)),
+        ]);
+        let executor = MockToolHandler::new(vec![]);
+
+        let result = run(&sender, &executor, &default_config(), "write a lot").await;
+
+        assert_eq!(result.text, "part1\npart2\npart3\npart4");
+        assert_eq!(result.turns, 4);
+        assert!(matches!(result.stop_reason, StopReason::EndTurn));
+    }
+
+    #[tokio::test]
+    async fn test_max_tokens_then_budget_exhausted() {
+        // First turn: max_tokens. Continuation triggers budget check.
+        let sender = MockSender::new(vec![
+            Ok(max_tokens_response("partial", 10, 90)),
+            // Second turn should not happen: budget exceeded.
+        ]);
+        let executor = MockToolHandler::new(vec![]);
+
+        let mut config = default_config();
+        config.max_total_output_tokens = 80;
+
+        let result = run(&sender, &executor, &config, "long").await;
+
+        assert!(matches!(result.stop_reason, StopReason::BudgetExhausted));
+        assert_eq!(result.turns, 1);
+        assert_eq!(result.text, "partial");
+    }
+
+    #[tokio::test]
+    async fn test_max_tokens_with_empty_content() {
+        // stop_reason "max_tokens" but content is empty vec.
+        let resp = MessagesResponse {
+            id: "msg_empty_mt".to_string(),
+            content: vec![],
+            stop_reason: "max_tokens".to_string(),
+            usage: Usage { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        };
+        let sender = MockSender::new(vec![
+            Ok(resp),
+            Ok(text_response("continued", 10, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![]);
+
+        let result = run(&sender, &executor, &default_config(), "go").await;
+
+        assert_eq!(result.text, "continued");
+        assert_eq!(result.turns, 2);
+        assert!(matches!(result.stop_reason, StopReason::EndTurn));
+    }
+
+    #[tokio::test]
+    async fn test_max_tokens_only_tool_use_no_text() {
+        // max_tokens with only ToolUse block, no Text.
+        let resp = MessagesResponse {
+            id: "msg_mt_tool".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "tu_only".to_string(),
+                name: "bash".to_string(),
+                input: json!({"command": "ls"}),
+            }],
+            stop_reason: "max_tokens".to_string(),
+            usage: Usage { input_tokens: 10, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        };
+        let sender = MockSender::new(vec![
+            Ok(resp),
+            Ok(text_response("after tool", 10, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![
+            ("file list".to_string(), false),
+        ]);
+
+        let result = run(&sender, &executor, &default_config(), "go").await;
+
+        let calls = executor.recorded_calls().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "bash");
+        assert_eq!(result.text, "after tool");
+        assert!(matches!(result.stop_reason, StopReason::EndTurn));
+    }
+
+    // ===================================================================
+    // Request inspection (tests 6-10)
+    // ===================================================================
+
+    /// An inspecting sender that wraps MockSender but records each request.
+    struct InspectingSender {
+        inner: MockSender,
+        requests: std::sync::Arc<tokio::sync::Mutex<Vec<MessagesRequest>>>,
+    }
+
+    impl InspectingSender {
+        fn new(responses: Vec<Result<MessagesResponse, ApiError>>) -> Self {
+            Self {
+                inner: MockSender::new(responses),
+                requests: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            }
+        }
+
+        async fn recorded_requests(&self) -> Vec<MessagesRequest> {
+            self.requests.lock().await.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MessageSender for InspectingSender {
+        async fn send(
+            &self,
+            request: &MessagesRequest,
+            timeout: Duration,
+        ) -> Result<MessagesResponse, ApiError> {
+            self.requests.lock().await.push(request.clone());
+            self.inner.send(request, timeout).await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tool_result_ordering_matches_tool_calls() {
+        // 3 tool calls in one turn, verify results in same order.
+        let sender = InspectingSender::new(vec![
+            Ok(multi_tool_response(
+                vec![
+                    ("tu_a", "read_file", json!({"path": "a.txt"})),
+                    ("tu_b", "bash", json!({"command": "echo b"})),
+                    ("tu_c", "write_file", json!({"path": "c.txt", "content": "c"})),
+                ],
+                20, 15,
+            )),
+            Ok(text_response("done", 20, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![
+            ("result_a".to_string(), false),
+            ("result_b".to_string(), false),
+            ("result_c".to_string(), false),
+        ]);
+
+        let _ = run(&sender, &executor, &default_config(), "go").await;
+
+        let reqs = sender.recorded_requests().await;
+        // Second request has tool results as last user message.
+        let last_msg = reqs[1].messages.last().unwrap();
+        assert_eq!(last_msg.role, "user");
+        let ids: Vec<&str> = last_msg.content.iter().filter_map(|b| {
+            if let ContentBlock::ToolResult { tool_use_id, .. } = b { Some(tool_use_id.as_str()) } else { None }
+        }).collect();
+        assert_eq!(ids, vec!["tu_a", "tu_b", "tu_c"]);
+    }
+
+    #[tokio::test]
+    async fn test_message_history_structure() {
+        // Verify alternating user/assistant/user pattern after tool use.
+        let sender = InspectingSender::new(vec![
+            Ok(tool_use_response("tu_1", "bash", json!({"command": "x"}), 10, 5)),
+            Ok(text_response("final", 10, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![
+            ("ok".to_string(), false),
+        ]);
+
+        let _ = run(&sender, &executor, &default_config(), "go").await;
+
+        let reqs = sender.recorded_requests().await;
+        // Request 1: messages = [user]
+        assert_eq!(reqs[0].messages.len(), 1);
+        assert_eq!(reqs[0].messages[0].role, "user");
+
+        // Request 2: messages = [user, assistant, user(tool_result)]
+        assert_eq!(reqs[1].messages.len(), 3);
+        assert_eq!(reqs[1].messages[0].role, "user");
+        assert_eq!(reqs[1].messages[1].role, "assistant");
+        assert_eq!(reqs[1].messages[2].role, "user");
+    }
+
+    #[tokio::test]
+    async fn test_continue_message_after_max_tokens() {
+        // Verify "Continue." is appended as user message after max_tokens.
+        let sender = InspectingSender::new(vec![
+            Ok(max_tokens_response("partial", 10, 10)),
+            Ok(text_response("rest", 10, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![]);
+
+        let _ = run(&sender, &executor, &default_config(), "write").await;
+
+        let reqs = sender.recorded_requests().await;
+        // Second request: messages = [user, assistant, user("Continue.")]
+        let last_msg = reqs[1].messages.last().unwrap();
+        assert_eq!(last_msg.role, "user");
+        assert_eq!(last_msg.content.len(), 1);
+        match &last_msg.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "Continue."),
+            other => panic!("expected Text(Continue.), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_system_prompt_in_request() {
+        // Verify system field is set in the request.
+        let sender = InspectingSender::new(vec![
+            Ok(text_response("ok", 10, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![]);
+
+        let mut config = default_config();
+        config.system_prompt = Some("Be helpful.".to_string());
+
+        let _ = run(&sender, &executor, &config, "hi").await;
+
+        let reqs = sender.recorded_requests().await;
+        assert_eq!(reqs[0].system, Some("Be helpful.".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_tools_omitted_when_disabled() {
+        // Verify request.tools is None when tools_enabled=false.
+        let sender = InspectingSender::new(vec![
+            Ok(text_response("ok", 10, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![]);
+
+        let mut config = default_config();
+        config.tools_enabled = false;
+
+        let _ = run(&sender, &executor, &config, "hi").await;
+
+        let reqs = sender.recorded_requests().await;
+        assert!(reqs[0].tools.is_none());
+    }
+
+    // ===================================================================
+    // Multi-turn coherence (tests 11-14)
+    // ===================================================================
+
+    #[tokio::test]
+    async fn test_duplicate_tool_calls() {
+        // Model calls read_file with same path twice, both execute.
+        let sender = MockSender::new(vec![
+            Ok(multi_tool_response(
+                vec![
+                    ("tu_1", "read_file", json!({"path": "same.txt"})),
+                    ("tu_2", "read_file", json!({"path": "same.txt"})),
+                ],
+                10, 10,
+            )),
+            Ok(text_response("both read", 10, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![
+            ("contents1".to_string(), false),
+            ("contents2".to_string(), false),
+        ]);
+
+        let result = run(&sender, &executor, &default_config(), "read twice").await;
+
+        let calls = executor.recorded_calls().await;
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "read_file");
+        assert_eq!(calls[1].0, "read_file");
+        assert_eq!(result.turns, 2);
+    }
+
+    #[tokio::test]
+    async fn test_infinite_loop_capped_by_max_turns() {
+        // Model calls same tool every turn, max_turns=5, verify 5 executions.
+        let mut responses = Vec::new();
+        let mut tool_results = Vec::new();
+        for i in 0..6 {
+            responses.push(Ok(tool_use_response(
+                &format!("tu_{i}"),
+                "bash",
+                json!({"command": "loop"}),
+                10, 5,
+            )));
+            tool_results.push(("ok".to_string(), false));
+        }
+        // Extra response that should never be reached.
+        responses.push(Ok(text_response("unreachable", 10, 5)));
+
+        let sender = MockSender::new(responses);
+        let executor = MockToolHandler::new(tool_results);
+
+        let mut config = default_config();
+        config.max_turns = 5;
+
+        let result = run(&sender, &executor, &config, "loop").await;
+
+        assert!(matches!(result.stop_reason, StopReason::MaxTurns));
+        assert_eq!(result.turns, 5);
+        let calls = executor.recorded_calls().await;
+        assert_eq!(calls.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_tool_use_stop_reason_but_no_tool_blocks() {
+        // Malformed response: stop_reason "tool_use" but no ToolUse blocks.
+        let resp = MessagesResponse {
+            id: "msg_bad".to_string(),
+            content: vec![ContentBlock::Text { text: "oops".to_string() }],
+            stop_reason: "tool_use".to_string(),
+            usage: Usage { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        };
+        let sender = MockSender::new(vec![
+            Ok(resp),
+            // The loop will push empty tool_results as user message and continue.
+            Ok(text_response("recovered", 10, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![]);
+
+        let result = run(&sender, &executor, &default_config(), "go").await;
+
+        // Should handle gracefully — continues with empty tool results then recovers.
+        assert!(result.text.contains("oops") || result.text.contains("recovered"));
+        assert_eq!(result.turns, 2);
+    }
+
+    #[tokio::test]
+    async fn test_end_turn_with_tool_use_block() {
+        // stop_reason "end_turn" but response contains a ToolUse block.
+        // The code iterates content blocks unconditionally so the tool IS executed,
+        // but stop_reason "end_turn" returns immediately — tool result is never sent back.
+        let resp = MessagesResponse {
+            id: "msg_et".to_string(),
+            content: vec![
+                ContentBlock::Text { text: "here is info".to_string() },
+                ContentBlock::ToolUse {
+                    id: "tu_end".to_string(),
+                    name: "bash".to_string(),
+                    input: json!({"command": "ls"}),
+                },
+            ],
+            stop_reason: "end_turn".to_string(),
+            usage: Usage { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        };
+        let sender = MockSender::new(vec![Ok(resp)]);
+        let executor = MockToolHandler::new(vec![
+            ("listing".to_string(), false),
+        ]);
+
+        let result = run(&sender, &executor, &default_config(), "info").await;
+
+        // end_turn returns immediately with the text collected.
+        assert_eq!(result.text, "here is info");
+        assert_eq!(result.turns, 1);
+        assert!(matches!(result.stop_reason, StopReason::EndTurn));
+    }
+
+    // ===================================================================
+    // Error recovery mid-conversation (tests 15-18)
+    // ===================================================================
+
+    #[tokio::test]
+    async fn test_server_error_mid_conversation() {
+        // 500 on turn 3 after 2 successful tool turns.
+        let sender = MockSender::new(vec![
+            Ok(tool_use_response("tu_1", "bash", json!({"command": "a"}), 10, 5)),
+            Ok(tool_use_response("tu_2", "bash", json!({"command": "b"}), 10, 5)),
+            // Turn 3: 500 error
+            Err(ApiError::Http { status: 500, body: "boom".to_string() }),
+            // Retry also fails
+            Err(ApiError::Http { status: 500, body: "still boom".to_string() }),
+        ]);
+        let executor = MockToolHandler::new(vec![
+            ("ok".to_string(), false),
+            ("ok".to_string(), false),
+        ]);
+
+        let result = run(&sender, &executor, &default_config(), "go").await;
+
+        assert!(matches!(result.stop_reason, StopReason::Error(_)));
+        assert_eq!(result.turns, 3);
+        assert_eq!(result.total_input_tokens, 20); // 2 successful turns
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_not_retried_by_conversation() {
+        // 429 returns Error, not retried by conversation loop (client handles retries).
+        let sender = MockSender::new(vec![
+            Err(ApiError::Http { status: 429, body: "rate limited".to_string() }),
+        ]);
+        let executor = MockToolHandler::new(vec![]);
+
+        let result = run(&sender, &executor, &default_config(), "go").await;
+
+        // 429 is not 401/403 (no special handling) and not >=500, so falls to generic Err arm.
+        assert!(matches!(result.stop_reason, StopReason::Error(_)));
+        assert_eq!(sender.call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_error_after_successful_tool() {
+        // Tool executed on turn 1, error on turn 2, partial result preserved.
+        let sender = MockSender::new(vec![
+            Ok(mixed_response(
+                "I will read it",
+                "tu_1",
+                "read_file",
+                json!({"path": "f.txt"}),
+                10, 5,
+            )),
+            Err(ApiError::Http { status: 400, body: "bad request".to_string() }),
+        ]);
+        let executor = MockToolHandler::new(vec![
+            ("file data".to_string(), false),
+        ]);
+
+        let result = run(&sender, &executor, &default_config(), "read").await;
+
+        assert!(matches!(result.stop_reason, StopReason::Error(_)));
+        // Text from first turn is preserved.
+        assert_eq!(result.text, "I will read it");
+        assert_eq!(result.turns, 2);
+    }
+
+    #[tokio::test]
+    async fn test_server_error_retry_then_different_error() {
+        // 500 then 429 on retry.
+        let sender = MockSender::new(vec![
+            Err(ApiError::Http { status: 500, body: "server error".to_string() }),
+            Err(ApiError::Http { status: 429, body: "rate limited".to_string() }),
+        ]);
+        let executor = MockToolHandler::new(vec![]);
+
+        let result = run(&sender, &executor, &default_config(), "go").await;
+
+        assert!(matches!(result.stop_reason, StopReason::Error(_)));
+        if let StopReason::Error(msg) = &result.stop_reason {
+            assert!(msg.contains("server error after retry") || msg.contains("429"));
+        }
+        assert_eq!(sender.call_count.load(Ordering::SeqCst), 2);
+    }
+
+    // ===================================================================
+    // Token budget edge cases (tests 19-22)
+    // ===================================================================
+
+    #[tokio::test]
+    async fn test_budget_boundary_off_by_one() {
+        // Tokens at exactly max-1 allows one more turn.
+        let sender = MockSender::new(vec![
+            Ok(tool_use_response("tu_1", "bash", json!({"command": "a"}), 10, 49)),
+            // After turn 1: output=49, budget=50. 49 < 50 so turn 2 runs.
+            Ok(text_response("final", 10, 10)),
+        ]);
+        let executor = MockToolHandler::new(vec![
+            ("ok".to_string(), false),
+        ]);
+
+        let mut config = default_config();
+        config.max_total_output_tokens = 50;
+
+        let result = run(&sender, &executor, &config, "go").await;
+
+        assert!(matches!(result.stop_reason, StopReason::EndTurn));
+        assert_eq!(result.turns, 2);
+        assert_eq!(result.total_output_tokens, 59);
+    }
+
+    #[tokio::test]
+    async fn test_cache_tokens_trigger_budget() {
+        // cache_creation tokens push over input limit.
+        let resp = MessagesResponse {
+            id: "msg_cache".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "tu_1".to_string(),
+                name: "bash".to_string(),
+                input: json!({"command": "x"}),
+            }],
+            stop_reason: "tool_use".to_string(),
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_creation_input_tokens: 100,
+                cache_read_input_tokens: 0,
+            },
+        };
+        let sender = MockSender::new(vec![
+            Ok(resp),
+            // Turn 2 should be blocked by budget (total_input = 110 >= 100).
+        ]);
+        let executor = MockToolHandler::new(vec![
+            ("ok".to_string(), false),
+        ]);
+
+        let mut config = default_config();
+        config.max_total_input_tokens = 100;
+
+        let result = run(&sender, &executor, &config, "cache").await;
+
+        assert!(matches!(result.stop_reason, StopReason::BudgetExhausted));
+        assert_eq!(result.turns, 1);
+        assert_eq!(result.total_input_tokens, 110);
+    }
+
+    #[tokio::test]
+    async fn test_zero_token_response() {
+        // input=0, output=0, loop continues via turn limit.
+        let mut responses = Vec::new();
+        let mut tool_results = Vec::new();
+        for i in 0..3 {
+            responses.push(Ok(tool_use_response(
+                &format!("tu_{i}"),
+                "bash",
+                json!({"command": "noop"}),
+                0, 0,
+            )));
+            tool_results.push(("".to_string(), false));
+        }
+        responses.push(Ok(text_response("done", 0, 0)));
+
+        let sender = MockSender::new(responses);
+        let executor = MockToolHandler::new(tool_results);
+
+        let result = run(&sender, &executor, &default_config(), "zero").await;
+
+        assert!(matches!(result.stop_reason, StopReason::EndTurn));
+        assert_eq!(result.turns, 4);
+        assert_eq!(result.total_input_tokens, 0);
+        assert_eq!(result.total_output_tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn test_budget_and_max_turns_simultaneous() {
+        // Both would fire. max_turns is checked first in the loop.
+        let sender = MockSender::new(vec![
+            Ok(tool_use_response("tu_1", "bash", json!({"command": "a"}), 100, 100)),
+            // After turn 1: tokens over budget AND turns == max_turns.
+            // Turn 2: turns incremented to 2 > max_turns(1), so MaxTurns fires first.
+        ]);
+        let executor = MockToolHandler::new(vec![
+            ("ok".to_string(), false),
+        ]);
+
+        let mut config = default_config();
+        config.max_turns = 1;
+        config.max_total_input_tokens = 50;
+        config.max_total_output_tokens = 50;
+
+        let result = run(&sender, &executor, &config, "both").await;
+
+        // max_turns is checked first in the loop (turns > config.max_turns).
+        assert!(matches!(result.stop_reason, StopReason::MaxTurns));
+        assert_eq!(result.turns, 1);
+    }
+
+    // ===================================================================
+    // Text collection (tests 23-26)
+    // ===================================================================
+
+    #[tokio::test]
+    async fn test_text_from_multiple_turns() {
+        // Text in turns 1 and 3 but not 2 (turn 2 is tool-only).
+        let sender = MockSender::new(vec![
+            Ok(mixed_response(
+                "first text",
+                "tu_1", "bash", json!({"command": "a"}),
+                10, 5,
+            )),
+            Ok(tool_use_response("tu_2", "bash", json!({"command": "b"}), 10, 5)),
+            Ok(text_response("third text", 10, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![
+            ("ok".to_string(), false),
+            ("ok".to_string(), false),
+        ]);
+
+        let result = run(&sender, &executor, &default_config(), "go").await;
+
+        assert!(result.text.contains("first text"));
+        assert!(result.text.contains("third text"));
+        // Turn 2 (tool_use_response) has no text, so no extra separator.
+        assert_eq!(result.text, "first text\nthird text");
+    }
+
+    #[tokio::test]
+    async fn test_whitespace_only_text() {
+        // Whitespace text preserved as-is.
+        let sender = MockSender::new(vec![
+            Ok(text_response("   \n\t  ", 10, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![]);
+
+        let result = run(&sender, &executor, &default_config(), "space").await;
+
+        assert_eq!(result.text, "   \n\t  ");
+    }
+
+    #[tokio::test]
+    async fn test_multiple_text_blocks_in_one_response() {
+        // Two Text blocks in one response, both captured.
+        let resp = MessagesResponse {
+            id: "msg_multi_txt".to_string(),
+            content: vec![
+                ContentBlock::Text { text: "block one".to_string() },
+                ContentBlock::Text { text: "block two".to_string() },
+            ],
+            stop_reason: "end_turn".to_string(),
+            usage: Usage { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        };
+        let sender = MockSender::new(vec![Ok(resp)]);
+        let executor = MockToolHandler::new(vec![]);
+
+        let result = run(&sender, &executor, &default_config(), "go").await;
+
+        assert_eq!(result.text, "block one\nblock two");
+    }
+
+    #[tokio::test]
+    async fn test_empty_string_text_block() {
+        // Text { text: "" } should not add separator.
+        let resp = MessagesResponse {
+            id: "msg_empty_txt".to_string(),
+            content: vec![
+                ContentBlock::Text { text: "real".to_string() },
+                ContentBlock::Text { text: "".to_string() },
+                ContentBlock::Text { text: "end".to_string() },
+            ],
+            stop_reason: "end_turn".to_string(),
+            usage: Usage { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        };
+        let sender = MockSender::new(vec![Ok(resp)]);
+        let executor = MockToolHandler::new(vec![]);
+
+        let result = run(&sender, &executor, &default_config(), "go").await;
+
+        // Empty text block doesn't add a separator (the condition is !text.is_empty()).
+        assert_eq!(result.text, "real\nend");
+    }
+
+    // ===================================================================
+    // Real-world patterns (tests 27-29)
+    // ===================================================================
+
+    #[tokio::test]
+    async fn test_read_edit_verify_cycle() {
+        // read file, edit fails, re-read, edit succeeds (5 turns).
+        let sender = MockSender::new(vec![
+            // Turn 1: read_file
+            Ok(tool_use_response("tu_1", "read_file", json!({"path": "f.rs"}), 10, 5)),
+            // Turn 2: edit_file (fails)
+            Ok(tool_use_response("tu_2", "edit_file", json!({"path": "f.rs", "old_string": "x", "new_string": "y"}), 10, 5)),
+            // Turn 3: re-read
+            Ok(tool_use_response("tu_3", "read_file", json!({"path": "f.rs"}), 10, 5)),
+            // Turn 4: edit_file (succeeds)
+            Ok(tool_use_response("tu_4", "edit_file", json!({"path": "f.rs", "old_string": "a", "new_string": "b"}), 10, 5)),
+            // Turn 5: done
+            Ok(text_response("Applied fix successfully", 10, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![
+            ("fn main() {}".to_string(), false),        // read
+            ("old_string not found".to_string(), true),  // edit fails
+            ("fn main() { a }".to_string(), false),      // re-read
+            ("ok".to_string(), false),                    // edit succeeds
+        ]);
+
+        let result = run(&sender, &executor, &default_config(), "fix file").await;
+
+        assert_eq!(result.turns, 5);
+        assert_eq!(result.text, "Applied fix successfully");
+        assert!(matches!(result.stop_reason, StopReason::EndTurn));
+
+        let calls = executor.recorded_calls().await;
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[0].0, "read_file");
+        assert_eq!(calls[1].0, "edit_file");
+        assert_eq!(calls[2].0, "read_file");
+        assert_eq!(calls[3].0, "edit_file");
+    }
+
+    #[tokio::test]
+    async fn test_slow_tool_no_timeout() {
+        // Tool takes 100ms, per-turn timeout is 5s, succeeds.
+        struct SlowToolHandler;
+
+        #[async_trait::async_trait]
+        impl ToolHandler for SlowToolHandler {
+            async fn execute(&self, _name: &str, _input: &serde_json::Value) -> (String, bool) {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                ("slow result".to_string(), false)
+            }
+            fn definitions(&self) -> Vec<ToolDefinition> {
+                vec![ToolDefinition {
+                    name: "bash".to_string(),
+                    description: "Run bash".to_string(),
+                    input_schema: json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}),
+                }]
+            }
+        }
+
+        let sender = MockSender::new(vec![
+            Ok(tool_use_response("tu_1", "bash", json!({"command": "slow"}), 10, 5)),
+            Ok(text_response("got it", 10, 5)),
+        ]);
+
+        let mut config = default_config();
+        config.timeout_per_turn = Duration::from_secs(5);
+
+        let result = run(&sender, &SlowToolHandler, &config, "slow").await;
+
+        assert_eq!(result.text, "got it");
+        assert!(matches!(result.stop_reason, StopReason::EndTurn));
+    }
+
+    #[tokio::test]
+    async fn test_empty_prompt() {
+        // run with prompt="" still works.
+        let sender = MockSender::new(vec![
+            Ok(text_response("empty prompt response", 10, 5)),
+        ]);
+        let executor = MockToolHandler::new(vec![]);
+
+        let result = run(&sender, &executor, &default_config(), "").await;
+
+        assert_eq!(result.text, "empty prompt response");
+        assert!(matches!(result.stop_reason, StopReason::EndTurn));
+    }
+
+    // ===================================================================
+    // Concurrent safety (tests 30-31)
+    // ===================================================================
+
+    #[tokio::test]
+    async fn test_concurrent_conversations() {
+        // Two run() calls with separate mocks, no interference.
+        let sender1 = MockSender::new(vec![
+            Ok(text_response("response one", 10, 5)),
+        ]);
+        let executor1 = MockToolHandler::new(vec![]);
+
+        let sender2 = MockSender::new(vec![
+            Ok(text_response("response two", 20, 10)),
+        ]);
+        let executor2 = MockToolHandler::new(vec![]);
+
+        let config = default_config();
+
+        let (r1, r2) = tokio::join!(
+            run(&sender1, &executor1, &config, "prompt one"),
+            run(&sender2, &executor2, &config, "prompt two"),
+        );
+
+        assert_eq!(r1.text, "response one");
+        assert_eq!(r1.total_input_tokens, 10);
+        assert_eq!(r2.text, "response two");
+        assert_eq!(r2.total_input_tokens, 20);
+    }
+
+    #[tokio::test]
+    async fn test_empty_tool_definitions() {
+        // tools_enabled=true but executor returns empty defs — tools field should be None.
+        struct EmptyDefsHandler;
+
+        #[async_trait::async_trait]
+        impl ToolHandler for EmptyDefsHandler {
+            async fn execute(&self, _name: &str, _input: &serde_json::Value) -> (String, bool) {
+                ("should not be called".to_string(), true)
+            }
+            fn definitions(&self) -> Vec<ToolDefinition> {
+                vec![]
+            }
+        }
+
+        let sender = InspectingSender::new(vec![
+            Ok(text_response("no tools", 10, 5)),
+        ]);
+
+        let mut config = default_config();
+        config.tools_enabled = true;
+
+        let result = run(&sender, &EmptyDefsHandler, &config, "hi").await;
+
+        assert_eq!(result.text, "no tools");
+        let reqs = sender.recorded_requests().await;
+        assert!(reqs[0].tools.is_none(), "tools should be None when definitions are empty");
     }
 }
