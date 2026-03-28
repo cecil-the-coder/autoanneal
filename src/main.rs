@@ -1,4 +1,5 @@
-mod claude;
+mod agent;
+mod llm;
 mod cleanup;
 mod config;
 mod guardrails;

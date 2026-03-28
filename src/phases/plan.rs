@@ -1,4 +1,4 @@
-use crate::claude::{invoke, ClaudeInvocation};
+use crate::llm::{invoke, LlmInvocation};
 use crate::models::{Improvement, PrBody, RepoInfo};
 use crate::prompts::plan::PR_BODY_PROMPT;
 use crate::prompts::system::plan_system_prompt;
@@ -88,6 +88,7 @@ pub async fn create_pr(
     model: &str,
     budget: f64,
     critic_summary: Option<&str>,
+    context_window: u64,
 ) -> Result<PrOutput> {
     // 1. Generate PR body via Claude.
     let improvements_text = improvements
@@ -109,7 +110,7 @@ pub async fn create_pr(
 
     let prompt = PR_BODY_PROMPT.replace("{improvements}", &improvements_text);
 
-    let invocation = ClaudeInvocation {
+    let invocation = LlmInvocation {
         prompt,
         system_prompt: Some(plan_system_prompt()),
         model: model.to_string(),
@@ -119,8 +120,7 @@ pub async fn create_pr(
         tools: "",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
-        session_id: None,
-        resume_session_id: None,
+        context_window,
     };
 
     let response = invoke::<PrBody>(&invocation, Duration::from_secs(120))

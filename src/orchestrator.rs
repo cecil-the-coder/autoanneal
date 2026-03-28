@@ -24,6 +24,7 @@ use tracing::{error, info, warn};
 struct WorkItem {
     kind: WorkItemKind,
     budget_cap: f64,
+    context_window: u64,
 }
 
 enum WorkItemKind {
@@ -47,7 +48,10 @@ enum WorkItemKind {
         arch_summary: String,
         stack_info: StackInfo,
         open_prs: Vec<OpenPr>,
-        model: String,
+        model_analysis: String,
+        model_implement: String,
+        model_critic: String,
+        model_plan: String,
         max_tasks: usize,
         min_severity: crate::models::Severity,
         improve_docs: bool,
@@ -322,9 +326,10 @@ async fn run_pipeline(
         phases::recon::run(
             &repo_info,
             work_dir,
-            &config.model,
+            config.model_for("recon"),
             recon_budget,
             config.setup_command.as_deref(),
+            config.context_window,
         ),
     )
     .await
@@ -387,6 +392,7 @@ async fn run_pipeline(
         &recon_output.open_prs,
         min_severity,
         *budget_remaining,
+        config.context_window,
     );
 
     if work_items.is_empty() {
@@ -508,6 +514,7 @@ fn collect_work_items(
     open_prs: &[OpenPr],
     min_severity: &crate::models::Severity,
     budget_remaining: f64,
+    context_window: u64,
 ) -> Vec<WorkItem> {
     let mut items = Vec::new();
 
@@ -543,6 +550,7 @@ fn collect_work_items(
                     default_branch: repo_info.default_branch.clone(),
                 },
                 budget_cap: fix_budget,
+                context_window,
             });
         }
     }
@@ -561,6 +569,7 @@ fn collect_work_items(
                     fix_threshold: config.review_fix_threshold,
                 },
                 budget_cap: review_budget,
+                context_window,
             });
         }
     }
@@ -580,6 +589,7 @@ fn collect_work_items(
                 stack_info: stack_info.clone(),
             },
             budget_cap: issue_budget,
+            context_window,
         });
     }
 
@@ -619,7 +629,10 @@ fn collect_work_items(
                 arch_summary: arch_summary.to_string(),
                 stack_info: stack_info.clone(),
                 open_prs: merged_open_prs,
-                model: config.model.clone(),
+                model_analysis: config.model_for("analysis").to_string(),
+                model_implement: config.model_for("implement").to_string(),
+                model_critic: config.model_for("critic").to_string(),
+                model_plan: config.model_for("plan").to_string(),
                 max_tasks: config.max_tasks,
                 min_severity: *min_severity,
                 improve_docs: config.improve_docs,
@@ -628,6 +641,7 @@ fn collect_work_items(
                 doc_critic_threshold: config.doc_critic_threshold,
             },
             budget_cap: analysis_budget,
+            context_window,
         });
     }
 
@@ -755,6 +769,7 @@ fn spawn_work_item(
 ) {
     let item_name = item.name();
     let budget = item.budget_cap;
+    let context_window = item.context_window;
 
     join_set.spawn(async move {
         let start = Instant::now();
@@ -765,7 +780,7 @@ fn spawn_work_item(
                 let wt_name = format!("ci-fix-{}", pr.number);
                 match mgr.create_at_branch(&wt_name, &pr.branch).await {
                     Ok(wt) => {
-                        let r = phases::ci_fix::run(&pr, &repo_slug, &wt, &model, budget, &default_branch).await;
+                        let r = phases::ci_fix::run(&pr, &repo_slug, &wt, &model, budget, &default_branch, context_window).await;
                         mgr.remove(&wt).await.ok();
                         r.map(|o| (WorkItemResult::CiFix {
                             pr_number: o.pr_number,
@@ -780,7 +795,7 @@ fn spawn_work_item(
                 match mgr.create_at_branch(&wt_name, &pr.branch).await {
                     Ok(wt) => {
                         let r = phases::pr_review::run(
-                            &pr, &repo_slug, &wt, &model, budget, fix_threshold,
+                            &pr, &repo_slug, &wt, &model, budget, fix_threshold, context_window,
                         )
                         .await;
                         mgr.remove(&wt).await.ok();
@@ -812,6 +827,7 @@ fn spawn_work_item(
                             &stack_info,
                             &model,
                             budget,
+                            context_window,
                         )
                         .await;
                         mgr.remove(&wt).await.ok();
@@ -830,7 +846,10 @@ fn spawn_work_item(
                 arch_summary,
                 stack_info,
                 open_prs,
-                model: analysis_model,
+                model_analysis,
+                model_implement,
+                model_critic,
+                model_plan,
                 max_tasks,
                 min_severity,
                 improve_docs,
@@ -844,7 +863,10 @@ fn spawn_work_item(
                     &arch_summary,
                     &stack_info,
                     &open_prs,
-                    &analysis_model,
+                    &model_analysis,
+                    &model_implement,
+                    &model_critic,
+                    &model_plan,
                     max_tasks,
                     &min_severity,
                     improve_docs,
@@ -853,6 +875,7 @@ fn spawn_work_item(
                     doc_critic_threshold,
                     budget,
                     &repo_slug,
+                    context_window,
                 )
                 .await
                 .map(|(r, c)| (r, c))
@@ -884,7 +907,10 @@ async fn run_analysis_pipeline(
     arch_summary: &str,
     stack_info: &StackInfo,
     open_prs: &[OpenPr],
-    model: &str,
+    model_analysis: &str,
+    model_implement: &str,
+    model_critic: &str,
+    model_plan: &str,
     max_tasks: usize,
     min_severity: &crate::models::Severity,
     improve_docs: bool,
@@ -893,6 +919,7 @@ async fn run_analysis_pipeline(
     doc_critic_threshold: u32,
     mut budget: f64,
     _repo_slug: &str,
+    context_window: u64,
 ) -> Result<(WorkItemResult, f64)> {
     let mut cost_total = 0.0;
 
@@ -907,10 +934,11 @@ async fn run_analysis_pipeline(
             arch_summary,
             stack_info,
             open_prs,
-            model,
+            model_analysis,
             analysis_budget,
             max_tasks,
             min_severity,
+            context_window,
         ),
     )
     .await
@@ -933,10 +961,11 @@ async fn run_analysis_pipeline(
                 clone_path,
                 arch_summary,
                 stack_info,
-                model,
+                model_analysis,
                 doc_budget,
                 max_tasks,
                 min_severity,
+                context_window,
             ),
         )
         .await
@@ -1012,8 +1041,9 @@ async fn run_analysis_pipeline(
             &improvements,
             stack_info,
             &branch_name,
-            model,
+            model_implement,
             implement_budget,
+            context_window,
         ),
     )
     .await
@@ -1055,8 +1085,9 @@ async fn run_analysis_pipeline(
             phases::critic::run(
                 clone_path,
                 &repo_info.default_branch,
-                model,
+                model_critic,
                 critic_budget,
+                context_window,
             ),
         )
         .await
@@ -1122,9 +1153,10 @@ async fn run_analysis_pipeline(
             repo_info,
             &branch_name,
             &improvements,
-            model,
+            model_plan,
             plan_budget,
             critic_summary.as_deref(),
+            context_window,
         ),
     )
     .await
