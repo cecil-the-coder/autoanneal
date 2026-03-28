@@ -289,7 +289,7 @@ async fn commit_changes(clone_dir: &Path) -> Result<()> {
 /// Push changes to the remote branch.
 async fn push_changes(clone_dir: &Path, branch: &str) -> Result<()> {
     let output = tokio::process::Command::new("git")
-        .args(["push", "origin", branch])
+        .args(["push", "--force-with-lease", "origin", branch])
         .current_dir(clone_dir)
         .output()
         .await
