@@ -9,21 +9,20 @@
 5. Each item type runs its own phase pipeline independently.
 
 ```
-Preflight ──> Recon ──> collect_work_items() ──> run_work_queue()
-                                                       │
-                      ┌────────────────────────────────┤
-                      │          Concurrent JoinSet     │
-                      │                                │
-                   CI Fix      PR Review    Issue Inv.   Analysis
-                     │            │            │           │
-                  (worktree)  (worktree)   (worktree)  (clone dir)
-                     │            │            │           │
-                   fix+push   review+fix   investigate  Analysis→Plan→
-                     │            │            │        Implement→Critic→PR
-                   clean up    clean up     clean up      │
-                      │            │            │        clean up
-                      └────────────┴────────────┴─────────┘
-                                  outcomes aggregated
+Preflight ──> Recon ──> Early-exit checks ──> collect_work_items() ──> run_work_queue()
+                                                       │                              │
+                      ┌────────────────────────────────┤          Concurrent JoinSet   │
+                      │                                │                              │
+                   CI Fix      PR Review    Issue Inv.   Analysis                     │
+                     │            │            │           │                           │
+                  (worktree)  (worktree)   (worktree)  (clone dir)                    │
+                     │            │            │           │                           │
+                   fix+push   review+fix   investigate  Analysis→Plan→                │
+                     │            │            │        Implement→Critic→PR            │
+                   clean up    clean up     clean up      │                           │
+                      │            │            │        clean up                     │
+                      └────────────┴────────────┴─────────┘                            │
+                                  outcomes aggregated                                   │
 ```
 
 ## Concurrent work queue model
@@ -47,7 +46,9 @@ Implemented in `src/worktree.rs`. The `WorktreeManager` creates detached git wor
 
 Worktrees are created in `/tmp/autoanneal-<timestamp>/.worktree-<name>` and removed after the work item completes.
 
-## Phase details
+### Early-exit checks (before work queue)
+
+After Preflight, before Recon costs money:
 
 ### Phase 1: Preflight
 
@@ -72,6 +73,10 @@ No Claude calls. Pure validation and data collection:
 5. Detect tech stack by scanning for `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `pom.xml`, etc.
 6. Detect CI by scanning `.github/workflows/*.yml`.
 7. A single Claude invocation produces an architecture summary (2-3 paragraphs), identifies the primary language, and extracts build/test/lint commands.
+
+## Work item types
+
+The orchestrator (`orchestrator.rs`) defines four `WorkItemKind` variants, each with its own budget cap and execution logic. Work items run concurrently via a `JoinSet`, bounded by `--concurrency` slots (default 3).
 
 ### Phase 3: CI Fix
 
@@ -117,7 +122,7 @@ Budget: `--issue-budget` per investigation (default $3.00), up to `--max-issues`
 
 The original sequential pipeline, now running as a single work item:
 
-#### Step A: Analysis
+#### Analysis sub-phase
 
 Claude explores the codebase with read-only tools (`Read`, `Glob`, `Grep`, `Bash`) and returns structured JSON: a list of improvements, each with title, description, severity, category, affected files, estimated line count, and risk level.
 
@@ -127,29 +132,29 @@ Post-processing in Rust:
 - Apply `--min-severity` filter.
 - Sort by severity (descending), then risk (ascending).
 - Truncate to `--max-tasks`.
-- If nothing remains and `--improve-docs` is set: fall back to documentation-focused analysis.
-- If still nothing: exit 0 with "No actionable improvements found".
+- If nothing remains and `--improve-docs` is enabled: **documentation fallback** — run a second analysis pass focused on documentation improvements (README, API docs, architecture docs). If that also returns nothing: exit with no PR.
+- If nothing remains and `--improve-docs` is disabled: exit with no PR.
 
-#### Step B: Plan + Branch
+#### Plan sub-phase
 
 1. Generate branch name: `autoworker/<date>-<short-hash>` (hash derived from improvements JSON).
 2. Create branch locally.
 
-#### Step C: Implement
+#### Implement sub-phase
 
 For each improvement task, in order:
 
 1. **Verify clean state** — `git status --porcelain` must be empty.
 2. **Claude implements** — Full tool access (`Read`, `Glob`, `Grep`, `Bash`, `Edit`, `Write`). Side-effect-based; no structured output required.
 3. **Validate scope** — Parse `git diff --numstat`. Reject if:
-   - Files outside the planned allowlist were touched (tolerance: 2 extra files).
+   - Files outside the planned allowlist were touched (tolerance: `max(2, allowed_files.len() × 0.2)` extra files).
    - Total lines changed exceed 500.
    - Files were deleted without explicit plan.
    - On rejection: `git checkout . && git clean -fd`, skip task.
 4. **Build check** — Run the first build command from recon (2 min timeout). On failure: Claude gets two fix attempts ($0.50 each). Still failing: revert and skip.
 5. **Commit** — `git add -A`, commit with structured message.
 
-#### Step D: Critic Review
+#### Critic sub-phase
 
 A separate Claude invocation reviews the full diff as a skeptical reviewer. Three-pass process:
 
@@ -157,15 +162,26 @@ A separate Claude invocation reviews the full diff as a skeptical reviewer. Thre
 2. **Pass 2: Fix** (35% of critic budget, full tool access) — If verdict is `needs_work` and score is 4-7, Claude attempts to address the issues and commits fixes.
 3. **Pass 3: Re-review** (25% of critic budget) — If fixes were applied, re-reviews the updated diff for a new score.
 
-Below `--critic-threshold` (default 6): branch is deleted, no PR created. Below `--doc-critic-threshold` (default 7): same for documentation-only changes. Set to 0 to disable critic.
+Uses `--doc-critic-threshold` for documentation-only PRs (higher bar), `--critic-threshold` for code PRs. Below threshold: branch is deleted, no PR is created. Set to 0 to disable critic.
 
-#### Step E: Push + PR
+#### Push + PR creation
 
 Only executed after critic approval:
 
 1. Push branch with `--force-with-lease`.
 2. Claude generates a PR title and markdown body (no tools, single turn).
 3. Open draft PR via `gh pr create --draft` with critic review summary included.
+
+## Concurrency model
+
+The `run_work_queue` function in `orchestrator.rs`:
+
+1. Fills initial slots up to `--concurrency` (minimum 1).
+2. As each `JoinSet` task completes, frees a slot and spawns the next pending item.
+3. Each work item runs in its own `tokio::spawn` task with its own worktree (or the main clone for Analysis).
+4. Outcomes are collected and processed sequentially after all items complete.
+
+Budget is shared across all concurrent items. Actual costs are subtracted when outcomes are processed (not pre-reserved), so items may exceed their nominal cap if many run concurrently.
 
 ## Claude invocation details
 
@@ -229,22 +245,23 @@ Key fields:
 
 ## Budget and timeout allocation
 
-| Phase | Timeout | Budget | Notes |
-|-------|---------|--------|-------|
-| Preflight | 1 min | $0.00 | No Claude calls |
-| Recon | 5 min | 5% of total (Claude call) | Low effort, architecture summary |
-| Analysis | 10 min | 20% of remaining (min $0.50) | High effort, 25 turns max |
-| Plan + PR | 2 min | $0.10 (cap) | Low effort, 1 turn, no tools |
-| Implement (per task) | 30 min total | 60% of remaining | High effort, 20 turns max |
-| Build fix (per attempt) | — | $0.50 | Up to 2 attempts per task |
-| Critic review | 15 min | min(remaining, $1.50) | 3-pass: review (40%) → fix (35%) → re-review (25%) |
-| CI Fix (per PR) | 15 min | min(remaining, $2.00) | High effort, up to 100 turns |
-| PR Review (per PR) | 10 min | min(remaining, $2.00) | Critic + optional fix attempt |
-| Issue Investigation (per issue) | 15 min | min(remaining, `--issue-budget`) | Default $3.00, up to `--max-issues` per run |
+| Work item / Phase | Timeout | Budget | Notes |
+|-------------------|---------|--------|-------|
+| Preflight | 60s | $0 | No Claude calls |
+| Recon | 5 min | 5% of `--max-budget` ($0.25 at default $5) | Low effort, architecture summary |
+| **CI Fix** (per PR) | 15 min | min(remaining, $2.00) | High effort, up to 100 turns |
+| **PR Review** (per PR) | 5 min (critic) + 10 min (fix) | min(remaining, $2.00) | 30% for critic, 70% for fix |
+| **Issue Investigation** (per issue) | 15 min | min(remaining, `--issue-budget`) | Default $3.00, up to `--max-issues` per run |
+| **Analysis** sub-phase | 10 min | 20% of remaining (min $0.50) | High effort, 25 turns max |
+| **Analysis** doc fallback | 10 min | 20% of remaining (min $0.50) | Only if code analysis yields nothing and `--improve-docs` is on |
+| **Analysis** implement (per task) | 30 min | 60% of remaining | Per-task budget: remaining / tasks (cap $1.50/task) |
+| **Analysis** build fix (per attempt) | — | $0.50 | Up to 2 attempts per task |
+| **Analysis** critic | 15 min | min(remaining, $1.50) | 3-pass: review (40%) → fix (35%) → re-review (25%) |
+| **Analysis** PR creation | 2 min | min(remaining, $0.10) | Low effort, 1 turn, no tools |
 
 Concurrent work items share the global budget; costs are deducted from the remaining total as each item completes. The `--concurrency` flag (default 3) limits how many items run simultaneously.
 
-Global caps: `--max-budget` (default $5) and `--timeout` (default 30 min) apply across all phases and concurrent work items.
+Global caps: `--max-budget` (default $5) and `--timeout` (default 30 min) apply across all phases and work items.
 
 ## Guardrails
 

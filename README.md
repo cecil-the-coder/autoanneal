@@ -59,9 +59,9 @@ autoanneal <repo-url> [OPTIONS]
 | `--setup-command <cmd>` | — | Shell command run after clone (e.g. `npm install`) |
 | `--min-severity <level>` | `minor` | Filter threshold: `minor`, `moderate`, `major` |
 | `--log-level <level>` | `info` | `off`, `error`, `warn`, `info`, `debug`, `trace` |
-| `--critic-threshold <score>` | `6` | Min quality score to mark PR ready |
-| `--ci-retries <N>` | `3` | Max CI fix attempts |
 | `--output <format>` | `text` | Output format: `text` or `json` |
+| `--critic-threshold <score>` | `6` | Min critic score (1–10) to create a PR; set 0 to disable |
+| `--ci-retries <N>` | `3` | Max CI fix attempts |
 | `--fix-ci` | `true` | Fix PRs with failing CI before starting new analysis |
 | `--fix-conflicts` | `true` | Rebase PRs with merge conflicts before starting new analysis |
 | `--concurrency <N>` | `3` | Maximum concurrent work items |
@@ -70,12 +70,12 @@ autoanneal <repo-url> [OPTIONS]
 | `--doc-critic-threshold <score>` | `7` | Min critic score for documentation changes |
 | `--review-prs` | `false` | Review external (non-autoanneal) open PRs |
 | `--review-filter <filter>` | `all` | PR review filter: `all`, `labeled:<label>`, or `recent` (updated within 24h) |
-| `--review-fix-threshold <score>` | `7` | Auto-fix PR issues when critic score is below this threshold |
+| `--review-fix-threshold <score>` | `7` | If critic score below this, attempt fixes instead of just commenting |
 | `--investigate-issues <labels>` | — | Comma-separated issue labels to investigate; empty = disabled |
-| `--max-issues <N>` | `2` | Maximum issues to investigate per run |
-| `--issue-budget <USD>` | `3.00` | Budget per issue investigation |
+| `--max-issues <N>` | `2` | Max issues to investigate per run |
+| `--issue-budget <USD>` | `3.00` | Budget per issue investigation (USD) |
 | `--skip-after <N>` | `3` | Skip if no commits in N × cron interval; `0` disables |
-| `--cron-interval <MIN>` | `10` | Cron interval in minutes (used with `--skip-after`) |
+| `--cron-interval <mins>` | `10` | Cron interval in minutes (used with `--skip-after`) |
 
 ## How it works
 

@@ -838,7 +838,7 @@ async fn run_analysis_pipeline(
     let analysis_budget = (budget * 0.20).max(0.50).min(budget);
 
     let analysis_output = tokio::time::timeout(
-        Duration::from_secs(600),
+        Duration::from_secs(900),
         phases::analysis::run(
             clone_path,
             arch_summary,
@@ -865,7 +865,7 @@ async fn run_analysis_pipeline(
         info!("no code improvements found, falling back to documentation analysis");
         let doc_budget = (budget * 0.20).max(0.50).min(budget);
         let doc_output = tokio::time::timeout(
-            Duration::from_secs(600),
+            Duration::from_secs(900),
             phases::analysis::run_doc_analysis(
                 clone_path,
                 arch_summary,

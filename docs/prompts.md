@@ -70,14 +70,16 @@ All Claude invocations use `--output-format json`, `--bare`, and a custom `--sys
 
 ### CI fix (`src/prompts/ci_fix.rs`)
 
-**Purpose:** Diagnose and fix CI failures on a pull request.
+**Purpose:** Diagnose and fix CI failures (or merge conflicts) on pull requests.
 
 **Context injected:**
 - PR number and branch name (`{pr_number}`, `{branch_name}`).
-- CI logs (`{ci_logs}`).
-- PR title (`{pr_title}`).
+- Failed CI logs (fetched via `gh run view --log-failed`), truncated to 50 000 characters.
+- PR title (`{pr_title}`). For merge conflicts, a conflict diff is injected instead of CI logs.
 
-**Structured output:** No. The work is side effects (file edits). Runs the build command after fixing to verify.
+**Configuration:** High effort, 100 max turns, uses caller-provided budget. Full tool access — `Read`, `Glob`, `Grep`, `Bash`, `Edit`, `Write`.
+
+**Structured output:** No. Side effects are file edits that are automatically committed and pushed to the PR branch.
 
 ### Critic (`src/prompts/critic.rs`)
 
@@ -91,35 +93,41 @@ All Claude invocations use `--output-format json`, `--bare`, and a custom `--sys
 
 ### PR review fix (`src/prompts/pr_review.rs`)
 
-**Purpose:** Apply fixes based on a critic review that scored the PR as "needs work."
+**Purpose:** Fix issues identified by the critic when reviewing external pull requests.
 
 **Context injected:**
 - PR number and branch (`{pr_number}`, `{branch}`).
-- Critic score and summary (`{score}`, `{summary}`).
-- The diff under review (`{diff}`).
+- Critic score and summary (`{score}`, `{summary}`) from the initial read-only review.
+- The full diff under review (`{diff}`), truncated to 50 000 characters.
 
-**Structured output:** No. Makes minimal, focused changes and verifies the build.
+**Configuration:** High effort, 100 max turns, remaining budget after the critic review pass. Full tool access — `Read`, `Glob`, `Grep`, `Bash`, `Edit`, `Write`.
+
+**Structured output:** No. Side effects are file edits that are committed and pushed to the PR branch. If the push succeeds, a comment summarizing the fixes is left on the PR.
 
 ### Issue investigation (`src/prompts/issue_investigation.rs`)
 
-**Purpose:** Investigate a GitHub issue reported by a user, determine the root cause, and optionally implement a fix.
+**Purpose:** Investigate a GitHub issue, find the root cause, and implement a fix if possible.
 
 **Context injected:**
 - Issue number, title, and body (`{issue_number}`, `{issue_title}`, `{issue_body}`).
 - Architecture summary (`{arch_summary}`).
 - Build and test commands (`{build_commands}`, `{test_commands}`).
 
-**Structured output:** JSON code block with `fixed` (boolean) and `summary` (description of findings and actions taken).
+**Configuration:** High effort, 100 max turns, uses caller-provided budget. Full tool access — `Read`, `Glob`, `Grep`, `Bash`, `Edit`, `Write`.
+
+**Structured output:** Yes — JSON code block with `fixed` (boolean) and `summary` (string). If `fixed` is true, the changes are committed, pushed to a new branch, and a PR is created. If false, an investigation summary is posted as an issue comment.
 
 ### Doc analysis (`src/prompts/doc_analysis.rs`)
 
-**Purpose:** Identify documentation improvements such as missing README sections, undocumented public APIs, outdated examples, or missing architecture docs.
+**Purpose:** Identify documentation improvements as a fallback when no code improvements are found.
 
 **Context injected:**
 - Architecture summary (`{arch_summary}`).
 - Stack info (`{stack_info}`).
 
-**Structured output:** JSON code block with the same `improvements` array format as the analysis prompt.
+**Configuration:** Prompt-only — no dedicated phase runner. Invoked as part of the analysis pipeline when the primary analysis returns no results.
+
+**Structured output:** Yes — JSON code block with `improvements` array, same schema as the analysis output.
 
 ## Expected JSON output formats
 
