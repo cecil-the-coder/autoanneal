@@ -279,7 +279,7 @@ pub async fn run(
 
 async fn get_diff(clone_path: &Path, default_branch: &str) -> Result<String> {
     let diff_output = tokio::process::Command::new("git")
-        .args(["diff", &format!("{default_branch}..HEAD")])
+        .args(["diff", &format!("{default_branch}...HEAD")])
         .current_dir(clone_path)
         .output()
         .await
