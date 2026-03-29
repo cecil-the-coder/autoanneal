@@ -69,3 +69,46 @@ impl Metrics {
         String::from_utf8(buffer).unwrap()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_metrics_render() {
+        let m = Metrics::new().unwrap();
+        m.runs_total.inc();
+        m.runs_success.inc();
+
+        let output = m.render();
+        // Should be valid Prometheus text format with HELP and TYPE lines
+        assert!(output.contains("# HELP"));
+        assert!(output.contains("# TYPE"));
+        // Counter values should appear
+        assert!(output.contains("autoanneal_runs_total 1"));
+        assert!(output.contains("autoanneal_runs_success_total 1"));
+    }
+
+    #[test]
+    fn test_metrics_contain_expected_names() {
+        let m = Metrics::new().unwrap();
+        let output = m.render();
+
+        let expected_names = [
+            "autoanneal_runs_total",
+            "autoanneal_runs_success_total",
+            "autoanneal_runs_failure_total",
+            "autoanneal_runs_timeout_total",
+            "autoanneal_prs_created_total",
+            "autoanneal_active_workers",
+            "autoanneal_run_duration_seconds",
+            "autoanneal_run_cost_usd",
+            "autoanneal_webhooks_received_total",
+            "autoanneal_webhooks_triggered_total",
+        ];
+
+        for name in expected_names {
+            assert!(output.contains(name), "missing metric: {name}");
+        }
+    }
+}

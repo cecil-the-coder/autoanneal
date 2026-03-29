@@ -34,3 +34,20 @@ pub trait Executor: Send + Sync {
 
 pub mod docker;
 pub mod kubernetes;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_run_record_default() {
+        let outcome = RunOutcome {
+            exit_code: 0,
+            duration: Duration::from_secs(0),
+            result: None,
+        };
+        assert_eq!(outcome.exit_code, 0);
+        assert_eq!(outcome.duration, Duration::from_secs(0));
+        assert!(outcome.result.is_none());
+    }
+}

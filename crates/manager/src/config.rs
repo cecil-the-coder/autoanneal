@@ -313,3 +313,256 @@ pub fn load_config(path: &std::path::Path) -> anyhow::Result<ManagerConfig> {
     let config: ManagerConfig = serde_yaml::from_str(&content)?;
     Ok(config)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_repo_entry(name: &str, repo: &str) -> RepoEntry {
+        RepoEntry {
+            name: name.into(),
+            repo: repo.into(),
+            schedule: String::new(),
+            enabled: true,
+            max_budget: None,
+            timeout: None,
+            model: None,
+            model_recon: None,
+            model_analysis: None,
+            model_implement: None,
+            model_critic: None,
+            model_plan: None,
+            max_tasks: None,
+            min_severity: None,
+            log_level: None,
+            dry_run: None,
+            setup_command: None,
+            skip_after: None,
+            cron_interval: None,
+            fix_ci: None,
+            fix_conflicts: None,
+            critic_threshold: None,
+            critic_models: None,
+            improve_docs: None,
+            doc_critic_threshold: None,
+            fix_external_ci: None,
+            review_prs: None,
+            review_filter: None,
+            review_fix_threshold: None,
+            concurrency: None,
+            max_open_prs: None,
+            investigate_issues: None,
+            max_issues: None,
+            issue_budget: None,
+            context_window: None,
+        }
+    }
+
+    #[test]
+    fn test_default_config_loads() {
+        let defaults = WorkerDefaults::default();
+        assert_eq!(defaults.max_budget, "5.00");
+        assert_eq!(defaults.timeout, "30m");
+        assert_eq!(defaults.model, "sonnet");
+        assert_eq!(defaults.max_tasks, 3);
+        assert_eq!(defaults.min_severity, "minor");
+        assert_eq!(defaults.log_level, "info");
+        assert!(!defaults.dry_run);
+        assert!(defaults.fix_ci);
+        assert!(defaults.fix_conflicts);
+        assert!(defaults.improve_docs);
+        assert!(!defaults.fix_external_ci);
+        assert!(!defaults.review_prs);
+        assert_eq!(defaults.skip_after, 3);
+        assert_eq!(defaults.cron_interval, 10);
+        assert_eq!(defaults.concurrency, 3);
+        assert_eq!(defaults.max_open_prs, 5);
+        assert_eq!(defaults.context_window, 128000);
+    }
+
+    #[test]
+    fn test_repo_to_worker_args() {
+        let defaults = WorkerDefaults::default();
+        let entry = minimal_repo_entry("test-repo", "owner/repo");
+        let args = entry.to_worker_args(&defaults);
+
+        // First arg is the repo slug
+        assert_eq!(args[0], "owner/repo");
+        // Check a few key flags use defaults
+        assert!(args.contains(&"--max-budget".to_string()));
+        assert!(args.contains(&"5.00".to_string()));
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"sonnet".to_string()));
+        // Default boolean flags
+        assert!(args.contains(&"--fix-ci".to_string()));
+        assert!(args.contains(&"--fix-conflicts".to_string()));
+        assert!(args.contains(&"--improve-docs".to_string()));
+        // dry_run=false means --dry-run should NOT appear
+        assert!(!args.contains(&"--dry-run".to_string()));
+        // fix_external_ci=false means --fix-external-ci should NOT appear
+        assert!(!args.contains(&"--fix-external-ci".to_string()));
+        // review_prs=false means --review-prs should NOT appear
+        assert!(!args.contains(&"--review-prs".to_string()));
+    }
+
+    #[test]
+    fn test_repo_to_worker_args_with_overrides() {
+        let defaults = WorkerDefaults::default();
+        let mut entry = minimal_repo_entry("test-repo", "owner/repo");
+        entry.max_budget = Some("10.00".into());
+        entry.model = Some("opus".into());
+        entry.dry_run = Some(true);
+        entry.fix_ci = Some(false);
+
+        let args = entry.to_worker_args(&defaults);
+
+        // Overridden values
+        let budget_idx = args.iter().position(|a| a == "--max-budget").unwrap();
+        assert_eq!(args[budget_idx + 1], "10.00");
+
+        let model_idx = args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(args[model_idx + 1], "opus");
+
+        assert!(args.contains(&"--dry-run".to_string()));
+        assert!(args.contains(&"--no-fix-ci".to_string()));
+        assert!(!args.contains(&"--fix-ci".to_string()));
+    }
+
+    #[test]
+    fn test_repo_to_worker_args_all_fields() {
+        let defaults = WorkerDefaults::default();
+        let mut entry = minimal_repo_entry("test-repo", "owner/repo");
+        entry.max_budget = Some("15.00".into());
+        entry.timeout = Some("60m".into());
+        entry.model = Some("haiku".into());
+        entry.model_recon = Some("sonnet".into());
+        entry.model_analysis = Some("opus".into());
+        entry.model_implement = Some("sonnet".into());
+        entry.model_critic = Some("opus".into());
+        entry.model_plan = Some("haiku".into());
+        entry.max_tasks = Some(10);
+        entry.min_severity = Some("major".into());
+        entry.log_level = Some("debug".into());
+        entry.dry_run = Some(true);
+        entry.setup_command = Some("make setup".into());
+        entry.skip_after = Some(5);
+        entry.cron_interval = Some(30);
+        entry.fix_ci = Some(false);
+        entry.fix_conflicts = Some(false);
+        entry.critic_threshold = Some(8);
+        entry.critic_models = Some("opus,sonnet".into());
+        entry.improve_docs = Some(false);
+        entry.doc_critic_threshold = Some(9);
+        entry.fix_external_ci = Some(true);
+        entry.review_prs = Some(true);
+        entry.review_filter = Some("labeled".into());
+        entry.review_fix_threshold = Some(5);
+        entry.concurrency = Some(2);
+        entry.max_open_prs = Some(10);
+        entry.investigate_issues = Some("all".into());
+        entry.max_issues = Some(5);
+        entry.issue_budget = Some("8.00".into());
+        entry.context_window = Some(200000);
+
+        let args = entry.to_worker_args(&defaults);
+
+        // Verify all value flags
+        let check = |flag: &str, val: &str| {
+            let idx = args.iter().position(|a| a == flag)
+                .unwrap_or_else(|| panic!("missing flag {flag}"));
+            assert_eq!(args[idx + 1], val, "wrong value for {flag}");
+        };
+
+        check("--max-budget", "15.00");
+        check("--timeout", "60m");
+        check("--model", "haiku");
+        check("--model-recon", "sonnet");
+        check("--model-analysis", "opus");
+        check("--model-implement", "sonnet");
+        check("--model-critic", "opus");
+        check("--model-plan", "haiku");
+        check("--max-tasks", "10");
+        check("--min-severity", "major");
+        check("--log-level", "debug");
+        check("--skip-after", "5");
+        check("--cron-interval", "30");
+        check("--critic-threshold", "8");
+        check("--critic-models", "opus,sonnet");
+        check("--doc-critic-threshold", "9");
+        check("--review-filter", "labeled");
+        check("--review-fix-threshold", "5");
+        check("--concurrency", "2");
+        check("--max-open-prs", "10");
+        check("--max-issues", "5");
+        check("--issue-budget", "8.00");
+        check("--context-window", "200000");
+        check("--setup-command", "make setup");
+        check("--investigate-issues", "all");
+
+        // Boolean flags
+        assert!(args.contains(&"--no-fix-ci".to_string()));
+        assert!(args.contains(&"--no-fix-conflicts".to_string()));
+        assert!(args.contains(&"--no-improve-docs".to_string()));
+        assert!(args.contains(&"--dry-run".to_string()));
+        assert!(args.contains(&"--fix-external-ci".to_string()));
+        assert!(args.contains(&"--review-prs".to_string()));
+    }
+
+    #[test]
+    fn test_config_from_yaml() {
+        let yaml = r#"
+manager:
+  listen_addr: "0.0.0.0:9090"
+  global_concurrency: 5
+  webhook_secret: "mysecret"
+  worker_image: "myimage:v1"
+
+defaults:
+  max_budget: "10.00"
+  model: "opus"
+
+repos:
+  - name: my-repo
+    repo: owner/my-repo
+    schedule: "*/5 * * * *"
+  - name: other-repo
+    repo: owner/other-repo
+    enabled: false
+"#;
+        let config: ManagerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.manager.listen_addr, "0.0.0.0:9090");
+        assert_eq!(config.manager.global_concurrency, 5);
+        assert_eq!(config.manager.webhook_secret, "mysecret");
+        assert_eq!(config.manager.worker_image, "myimage:v1");
+        assert_eq!(config.defaults.max_budget, "10.00");
+        assert_eq!(config.defaults.model, "opus");
+        assert_eq!(config.repos.len(), 2);
+        assert_eq!(config.repos[0].name, "my-repo");
+        assert_eq!(config.repos[0].repo, "owner/my-repo");
+        assert!(config.repos[0].enabled);
+        assert!(!config.repos[1].enabled);
+    }
+
+    #[test]
+    fn test_config_defaults_applied() {
+        let yaml = r#"
+manager: {}
+repos:
+  - name: minimal
+    repo: owner/minimal
+"#;
+        let config: ManagerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.manager.listen_addr, "0.0.0.0:8080");
+        assert_eq!(config.manager.global_concurrency, 3);
+        assert_eq!(config.manager.worker_image, "autoanneal:latest");
+        assert_eq!(config.manager.result_path, "/tmp/autoanneal-result.json");
+        assert!(config.manager.docker_mode);
+        assert_eq!(config.manager.webhook_secret, "");
+        // Defaults block should get WorkerDefaults::default()
+        assert_eq!(config.defaults.max_budget, "5.00");
+        assert_eq!(config.defaults.timeout, "30m");
+        assert_eq!(config.defaults.model, "sonnet");
+        // Repo should default to enabled
+        assert!(config.repos[0].enabled);
+    }
+}
