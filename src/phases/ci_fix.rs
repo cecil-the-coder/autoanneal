@@ -108,8 +108,9 @@ pub async fn run(
         match merge_output {
             Ok(out) if out.status.success() => {
                 info!(pr_number = pr.number, default_branch = default_branch, "merged default branch successfully, no conflicts remain");
-                // Push the merge commit directly — no Claude needed
-                let push_result = commit_and_push(&clone_dir, &pr.branch).await;
+                // Push the merge commit directly — no Claude needed.
+                // git merge --no-edit already created the commit, so just push.
+                let push_result = push_branch(&clone_dir, &pr.branch).await;
                 return Ok(CiFixOutput {
                     pr_number: pr.number,
                     fixed: push_result.is_ok(),
@@ -368,7 +369,10 @@ async fn commit_and_push(clone_dir: &PathBuf, branch: &str) -> Result<()> {
         );
     }
 
-    // git push
+    push_branch(clone_dir, branch).await
+}
+
+async fn push_branch(clone_dir: &PathBuf, branch: &str) -> Result<()> {
     let output = tokio::process::Command::new("git")
         .args(["push", "--force-with-lease", "origin", &format!("HEAD:refs/heads/{branch}")])
         .current_dir(clone_dir)
@@ -381,6 +385,5 @@ async fn commit_and_push(clone_dir: &PathBuf, branch: &str) -> Result<()> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-
     Ok(())
 }
