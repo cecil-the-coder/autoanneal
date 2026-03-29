@@ -1,0 +1,29 @@
+{{- if .Values.manager.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "autoanneal.managerConfigmapName" . }}
+  labels:
+    {{- include "autoanneal.labels" . | nindent 4 }}
+    app.kubernetes.io/component: manager
+data:
+  manager.yaml: |
+    manager:
+      listen_addr: "0.0.0.0:8080"
+      global_concurrency: {{ .Values.defaults.concurrency }}
+    defaults:
+    {{- toYaml .Values.defaults | nindent 6 }}
+    repos:
+    {{- range .Values.repos }}
+      - name: {{ .name }}
+        repo: {{ .repo }}
+        {{- if .schedule }}
+        schedule: {{ .schedule }}
+        {{- end }}
+        {{- if hasKey . "enabled" }}
+        enabled: {{ .enabled }}
+        {{- else }}
+        enabled: true
+        {{- end }}
+    {{- end }}
+{{- end }}

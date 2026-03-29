@@ -134,3 +134,23 @@ serviceAccount:
   create: false
   name: ""
   annotations: {}
+
+# -- Manager mode
+# When enabled, a long-running manager Deployment is created instead
+# of per-repo CronJobs/Job resources.
+manager:
+  enabled: false
+  image:
+    repository: ghcr.io/cecil-the-coder/autoanneal-manager
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  serviceAccount:
+    create: true
+    name: ""
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"

@@ -1,0 +1,29 @@
+manager:
+  listen_addr: "0.0.0.0:8080"
+  global_concurrency: 3
+  webhook_secret: ""
+  worker_image: "autoanneal:latest"
+  result_path: "/tmp/autoanneal-result.json"
+  docker_mode: true
+
+defaults:
+  maxBudget: "5.00"
+  timeout: "30m"
+  model: "sonnet"
+  maxTasks: 3
+  minSeverity: "minor"
+  logLevel: "info"
+  fixCi: true
+  fixConflicts: true
+  criticThreshold: 6
+  improveDocs: true
+  docCriticThreshold: 7
+  concurrency: 3
+  maxOpenPrs: 5
+  contextWindow: 128000
+
+repos:
+  - name: my-service
+    repo: "myorg/my-service"
+    schedule: "*/10 * * * *"
+    enabled: true
