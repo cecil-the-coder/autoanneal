@@ -296,7 +296,11 @@ fn deserialize_openai_response(body: &str) -> Result<MessagesResponse, ProviderE
     let message = &first["message"];
     let finish_reason = first["finish_reason"]
         .as_str()
-        .unwrap_or("stop")
+        .ok_or_else(|| {
+            ProviderError::DeserializationFailed(
+                "missing or non-string 'choices[0].finish_reason' field".into(),
+            )
+        })?
         .to_string();
 
     // Map OpenAI finish_reason to Anthropic stop_reason
@@ -316,17 +320,32 @@ fn deserialize_openai_response(body: &str) -> Result<MessagesResponse, ProviderE
 
     // Tool calls
     if let Some(tool_calls) = message["tool_calls"].as_array() {
-        for tc in tool_calls {
-            let id = tc["id"].as_str().unwrap_or("").to_string();
-            let name = tc["function"]["name"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            let arguments_str = tc["function"]["arguments"]
-                .as_str()
-                .unwrap_or("{}");
-            let input: Value = serde_json::from_str(arguments_str).unwrap_or(json!({}));
-            content_blocks.push(ContentBlock::ToolUse { id, name, input });
+        for (i, tc) in tool_calls.iter().enumerate() {
+            let id = tc["id"].as_str().ok_or_else(|| {
+                ProviderError::DeserializationFailed(format!(
+                    "tool_calls[{i}]: missing or non-string 'id' field"
+                ))
+            })?;
+            let name = tc["function"]["name"].as_str().ok_or_else(|| {
+                ProviderError::DeserializationFailed(format!(
+                    "tool_calls[{i}]: missing or non-string 'function.name' field"
+                ))
+            })?;
+            let arguments_str = tc["function"]["arguments"].as_str().ok_or_else(|| {
+                ProviderError::DeserializationFailed(format!(
+                    "tool_calls[{i}]: missing or non-string 'function.arguments' field"
+                ))
+            })?;
+            let input: Value = serde_json::from_str(arguments_str).map_err(|e| {
+                ProviderError::DeserializationFailed(format!(
+                    "tool_calls[{i}]: invalid JSON in 'function.arguments': {e}"
+                ))
+            })?;
+            content_blocks.push(ContentBlock::ToolUse {
+                id: id.to_string(),
+                name: name.to_string(),
+                input,
+            });
         }
     }
 
@@ -336,9 +355,19 @@ fn deserialize_openai_response(body: &str) -> Result<MessagesResponse, ProviderE
 
     // Usage
     let usage = if let Some(usage_obj) = v.get("usage") {
+        let input_tokens = usage_obj["prompt_tokens"].as_u64().ok_or_else(|| {
+            ProviderError::DeserializationFailed(
+                "missing or non-integer 'usage.prompt_tokens' field".into(),
+            )
+        })?;
+        let output_tokens = usage_obj["completion_tokens"].as_u64().ok_or_else(|| {
+            ProviderError::DeserializationFailed(
+                "missing or non-integer 'usage.completion_tokens' field".into(),
+            )
+        })?;
         Usage {
-            input_tokens: usage_obj["prompt_tokens"].as_u64().unwrap_or(0),
-            output_tokens: usage_obj["completion_tokens"].as_u64().unwrap_or(0),
+            input_tokens,
+            output_tokens,
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 0,
         }
@@ -351,7 +380,12 @@ fn deserialize_openai_response(body: &str) -> Result<MessagesResponse, ProviderE
         }
     };
 
-    let id = v["id"].as_str().unwrap_or("").to_string();
+    let id = v["id"]
+        .as_str()
+        .ok_or_else(|| {
+            ProviderError::DeserializationFailed("missing or non-string 'id' field".into())
+        })?
+        .to_string();
 
     Ok(MessagesResponse {
         id,
@@ -922,5 +956,131 @@ mod tests {
     // -----------------------------------------------------------------------
     // Error format tests
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_openai_missing_id_returns_error() {
+        let body = json!({
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+        })
+        .to_string();
+
+        let err = Provider::OpenAi.deserialize_response(&body).unwrap_err();
+        assert!(
+            err.to_string().contains("'id'"),
+            "expected error about missing id, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_openai_missing_finish_reason_returns_error() {
+        let body = json!({
+            "id": "x",
+            "choices": [{"message": {"content": "hi"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+        })
+        .to_string();
+
+        let err = Provider::OpenAi.deserialize_response(&body).unwrap_err();
+        assert!(
+            err.to_string().contains("finish_reason"),
+            "expected error about missing finish_reason, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_openai_tool_call_missing_id_returns_error() {
+        let body = json!({
+            "id": "x",
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": "{}"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+        })
+        .to_string();
+
+        let err = Provider::OpenAi.deserialize_response(&body).unwrap_err();
+        assert!(
+            err.to_string().contains("tool_calls[0]") && err.to_string().contains("'id'"),
+            "expected error about tool_calls[0] id, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_openai_tool_call_missing_name_returns_error() {
+        let body = json!({
+            "id": "x",
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"arguments": "{}"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+        })
+        .to_string();
+
+        let err = Provider::OpenAi.deserialize_response(&body).unwrap_err();
+        assert!(
+            err.to_string().contains("tool_calls[0]")
+                && err.to_string().contains("function.name"),
+            "expected error about tool_calls[0] function.name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_openai_tool_call_invalid_arguments_returns_error() {
+        let body = json!({
+            "id": "x",
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": "not-valid-json"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+        })
+        .to_string();
+
+        let err = Provider::OpenAi.deserialize_response(&body).unwrap_err();
+        assert!(
+            err.to_string().contains("tool_calls[0]")
+                && err.to_string().contains("function.arguments"),
+            "expected error about tool_calls[0] arguments, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_openai_missing_usage_tokens_returns_error() {
+        let body = json!({
+            "id": "x",
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {}
+        })
+        .to_string();
+
+        let err = Provider::OpenAi.deserialize_response(&body).unwrap_err();
+        assert!(
+            err.to_string().contains("prompt_tokens"),
+            "expected error about prompt_tokens, got: {err}"
+        );
+    }
 
 }

@@ -31,18 +31,22 @@ impl WorktreeManager {
             let _ = self.remove(&wt_path).await;
         }
 
-        let output = tokio::process::Command::new("git")
-            .args([
-                "worktree",
-                "add",
-                "--detach",
-                &wt_path.to_string_lossy(),
-                "HEAD",
-            ])
-            .current_dir(&self.repo_dir)
-            .output()
-            .await
-            .context("failed to create worktree")?;
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            tokio::process::Command::new("git")
+                .args([
+                    "worktree",
+                    "add",
+                    "--detach",
+                    &wt_path.to_string_lossy(),
+                    "HEAD",
+                ])
+                .current_dir(&self.repo_dir)
+                .output(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("git worktree add timed out after 60s"))?
+        .context("failed to create worktree")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
