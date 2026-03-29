@@ -1708,7 +1708,7 @@ async fn run_analysis_pipeline(
             score_note,
         );
         let repo_slug = format!("{}/{}", repo_info.owner, repo_info.name);
-        if let Err(e) = crate::retry::gh_command(
+        if let Err(e) = autoanneal_lib::retry::gh_command(
             clone_path,
             &[
                 "pr", "comment",
