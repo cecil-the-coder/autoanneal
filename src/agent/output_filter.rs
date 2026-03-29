@@ -800,7 +800,10 @@ static FILTERS: &[CommandFilter] = &[
 static ANSI_REGEX: OnceLock<Regex> = OnceLock::new();
 
 fn strip_ansi_codes(s: &str) -> String {
-    let re = ANSI_REGEX.get_or_init(|| Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap());
+    let re = ANSI_REGEX.get_or_init(|| {
+        Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]")
+            .expect("hardcoded ANSI escape regex should always be valid")
+    });
     re.replace_all(s, "").into_owned()
 }
 
