@@ -216,6 +216,8 @@ pub struct ExternalPr {
     /// Number of commits on this PR whose message starts with "autoanneal:".
     #[serde(default)]
     pub autoanneal_commit_count: u64,
+    /// Whether this PR has merge conflicts (CONFLICTING mergeable status).
+    #[serde(default)]
     pub has_merge_conflicts: bool,
 }
 
