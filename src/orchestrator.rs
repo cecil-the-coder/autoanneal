@@ -22,6 +22,11 @@ use tracing::{error, info, warn};
 /// (e.g. returns a time before `UNIX_EPOCH`). Each invocation produces a
 /// unique, monotonically-increasing value so that work directory names never
 /// collide.
+/// 
+/// Uses `Ordering::Relaxed` because:
+/// - The counter is only used for uniqueness, not synchronization with other data
+/// - We only need atomic increments to avoid duplicate values during races
+/// - No happens-before relationship is required with other memory operations
 static TIMESTAMP_FALLBACK_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Return a monotonically-increasing timestamp suitable for use in directory
