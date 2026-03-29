@@ -1,0 +1,15 @@
+services:
+  manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.manager
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/config/manager.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - .env
+    environment:
+      - AUTOANNEAL_EXECUTOR=docker
+    restart: unless-stopped

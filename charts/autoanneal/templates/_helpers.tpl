@@ -42,6 +42,24 @@ Secret name: either existingSecret or the chart-created one.
 {{- end }}
 
 {{/*
+Manager ServiceAccount name.
+*/}}
+{{- define "autoanneal.managerServiceAccountName" -}}
+{{- if .Values.manager.serviceAccount.name -}}
+{{ .Values.manager.serviceAccount.name }}
+{{- else -}}
+{{ include "autoanneal.fullname" . }}-manager
+{{- end -}}
+{{- end }}
+
+{{/*
+Manager ConfigMap name.
+*/}}
+{{- define "autoanneal.managerConfigmapName" -}}
+{{ include "autoanneal.fullname" . }}-manager-config
+{{- end }}
+
+{{/*
 Build CLI args for a repo entry.
 Expects a dict with keys: repo (the repo entry), root (top-level context).
 */}}

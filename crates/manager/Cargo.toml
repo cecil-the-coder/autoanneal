@@ -1,0 +1,28 @@
+[package]
+name = "autoanneal-manager"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+autoanneal-lib = { path = "../lib" }
+tokio = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["trace"] }
+prometheus = "0.14"
+cron = "0.15"
+uuid = { version = "1", features = ["v4"] }
+dashmap = "6"
+hmac = "0.12"
+sha2 = "0.10"
+hex = { workspace = true }
+kube = { version = "0.98", features = ["runtime", "client"] }
+k8s-openapi = { version = "0.24", features = ["v1_31"] }

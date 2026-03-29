@@ -1,14 +1,14 @@
-use crate::cleanup::CleanupGuard;
-use crate::config::Config;
-use crate::logging;
-use crate::models::{
+use autoanneal_lib::cleanup::CleanupGuard;
+use autoanneal_lib::config::Config;
+use autoanneal_lib::logging;
+use autoanneal_lib::models::{
     CiStatus, ExternalPr, GithubIssue, InFlightPr, OpenPr, PhaseReport, RepoInfo, StackInfo,
     TaskStatus,
 };
-use crate::llm::{self, LlmInvocation};
-use crate::phases;
-use crate::prompts::system::critic_fix_system_prompt;
-use crate::worktree::WorktreeManager;
+use autoanneal_lib::llm::{self, LlmInvocation};
+use autoanneal_lib::phases;
+use autoanneal_lib::prompts::system::critic_fix_system_prompt;
+use autoanneal_lib::worktree::WorktreeManager;
 use anyhow::{Context, Result};
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -99,7 +99,7 @@ enum WorkItemKind {
         model_critic: String,
         model_plan: String,
         max_tasks: usize,
-        min_severity: crate::models::Severity,
+        min_severity: autoanneal_lib::models::Severity,
         improve_docs: bool,
         dry_run: bool,
         critic_threshold: u32,
@@ -162,8 +162,47 @@ enum WorkItemResult {
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// Run the full autoworker pipeline. Returns exit code (0, 1, or 2).
-pub async fn run(config: &Config) -> Result<i32> {
+/// Output of a worker run, including exit code and collected result data.
+/// Internal output from run_pipeline.
+struct PipelineOutput {
+    exit_code: i32,
+    work_item_summaries: Vec<WorkItemSummary>,
+    pr_url: Option<String>,
+}
+
+impl PipelineOutput {
+    fn early_exit(exit_code: i32) -> Self {
+        Self {
+            exit_code,
+            work_item_summaries: vec![],
+            pr_url: None,
+        }
+    }
+}
+
+pub struct RunOutput {
+    pub exit_code: i32,
+    pub repo_slug: String,
+    pub total_cost: f64,
+    pub phases: Vec<PhaseReport>,
+    pub pr_url: Option<String>,
+    pub pr_number: Option<u64>,
+    pub branch_name: Option<String>,
+    pub work_items: Vec<WorkItemSummary>,
+}
+
+/// Summary of a work item for result reporting.
+pub struct WorkItemSummary {
+    pub kind: String,
+    pub name: String,
+    pub status: String,
+    pub cost_usd: f64,
+    pub duration_secs: u64,
+    pub pr_url: Option<String>,
+}
+
+/// Run the full autoworker pipeline. Returns a RunOutput with exit code and metrics.
+pub async fn run(config: &Config) -> Result<RunOutput> {
     // --- Setup ---
     let repo_slug = config.repo_slug();
     let timeout_duration = config.timeout_duration();
@@ -203,7 +242,7 @@ pub async fn run(config: &Config) -> Result<i32> {
 
     match result {
         Ok(outcome) => {
-            let exit_code = outcome?;
+            let pipeline_out = outcome?;
 
             // Print summary on all paths.
             logging::print_summary(
@@ -214,7 +253,16 @@ pub async fn run(config: &Config) -> Result<i32> {
                 total_cost,
             );
 
-            Ok(exit_code)
+            Ok(RunOutput {
+                exit_code: pipeline_out.exit_code,
+                repo_slug,
+                total_cost,
+                phases: phases_report,
+                pr_url: pipeline_out.pr_url,
+                pr_number: cleanup_guard.pr_number,
+                branch_name: cleanup_guard.branch_name.clone(),
+                work_items: pipeline_out.work_item_summaries,
+            })
         }
         Err(_elapsed) => {
             // Global timeout fired.
@@ -236,7 +284,16 @@ pub async fn run(config: &Config) -> Result<i32> {
             );
 
             // Cleanup guard will fire on drop (unless disarmed).
-            Ok(2)
+            Ok(RunOutput {
+                exit_code: 2,
+                repo_slug,
+                total_cost,
+                phases: phases_report,
+                pr_url: None,
+                pr_number: cleanup_guard.pr_number,
+                branch_name: cleanup_guard.branch_name.clone(),
+                work_items: vec![],
+            })
         }
     }
 }
@@ -245,12 +302,12 @@ pub async fn run(config: &Config) -> Result<i32> {
 async fn run_pipeline(
     config: &Config,
     repo_slug: &str,
-    min_severity: &crate::models::Severity,
+    min_severity: &autoanneal_lib::models::Severity,
     work_dir: &PathBuf,
     phases_report: &mut Vec<PhaseReport>,
     total_cost: &mut f64,
     cleanup_guard: &mut CleanupGuard,
-) -> Result<i32> {
+) -> Result<PipelineOutput> {
     // ─── Phase 1: Preflight ─────────────────────────────────────────────
     info!("starting phase: Preflight");
     let phase_start = Instant::now();
@@ -285,7 +342,7 @@ async fn run_pipeline(
                 cost_usd: 0.0,
                 status: format!("FAILED: {e}"),
             });
-            return Ok(1);
+            return Ok(PipelineOutput { exit_code: 1, work_item_summaries: vec![], pr_url: None });
         }
         Err(_) => {
             warn!("preflight timed out");
@@ -295,7 +352,7 @@ async fn run_pipeline(
                 cost_usd: 0.0,
                 status: "TIMEOUT".to_string(),
             });
-            return Ok(2);
+            return Ok(PipelineOutput { exit_code: 2, work_item_summaries: vec![], pr_url: None });
         }
     };
 
@@ -331,7 +388,7 @@ async fn run_pipeline(
             cost_usd: 0.0,
             status: format!("SKIPPED (max open PRs: {})", config.max_open_prs),
         });
-        return Ok(0);
+        return Ok(PipelineOutput::early_exit(0));
     }
 
     let has_work = has_maintenance || has_reviews || has_issues;
@@ -356,7 +413,7 @@ async fn run_pipeline(
                 cost_usd: 0.0,
                 status: format!("SKIPPED (no commits in {}m)", threshold_secs / 60),
             });
-            return Ok(0);
+            return Ok(PipelineOutput::early_exit(0));
         }
     }
 
@@ -366,7 +423,7 @@ async fn run_pipeline(
     // ─── Phase 2: Recon ─────────────────────────────────────────────────
     if config.max_budget > 0.0 && *total_cost >= config.max_budget {
         warn!("budget exhausted before Recon phase");
-        return Ok(2);
+        return Ok(PipelineOutput::early_exit(2));
     }
 
     info!("starting phase: Recon");
@@ -407,7 +464,7 @@ async fn run_pipeline(
                 cost_usd: 0.0,
                 status: format!("FAILED: {e}"),
             });
-            return Ok(1);
+            return Ok(PipelineOutput::early_exit(1));
         }
         Err(_) => {
             warn!("recon timed out");
@@ -417,7 +474,7 @@ async fn run_pipeline(
                 cost_usd: 0.0,
                 status: "TIMEOUT".to_string(),
             });
-            return Ok(2);
+            return Ok(PipelineOutput::early_exit(2));
         }
     };
 
@@ -450,7 +507,7 @@ async fn run_pipeline(
     if work_items.is_empty() {
         info!("no work items to process");
         println!("No actionable work items found.");
-        return Ok(0);
+        return Ok(PipelineOutput::early_exit(0));
     }
 
     info!(count = work_items.len(), "built work queue");
@@ -496,6 +553,8 @@ async fn run_pipeline(
 
     // ─── Process outcomes ────────────────────────────────────────────────
     let exit_code = 0;
+    let mut work_item_summaries: Vec<WorkItemSummary> = Vec::new();
+    let mut best_pr_url: Option<String> = None;
 
     for outcome in &outcomes {
         *total_cost += outcome.cost_usd;
@@ -545,6 +604,9 @@ async fn run_pipeline(
                         cleanup_guard.pr_number = *pr_number;
                         cleanup_guard.has_successful_tasks = *has_successful_tasks;
                         cleanup_guard.disarm();
+                        if best_pr_url.is_none() {
+                            best_pr_url = Some(url.clone());
+                        }
                         "OK".to_string()
                     } else if *has_successful_tasks {
                         // Critic rejected — this is a normal outcome, not an error.
@@ -565,6 +627,21 @@ async fn run_pipeline(
             }
         };
 
+        // Collect work item summary for result reporting.
+        let item_pr_url = match &outcome.result {
+            Ok(WorkItemResult::AnalysisPipeline { pr_url: Some(u), .. })
+            | Ok(WorkItemResult::IssueInvestigation { pr_url: Some(u), .. }) => Some(u.clone()),
+            _ => None,
+        };
+        work_item_summaries.push(WorkItemSummary {
+            kind: classify_work_item(&outcome.item_name),
+            name: outcome.item_name.clone(),
+            status: status.clone(),
+            cost_usd: outcome.cost_usd,
+            duration_secs: outcome.duration.as_secs(),
+            pr_url: item_pr_url,
+        });
+
         phases_report.push(PhaseReport {
             name: outcome.item_name.clone(),
             duration: outcome.duration,
@@ -573,7 +650,26 @@ async fn run_pipeline(
         });
     }
 
-    Ok(exit_code)
+    Ok(PipelineOutput {
+        exit_code,
+        work_item_summaries: work_item_summaries,
+        pr_url: best_pr_url,
+    })
+}
+
+/// Classify a work item name into a kind string.
+fn classify_work_item(name: &str) -> String {
+    if name.starts_with("CI Fix") {
+        "ci_fix".to_string()
+    } else if name.starts_with("PR Review") {
+        "pr_review".to_string()
+    } else if name.starts_with("Issue #") {
+        "issue_investigation".to_string()
+    } else if name == "Analysis Pipeline" {
+        "analysis".to_string()
+    } else {
+        "unknown".to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -591,7 +687,7 @@ fn collect_work_items(
     arch_summary: &str,
     stack_info: &StackInfo,
     open_prs: &[OpenPr],
-    min_severity: &crate::models::Severity,
+    min_severity: &autoanneal_lib::models::Severity,
     budget_remaining: f64,
     context_window: u64,
 ) -> Vec<WorkItem> {
@@ -646,7 +742,7 @@ fn collect_work_items(
                 in_flight_prs
                     .iter()
                     .filter(|pr| {
-                        pr.ci_status == crate::models::CiStatus::Failing && !pr.has_fixing_label
+                        pr.ci_status == autoanneal_lib::models::CiStatus::Failing && !pr.has_fixing_label
                     }),
             );
         }
@@ -1049,7 +1145,7 @@ async fn run_analysis_pipeline(
     model_critic: &str,
     model_plan: &str,
     max_tasks: usize,
-    min_severity: &crate::models::Severity,
+    min_severity: &autoanneal_lib::models::Severity,
     improve_docs: bool,
     dry_run: bool,
     critic_threshold: u32,
