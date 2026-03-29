@@ -183,6 +183,7 @@ pub async fn run(
         provider_hint: None,
         max_tokens_per_turn: None,
         ci_context,
+        exa_max_searches: 0,
     };
 
     let response: llm::LlmResponse<serde_json::Value> =

@@ -54,6 +54,10 @@ pub struct ToolExecutor {
     command_timeout: Duration,
     ci_context: Option<CiContext>,
     enabled_tools: Option<Vec<String>>,
+    /// Optional research tools (web search, vulnerability check, etc.)
+    research: Option<super::research_tools::ResearchToolExecutor>,
+    /// The tools string from the invocation, used to filter definitions.
+    tools_filter: String,
 }
 
 impl ToolExecutor {
@@ -68,7 +72,49 @@ impl ToolExecutor {
             command_timeout,
             ci_context,
             enabled_tools,
+            research: None,
+            tools_filter: String::new(),
         }
+    }
+
+    /// Create an executor with research tool support.
+    pub fn new_with_research(
+        working_dir: PathBuf,
+        command_timeout: Duration,
+        ci_context: Option<CiContext>,
+        enabled_tools: Option<Vec<String>>,
+        exa_api_key: Option<String>,
+        exa_max_searches: u32,
+        repo_slug: Option<String>,
+        tools_filter: String,
+    ) -> Self {
+        let research = if exa_max_searches > 0
+            || tools_filter.contains("CheckVulnerability")
+            || tools_filter.contains("CheckPackage")
+            || tools_filter.contains("SearchIssues")
+        {
+            Some(super::research_tools::ResearchToolExecutor::new(
+                exa_api_key,
+                exa_max_searches,
+                repo_slug,
+            ))
+        } else {
+            None
+        };
+
+        Self {
+            working_dir,
+            command_timeout,
+            ci_context,
+            enabled_tools,
+            research,
+            tools_filter,
+        }
+    }
+
+    /// Return accumulated Exa search cost in USD.
+    pub fn exa_cost(&self) -> f64 {
+        self.research.as_ref().map_or(0.0, |r| r.exa_cost())
     }
 
     // -- path helpers -------------------------------------------------------
@@ -573,16 +619,24 @@ impl ToolExecutor {
 
     // -- catalogue ----------------------------------------------------------
 
-    /// Return tool definitions, filtered by `enabled_tools` if set.
+    /// Return tool definitions, filtered by `enabled_tools` if set,
+    /// including research tools when configured.
     pub fn get_tool_definitions(&self) -> Vec<ToolDefinition> {
         let all = Self::all_tool_definitions();
-        match &self.enabled_tools {
+        let mut defs = match &self.enabled_tools {
             Some(enabled) => all
                 .into_iter()
                 .filter(|d| enabled.contains(&d.name))
                 .collect(),
             None => all,
+        };
+
+        // Append research tool definitions when configured.
+        if let Some(ref research) = self.research {
+            defs.extend(research.tool_definitions(&self.tools_filter));
         }
+
+        defs
     }
 
     /// Return the full set of tool definitions for the Claude API.
@@ -693,7 +747,7 @@ impl ToolExecutor {
     // -- dispatch -----------------------------------------------------------
 
     /// Route a tool call by name to the correct implementation.
-    pub fn execute_tool(&self, name: &str, input: &Value) -> Result<String, ToolError> {
+    pub async fn execute_tool(&self, name: &str, input: &Value) -> Result<String, ToolError> {
         // Check enabled_tools filter.
         if let Some(ref enabled) = self.enabled_tools {
             if !enabled.iter().any(|t| t == name) {
@@ -805,7 +859,15 @@ impl ToolExecutor {
                 let job_id = input.get("job_id").and_then(|v| v.as_u64());
                 self.gh_workflow_logs(action, job_id)
             }
-            other => Err(ToolError::InvalidInput(format!("unknown tool: {other}"))),
+            other => {
+                // Check if it's a research tool.
+                if let Some(ref research) = self.research {
+                    if research.handles_tool(other) {
+                        return research.execute_tool(other, input).await;
+                    }
+                }
+                Err(ToolError::InvalidInput(format!("unknown tool: {other}")))
+            }
         }
     }
 }
@@ -1207,8 +1269,8 @@ mod tests {
 
     // -- execute_tool dispatch ----------------------------------------------
 
-    #[test]
-    fn execute_tool_routes_correctly() {
+    #[tokio::test]
+    async fn execute_tool_routes_correctly() {
         let (exec, tmp) = make_executor();
         fs::write(tmp.path().join("routed.txt"), "content here").unwrap();
 
@@ -1217,15 +1279,17 @@ mod tests {
                 "read_file",
                 &serde_json::json!({ "path": "routed.txt" }),
             )
+            .await
             .unwrap();
         assert!(result.contains("content here"));
     }
 
-    #[test]
-    fn execute_tool_unknown_name() {
+    #[tokio::test]
+    async fn execute_tool_unknown_name() {
         let (exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("does_not_exist", &serde_json::json!({}))
+            .await
             .unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidInput(_)),
@@ -1233,11 +1297,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn execute_tool_missing_required_field() {
+    #[tokio::test]
+    async fn execute_tool_missing_required_field() {
         let (exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("read_file", &serde_json::json!({}))
+            .await
             .unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidInput(_)),
@@ -1619,11 +1684,12 @@ mod tests {
     // execute_tool dispatch edge-case tests
     // ===================================================================
 
-    #[test]
-    fn test_dispatch_wrong_type_for_path() {
+    #[tokio::test]
+    async fn test_dispatch_wrong_type_for_path() {
         let (exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("read_file", &serde_json::json!({ "path": 123 }))
+            .await
             .unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidInput(_)),
@@ -1631,11 +1697,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_dispatch_null_required_field() {
+    #[tokio::test]
+    async fn test_dispatch_null_required_field() {
         let (exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("read_file", &serde_json::json!({ "path": null }))
+            .await
             .unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidInput(_)),
@@ -1643,8 +1710,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_dispatch_extra_unknown_fields() {
+    #[tokio::test]
+    async fn test_dispatch_extra_unknown_fields() {
         let (exec, tmp) = make_executor();
         fs::write(tmp.path().join("extra.txt"), "extra test").unwrap();
 
@@ -1658,12 +1725,13 @@ mod tests {
                     "another": 42
                 }),
             )
+            .await
             .unwrap();
         assert_eq!(result, "extra test");
     }
 
-    #[test]
-    fn test_dispatch_all_tools() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_dispatch_all_tools() {
         let (exec, tmp) = make_executor();
         // Set up a file for tools that need it.
         fs::write(tmp.path().join("dispatch.txt"), "dispatch content").unwrap();
@@ -1672,14 +1740,14 @@ mod tests {
         let r = exec.execute_tool(
             "read_file",
             &serde_json::json!({ "path": "dispatch.txt" }),
-        );
+        ).await;
         assert!(r.is_ok(), "read_file dispatch failed: {:?}", r);
 
         // write_file
         let r = exec.execute_tool(
             "write_file",
             &serde_json::json!({ "path": "new_dispatch.txt", "content": "new" }),
-        );
+        ).await;
         assert!(r.is_ok(), "write_file dispatch failed: {:?}", r);
 
         // edit_file
@@ -1690,36 +1758,37 @@ mod tests {
                 "old_string": "dispatch content",
                 "new_string": "edited"
             }),
-        );
+        ).await;
         assert!(r.is_ok(), "edit_file dispatch failed: {:?}", r);
 
         // search_files
         let r = exec.execute_tool(
             "search_files",
             &serde_json::json!({ "pattern": "*.txt" }),
-        );
+        ).await;
         assert!(r.is_ok(), "search_files dispatch failed: {:?}", r);
 
         // search_content
         let r = exec.execute_tool(
             "search_content",
             &serde_json::json!({ "pattern": "edited" }),
-        );
+        ).await;
         assert!(r.is_ok(), "search_content dispatch failed: {:?}", r);
 
         // run_command
         let r = exec.execute_tool(
             "run_command",
             &serde_json::json!({ "command": "echo hi" }),
-        );
+        ).await;
         assert!(r.is_ok(), "run_command dispatch failed: {:?}", r);
     }
 
-    #[test]
-    fn test_dispatch_boolean_as_path() {
+    #[tokio::test]
+    async fn test_dispatch_boolean_as_path() {
         let (exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("read_file", &serde_json::json!({ "path": true }))
+            .await
             .unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidInput(_)),

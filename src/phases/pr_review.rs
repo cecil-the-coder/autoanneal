@@ -96,6 +96,7 @@ pub async fn run(
             critic_budget,
             context_window,
             true, // skip_gate1 — human PRs are assumed worthwhile
+            0,    // no web searches for PR reviews
         )
         .await
         .unwrap_or(CriticOutput {
@@ -125,6 +126,7 @@ pub async fn run(
             provider_hint: None,
             max_tokens_per_turn: None,
             ci_context: None,
+            exa_max_searches: 0,
         };
 
         let critic_response =
@@ -215,6 +217,7 @@ pub async fn run(
         provider_hint: None,
         max_tokens_per_turn: None,
         ci_context: None,
+        exa_max_searches: 0,
     };
 
     let fix_response: llm::LlmResponse<serde_json::Value> =

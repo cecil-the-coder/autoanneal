@@ -163,6 +163,7 @@ pub async fn run(
         provider_hint: None,
         max_tokens_per_turn: None,
         ci_context: None,
+        exa_max_searches: 0,
     };
 
     // 3. Invoke Claude.
@@ -225,6 +226,7 @@ pub async fn run_doc_analysis(
         provider_hint: None,
         max_tokens_per_turn: None,
         ci_context: None,
+        exa_max_searches: 0,
     };
 
     // 3. Invoke Claude.

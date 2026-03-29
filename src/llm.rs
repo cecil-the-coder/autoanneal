@@ -26,6 +26,8 @@ pub struct LlmInvocation {
     pub max_tokens_per_turn: Option<u32>,
     /// CI context for CI-fix invocations (repo slug and run ID).
     pub ci_context: Option<crate::agent::tools::CiContext>,
+    /// Maximum Exa web searches for this invocation (0 = no web search tool).
+    pub exa_max_searches: u32,
 }
 
 /// Parsed response from an LLM invocation.

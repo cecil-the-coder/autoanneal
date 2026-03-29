@@ -68,6 +68,7 @@ struct WorkItem {
     kind: WorkItemKind,
     budget_cap: f64,
     context_window: u64,
+    exa_searches: u32,
 }
 
 enum WorkItemKind {
@@ -628,6 +629,7 @@ fn collect_work_items(
                 },
                 budget_cap: budget_remaining,
                 context_window,
+                exa_searches: config.exa_searches,
             });
         }
     }
@@ -659,6 +661,7 @@ fn collect_work_items(
                 },
                 budget_cap: budget_remaining,
                 context_window,
+                exa_searches: config.exa_searches,
             });
         }
     }
@@ -675,6 +678,7 @@ fn collect_work_items(
                 },
                 budget_cap: budget_remaining,
                 context_window,
+                exa_searches: config.exa_searches,
             });
         }
     }
@@ -690,6 +694,7 @@ fn collect_work_items(
             },
             budget_cap: budget_remaining,
             context_window,
+            exa_searches: config.exa_searches,
         });
     }
 
@@ -742,6 +747,7 @@ fn collect_work_items(
             },
             budget_cap: budget_remaining,
             context_window,
+            exa_searches: config.exa_searches,
         });
     }
 
@@ -886,6 +892,7 @@ fn spawn_work_item(
     let item_name = item.name();
     let budget = item.budget_cap;
     let context_window = item.context_window;
+    let exa_searches = item.exa_searches;
 
     join_set.spawn(async move {
         let start = Instant::now();
@@ -1001,6 +1008,7 @@ fn spawn_work_item(
                     budget,
                     &repo_slug,
                     context_window,
+                    exa_searches,
                 )
                 .await
                 .map(|(r, c)| (r, c))
@@ -1046,6 +1054,7 @@ async fn run_analysis_pipeline(
     mut budget: f64,
     _repo_slug: &str,
     context_window: u64,
+    exa_searches: u32,
 ) -> Result<(WorkItemResult, f64)> {
     let mut cost_total = 0.0;
 
@@ -1268,6 +1277,7 @@ async fn run_analysis_pipeline(
                     critic_budget,
                     context_window,
                     false, // skip_gate1
+                    exa_searches,
                 ),
             )
             .await
@@ -1335,6 +1345,7 @@ async fn run_analysis_pipeline(
                         provider_hint: None,
                         max_tokens_per_turn: None,
                         ci_context: None,
+                        exa_max_searches: 0,
                     };
 
                     let fix_response = llm::invoke::<serde_json::Value>(
@@ -1404,6 +1415,7 @@ async fn run_analysis_pipeline(
                                     re_review_budget,
                                     context_window,
                                     true, // skip_gate1
+                                    exa_searches,
                                 ),
                             )
                             .await
