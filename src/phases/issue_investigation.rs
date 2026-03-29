@@ -233,7 +233,10 @@ pub async fn run(
                         pr_url = Some(url.clone());
 
                         // Mark PR as ready for review.
-                        if let Ok(pr_number) = url.rsplit('/').next().unwrap_or("").parse::<u64>() {
+                        let last_segment = url.rsplit('/').next().unwrap_or("");
+                        if last_segment.is_empty() {
+                            warn!(pr_url = %url, issue = issue.number, "PR URL has no trailing segment, cannot extract PR number");
+                        } else if let Ok(pr_number) = last_segment.parse::<u64>() {
                             if let Err(e) = gh_command(
                                 worktree_path,
                                 &["pr", "ready", &pr_number.to_string(), "-R", repo_slug],
@@ -242,6 +245,8 @@ pub async fn run(
                             {
                                 warn!(error = %e, issue = issue.number, "failed to mark PR as ready (non-fatal)");
                             }
+                        } else {
+                            warn!(pr_url = %url, segment = %last_segment, issue = issue.number, "PR URL trailing segment is not a valid PR number");
                         }
                     }
                     Err(e) => {
