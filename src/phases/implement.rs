@@ -321,7 +321,9 @@ async fn run_group_in_worktree(
             Err(e) => {
                 warn!(task = %improvement.title, error = %e, "task execution failed");
                 // Discard changes from this failed task, but continue with the rest.
-                let _ = guardrails::discard_changes(worktree_path).await;
+                if let Err(discard_err) = guardrails::discard_changes(worktree_path).await {
+                    warn!(task = %improvement.title, error = %discard_err, "failed to discard changes after task failure; worktree may be in a corrupted state");
+                }
                 results.push(TaskResult {
                     title: improvement.title.clone(),
                     status: TaskStatus::Failed(format!("task error: {e}")),
