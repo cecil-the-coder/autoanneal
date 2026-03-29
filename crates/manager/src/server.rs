@@ -108,6 +108,8 @@ async fn trigger_run(
             }
         }
     }
+
+
     let msg = TriggerMessage {
         repo_name: req.repo,
         reason: TriggerReason::Manual,
