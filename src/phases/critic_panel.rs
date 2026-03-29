@@ -68,7 +68,7 @@ pub async fn run(
     let mut total_cost = 0.0;
 
     // ── Gate 1: WORTHWHILE ──────────────────────────────────────────
-    if !skip_gate1 {
+    let g1_responses: Option<Vec<(WorthwhileResponse, f64)>> = if !skip_gate1 {
         let (g1_passed, g1_responses, g1_cost) =
             run_gate1(&diff, &critics, gate1_budget / (critics.len() as f64 * 2.0), context_window, clone_path)
                 .await?;
@@ -93,14 +93,46 @@ pub async fn run(
             });
         }
         info!(cost = g1_cost, "gate 1 passed");
+        Some(g1_responses)
     } else {
         info!("gate 1 skipped (skip_gate1=true)");
-    }
+        None
+    };
+
+    // ── Research agent ───────────────────────────────────────────────
+    let research_findings = if let Some(ref responses) = g1_responses {
+        let research_budget = budget * 0.10;
+        let g1_text = format_all_responses_for_research(responses);
+        let findings = run_research(
+            &g1_text,
+            &diff,
+            &critics[0],
+            research_budget,
+            context_window,
+            clone_path,
+        )
+        .await;
+
+        if let Some((ref text, cost)) = findings {
+            total_cost += cost;
+            info!(cost, findings_len = text.len(), "research agent completed");
+        }
+        findings
+    } else {
+        None
+    };
 
     // ── Gate 2: REVIEW ──────────────────────────────────────────────
     let (g2_passed, g2_responses, g2_issues, g2_median_score, g2_summary, g2_cost) =
-        run_gate2(&diff, &critics, gate2_budget / (critics.len() as f64 * 2.0), context_window, clone_path)
-            .await?;
+        run_gate2(
+            &diff,
+            &critics,
+            gate2_budget / (critics.len() as f64 * 2.0),
+            context_window,
+            clone_path,
+            research_findings.as_ref().map(|(f, _)| f.as_str()),
+        )
+        .await?;
     total_cost += g2_cost;
 
     // Determine the dominant verdict from responses
@@ -352,11 +384,19 @@ async fn run_gate2(
     budget_per_critic: f64,
     context_window: u64,
     clone_path: &Path,
+    research_findings: Option<&str>,
 ) -> Result<(bool, Vec<(ReadyResponse, f64)>, Vec<CriticIssue>, u32, String, f64)> {
-    let user_prompt = format!(
-        "## Changes Under Review\n\n```\n{}\n```\n\nReview the implementation quality and provide your score.",
-        diff
-    );
+    let user_prompt = if let Some(findings) = research_findings {
+        format!(
+            "## Changes Under Review\n\n```\n{}\n```\n\n## Research Findings\n\nA research agent investigated the codebase and found:\n\n{}\n\nReview the implementation quality and provide your score.",
+            diff, findings
+        )
+    } else {
+        format!(
+            "## Changes Under Review\n\n```\n{}\n```\n\nReview the implementation quality and provide your score.",
+            diff
+        )
+    };
 
     let mut set = JoinSet::new();
     for i in 0..critics.len() {
@@ -635,6 +675,70 @@ fn format_responses_for_rebuttal(responses: &[(WorthwhileResponse, f64)]) -> Str
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// Format Gate 1 responses for the research agent.
+fn format_all_responses_for_research(responses: &[(WorthwhileResponse, f64)]) -> String {
+    responses
+        .iter()
+        .enumerate()
+        .map(|(i, (resp, _))| {
+            format!(
+                "Critic {} (verdict: {}): {}",
+                i + 1,
+                resp.verdict,
+                resp.reasoning
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Run the research agent to investigate critic claims.
+/// Returns findings as a string and cost, or None if no investigation needed.
+async fn run_research(
+    critic_responses: &str,
+    diff: &str,
+    model: &str,
+    budget: f64,
+    context_window: u64,
+    clone_path: &Path,
+) -> Option<(String, f64)> {
+    let (provider_hint, model_name) = parse_provider_model(model);
+
+    let user_prompt = prompts::RESEARCH_PROMPT
+        .replace("{claims}", critic_responses)
+        .replace("{diff}", diff);
+
+    let invocation = LlmInvocation {
+        prompt: user_prompt,
+        system_prompt: Some(prompts::RESEARCH_SYSTEM.to_string()),
+        model: model_name,
+        max_budget_usd: budget,
+        max_turns: 15,
+        effort: "high",
+        tools: "Read,Glob,Grep,Bash",
+        json_schema: None,
+        working_dir: clone_path.to_path_buf(),
+        context_window,
+        provider_hint,
+        max_tokens_per_turn: None,
+    };
+
+    match llm::invoke::<serde_json::Value>(&invocation, Duration::from_secs(120)).await {
+        Ok(response) => {
+            if response.text.trim().is_empty() {
+                info!("research agent found nothing to investigate");
+                None
+            } else {
+                Some((response.text, response.cost_usd))
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "research agent failed (non-fatal)");
+            None
+        }
+    }
 }
 
 /// Get the diff between the default branch and HEAD.
