@@ -37,8 +37,24 @@ impl PreflightOutput {
     }
 }
 
+/// Configuration for PR fetching and filtering.
+#[derive(Debug, Clone)]
+pub struct PrFetchConfig {
+    pub review_prs: bool,
+    pub review_filter: String,
+    pub fix_external_ci: bool,
+    pub fix_conflicts: bool,
+}
+
 /// Validate environment and repo, return repo metadata plus in-flight PR info.
-pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str, investigate_issues: &str, fix_external_ci: bool) -> Result<PreflightOutput> {
+pub async fn run(
+    repo_slug: &str,
+    review_prs: bool,
+    review_filter: &str,
+    investigate_issues: &str,
+    fix_external_ci: bool,
+    fix_conflicts: bool,
+) -> Result<PreflightOutput> {
     // 1. Validate environment variables.
     validate_env_vars()?;
 
@@ -92,27 +108,28 @@ pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str, investi
         viewer_permission,
     };
 
-    // 5. Detect in-flight autoanneal branches and their associated PRs.
-    let in_flight_prs = detect_in_flight_prs(repo_slug).await;
+    // 5. Fetch all open PRs in a single API call and partition them.
+    let fetch_config = PrFetchConfig {
+        review_prs,
+        review_filter: review_filter.to_string(),
+        fix_external_ci,
+        fix_conflicts,
+    };
+    let needs_external = review_prs || fix_external_ci || fix_conflicts;
+    let (in_flight_prs, external_prs) =
+        fetch_all_prs(repo_slug, &fetch_config, needs_external).await;
 
     // 6. Get HEAD SHA.
     let head_sha = get_head_sha(repo_slug, &default_branch).await;
 
-    // 7. Detect external PRs if review or external CI fix is enabled.
-    let external_prs = if review_prs || fix_external_ci {
-        detect_external_prs(repo_slug, review_filter, fix_external_ci).await
-    } else {
-        Vec::new()
-    };
-
-    // 8. Fetch issues if investigation is enabled.
+    // 7. Fetch issues if investigation is enabled.
     let issues = if !investigate_issues.is_empty() {
         fetch_issues(repo_slug, investigate_issues).await
     } else {
         Vec::new()
     };
 
-    // 9. Check staleness via API (no clone needed).
+    // 8. Check staleness via API (no clone needed).
     let newest_commit_age = check_newest_commit_age_api(repo_slug).await;
 
     info!(
@@ -137,50 +154,19 @@ pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str, investi
     })
 }
 
-/// Fetch existing autoanneal/ branches and check for associated open PRs.
-/// Returns best-effort results; failures are logged but not fatal.
-async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
+/// Fetch all open PRs in a single API call, then partition into in-flight
+/// (autoanneal/) and external PRs based on config-driven filtering.
+///
+/// The `needs_external` flag controls whether external PRs are processed at all.
+/// When false, only in-flight PRs are returned and external PRs are empty.
+async fn fetch_all_prs(
+    repo_slug: &str,
+    config: &PrFetchConfig,
+    needs_external: bool,
+) -> (Vec<InFlightPr>, Vec<ExternalPr>) {
     let dot = Path::new(".");
-    let mut result = Vec::new();
 
-    // Use --jq with --paginate to get newline-delimited branch names.
-    // This avoids the issue where gh api --paginate concatenates JSON arrays
-    // from multiple pages (e.g. [page1][page2]), which is not valid JSON.
-    let branches_raw = match gh_command(
-        dot,
-        &[
-            "api",
-            &format!("repos/{repo_slug}/branches"),
-            "--paginate",
-            "--jq",
-            ".[].name",
-        ],
-    )
-    .await
-    {
-        Ok(raw) => raw,
-        Err(e) => {
-            warn!(error = %e, "failed to list branches (non-fatal)");
-            return result;
-        }
-    };
-
-    // Filter for autoanneal/ branches from newline-delimited output.
-    let branches: Vec<String> = branches_raw
-        .lines()
-        .filter(|line| !line.is_empty())
-        .filter(|line| line.starts_with("autoanneal/"))
-        .map(|s| s.to_string())
-        .collect();
-
-    if branches.is_empty() {
-        return result;
-    }
-
-    info!(count = branches.len(), "found existing autoanneal branches");
-
-    // Batch-fetch all open PRs in a single call, including labels to avoid
-    // per-PR label lookups (reduces API calls from 3N+1 to ~N+2).
+    // Single API call to get all open PRs with all needed fields.
     let prs_raw = match gh_command(
         dot,
         &[
@@ -189,7 +175,7 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
             "--state",
             "open",
             "--json",
-            "number,title,body,mergeable,files,headRefName,labels",
+            "number,title,body,mergeable,files,headRefName,labels,author,updatedAt",
             "--limit",
             "500",
             "-R",
@@ -200,8 +186,8 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
     {
         Ok(raw) => raw,
         Err(e) => {
-            warn!(error = %e, "failed to list open PRs for in-flight detection (non-fatal)");
-            return result;
+            warn!(error = %e, "failed to list open PRs (non-fatal)");
+            return (Vec::new(), Vec::new());
         }
     };
 
@@ -209,108 +195,249 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
         Ok(v) => v,
         Err(e) => {
             warn!(error = %e, "failed to parse PR list JSON (non-fatal)");
-            return result;
+            return (Vec::new(), Vec::new());
         }
     };
 
-    // Index PRs by head ref name for O(1) lookup.
-    let pr_by_branch: std::collections::HashMap<String, &serde_json::Value> = all_prs
+    // Partition PRs by branch prefix.
+    let (autoanneal_prs, other_prs): (Vec<_>, Vec<_>) = all_prs
         .iter()
-        .filter_map(|pr| {
-            let head = pr["headRefName"].as_str()?.to_string();
-            Some((head, pr))
+        .partition(|pr| {
+            pr["headRefName"]
+                .as_str()
+                .map(|s| s.starts_with("autoanneal/"))
+                .unwrap_or(false)
+        });
+
+    // Process in-flight (autoanneal/) PRs.
+    let mut in_flight = Vec::new();
+    for pr in &autoanneal_prs {
+        if let Some(ifp) = process_in_flight_pr(repo_slug, pr).await {
+            in_flight.push(ifp);
+        }
+    }
+    info!(count = in_flight.len(), "found in-flight autoanneal PRs");
+
+    // Process external PRs based on config flags.
+    let external = if needs_external {
+        let filtered = filter_external_prs(&other_prs, config);
+        // Only check CI status for PRs we actually care about.
+        let mut result = Vec::new();
+        for mut ext in filtered {
+            let ci_status = check_ci_status(repo_slug, ext.number).await;
+            ext.ci_status = ci_status;
+            // Count autoanneal commits for PRs with failing CI so the
+            // orchestrator can enforce the attempt limit.
+            if ci_status == CiStatus::Failing {
+                ext.autoanneal_commit_count =
+                    count_autoanneal_commits(repo_slug, ext.number).await;
+            }
+            result.push(ext);
+        }
+        // Now do a second pass to drop PRs that were only included for CI reasons
+        // but don't actually have failing CI. This avoids wasting CI check calls
+        // on PRs we won't use, while still checking CI for review candidates.
+        let final_result: Vec<ExternalPr> = result
+            .into_iter()
+            .filter(|pr| {
+                let dominated_by_review = !pr.reviewed && config.review_prs;
+                let included_for_conflicts = pr.has_merge_conflicts && config.fix_conflicts;
+                let included_for_ci = pr.ci_status == CiStatus::Failing && config.fix_external_ci;
+                dominated_by_review || included_for_conflicts || included_for_ci
+            })
+            .collect();
+        info!(
+            count = final_result.len(),
+            review_filter = %config.review_filter,
+            "detected external PRs"
+        );
+        final_result
+    } else {
+        Vec::new()
+    };
+
+    (in_flight, external)
+}
+
+/// Process a single autoanneal/ PR into an InFlightPr.
+async fn process_in_flight_pr(
+    repo_slug: &str,
+    pr: &serde_json::Value,
+) -> Option<InFlightPr> {
+    let dot = Path::new(".");
+    let branch = pr["headRefName"].as_str()?.to_string();
+    let number = extract_nonzero_number(pr, "In-flight PR")?;
+    let title = pr["title"].as_str().unwrap_or("").to_string();
+    let body = pr["body"].as_str().unwrap_or("").to_string();
+
+    // Check CI status (per-PR, unavoidable).
+    let ci_status = check_ci_status(repo_slug, number).await;
+
+    // Check for autoanneal:fixing label from already-fetched PR data.
+    let mut has_fixing_label = pr["labels"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .any(|l| l["name"].as_str() == Some("autoanneal:fixing"))
         })
-        .collect();
+        .unwrap_or(false);
 
-    // For each branch, look up the associated PR from our batch result.
-    for branch in &branches {
+    // If label present but latest commit >30 min old, remove stale label.
+    if has_fixing_label {
+        let stale = is_stale_fixing(repo_slug, &branch).await;
 
-        let pr = match pr_by_branch.get(branch) {
-            Some(pr) => *pr,
-            None => continue,
-        };
+        if stale {
+            info!(
+                pr_number = number,
+                "removing stale autoanneal:fixing label"
+            );
+            let _ = gh_command(
+                dot,
+                &[
+                    "pr",
+                    "edit",
+                    &number.to_string(),
+                    "--remove-label",
+                    "autoanneal:fixing",
+                    "-R",
+                    repo_slug,
+                ],
+            )
+            .await;
+            has_fixing_label = false;
+        }
+    }
 
-        let number = match extract_nonzero_number(pr, "In-flight PR") {
+    let ci_status = if has_fixing_label {
+        CiStatus::Fixing
+    } else {
+        ci_status
+    };
+
+    // Check merge conflict status.
+    let has_merge_conflicts = pr["mergeable"]
+        .as_str()
+        .map(|m| m == "CONFLICTING")
+        .unwrap_or(false);
+
+    // Extract changed file paths from PR.
+    let files: Vec<String> = pr["files"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|f| f["path"].as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(InFlightPr {
+        number,
+        title,
+        body,
+        branch,
+        ci_status,
+        has_fixing_label,
+        has_merge_conflicts,
+        files,
+    })
+}
+
+/// Filter external PRs based on config flags.
+///
+/// Inclusion rules:
+/// - If `review_prs`: include unreviewed PRs (no `autoanneal:reviewed` label),
+///   applying the `review_filter`.
+/// - If `fix_external_ci`: include all non-autoanneal PRs (CI status checked later).
+/// - If `fix_conflicts`: include PRs with `CONFLICTING` mergeable status.
+///
+/// PRs are deduplicated by number.
+fn filter_external_prs(
+    prs: &[&serde_json::Value],
+    config: &PrFetchConfig,
+) -> Vec<ExternalPr> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+
+    for pr in prs {
+        let number = match extract_nonzero_number(pr, "External PR") {
             Some(n) => n,
             None => continue,
         };
+
+        // Skip duplicates.
+        if !seen.insert(number) {
+            continue;
+        }
+
+        let branch = pr["headRefName"].as_str().unwrap_or("").to_string();
         let title = pr["title"].as_str().unwrap_or("").to_string();
-        let body = pr["body"].as_str().unwrap_or("").to_string();
-
-        // Check CI status (per-PR, unavoidable).
-        let ci_status = check_ci_status(repo_slug, number).await;
-
-        // Check for autoanneal:fixing label from already-fetched PR data.
-        let mut has_fixing_label = pr["labels"]
+        let author = pr["author"]["login"].as_str().unwrap_or("").to_string();
+        let updated_at = pr["updatedAt"].as_str().unwrap_or("").to_string();
+        let labels: Vec<String> = pr["labels"]
             .as_array()
             .map(|arr| {
                 arr.iter()
-                    .any(|l| l["name"].as_str() == Some("autoanneal:fixing"))
+                    .filter_map(|l| l["name"].as_str().map(|s| s.to_string()))
+                    .collect()
             })
-            .unwrap_or(false);
+            .unwrap_or_default();
 
-        // If label present but latest commit >30 min old, remove stale label.
-        if has_fixing_label {
-            let stale = is_stale_fixing(repo_slug, branch).await;
-
-            if stale {
-                info!(
-                    pr_number = number,
-                    "removing stale autoanneal:fixing label"
-                );
-                let _ = gh_command(
-                    dot,
-                    &[
-                        "pr",
-                        "edit",
-                        &number.to_string(),
-                        "--remove-label",
-                        "autoanneal:fixing",
-                        "-R",
-                        repo_slug,
-                    ],
-                )
-                .await;
-                has_fixing_label = false;
-            }
-        }
-
-        let ci_status = if has_fixing_label {
-            CiStatus::Fixing
-        } else {
-            ci_status
-        };
-
-        // Check merge conflict status
+        let reviewed = labels.iter().any(|l| l == "autoanneal:reviewed");
         let has_merge_conflicts = pr["mergeable"]
             .as_str()
             .map(|m| m == "CONFLICTING")
             .unwrap_or(false);
 
-        // Extract changed file paths from PR.
-        let files: Vec<String> = pr["files"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|f| f["path"].as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Determine if this PR should be included based on config flags.
+        let include_for_review = config.review_prs
+            && !reviewed
+            && matches_review_filter(&config.review_filter, &updated_at, &labels);
+        let include_for_conflicts = config.fix_conflicts && has_merge_conflicts;
+        // For CI, we include all candidates and filter after CI status is checked.
+        let include_for_ci = config.fix_external_ci;
 
-        result.push(InFlightPr {
+        if !include_for_review && !include_for_conflicts && !include_for_ci {
+            continue;
+        }
+
+        result.push(ExternalPr {
             number,
             title,
-            body,
-            branch: branch.to_string(),
-            ci_status,
-            has_fixing_label,
+            branch,
+            author,
+            updated_at,
+            labels,
+            ci_status: CiStatus::Pending, // Will be filled after CI check.
+            reviewed,
+            autoanneal_commit_count: 0, // Filled after CI check for failing PRs.
             has_merge_conflicts,
-            files,
         });
     }
 
-    info!(count = result.len(), "found in-flight autoanneal PRs");
     result
+}
+
+/// Check if a PR matches the review filter.
+fn matches_review_filter(filter: &str, updated_at: &str, labels: &[String]) -> bool {
+    match filter {
+        "all" => true,
+        "recent" => {
+            if let Ok(updated) = chrono::DateTime::parse_from_rfc3339(updated_at) {
+                let age = chrono::Utc::now().signed_duration_since(updated);
+                age.num_hours() <= 24
+            } else {
+                false
+            }
+        }
+        f if f.starts_with("labeled:") => {
+            let target_label = &f["labeled:".len()..];
+            labels.iter().any(|l| l == target_label)
+        }
+        _ => {
+            warn!(filter = %filter, "unknown review filter, treating as 'all'");
+            true
+        }
+    }
 }
 
 /// Extract a non-zero number from a JSON object's "number" field.
@@ -560,141 +687,6 @@ async fn check_newest_commit_age_api(repo_slug: &str) -> u64 {
     }
 }
 
-
-/// Detect external (non-autoanneal) open PRs, filtered according to config.
-/// When `include_reviewed` is true (for CI fix mode), PRs with the autoanneal:reviewed
-/// label are still included. When false (for PR review mode), reviewed PRs are filtered out.
-async fn detect_external_prs(repo_slug: &str, filter: &str, include_reviewed: bool) -> Vec<ExternalPr> {
-    let dot = Path::new(".");
-
-    // 1. List all open PRs with relevant fields.
-    let raw = match gh_command(
-        dot,
-        &[
-            "pr",
-            "list",
-            "--state",
-            "open",
-            "--json",
-            "number,title,headRefName,author,updatedAt,labels,mergeable",
-            "--limit",
-            "50",
-            "-R",
-            repo_slug,
-        ],
-    )
-    .await
-    {
-        Ok(raw) => raw,
-        Err(e) => {
-            warn!(error = %e, "failed to list external PRs (non-fatal)");
-            return Vec::new();
-        }
-    };
-
-    let prs: Vec<serde_json::Value> = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!(error = %e, "failed to parse external PR list JSON");
-            return Vec::new();
-        }
-    };
-
-    let mut result = Vec::new();
-
-    for pr in prs {
-        let branch = pr["headRefName"].as_str().unwrap_or("").to_string();
-
-        // 2. Filter OUT autoanneal/ branches (those are ours).
-        if branch.starts_with("autoanneal/") {
-            continue;
-        }
-
-        // 3. Collect labels.
-        let labels: Vec<String> = pr["labels"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|l| l["name"].as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let reviewed = labels.iter().any(|l| l == "autoanneal:reviewed");
-
-        // Filter OUT PRs already reviewed by autoanneal (only for review mode, not CI fix).
-        if !include_reviewed && reviewed {
-            continue;
-        }
-
-        let number = match extract_nonzero_number(&pr, "External PR") {
-            Some(n) => n,
-            None => continue,
-        };
-        let title = pr["title"].as_str().unwrap_or("").to_string();
-        let author = pr["author"]["login"].as_str().unwrap_or("").to_string();
-        let updated_at = pr["updatedAt"].as_str().unwrap_or("").to_string();
-
-        let ci_status = check_ci_status(repo_slug, number).await;
-
-        let has_merge_conflicts = pr["mergeable"]
-            .as_str()
-            .map(|m| m == "CONFLICTING")
-            .unwrap_or(false);
-
-        // For PRs with failing CI, count autoanneal commits so the
-        // orchestrator can enforce the attempt limit.
-        let autoanneal_commit_count = if ci_status == CiStatus::Failing {
-            count_autoanneal_commits(repo_slug, number).await
-        } else {
-            0
-        };
-
-        let external = ExternalPr {
-            number,
-            title,
-            branch,
-            author,
-            updated_at,
-            labels,
-            ci_status,
-            reviewed,
-            autoanneal_commit_count,
-            has_merge_conflicts,
-        };
-
-        // 4. Apply configured filter.
-        // Always include reviewed PRs with failing CI — the review filter only
-        // gates *review* eligibility; CI fix eligibility is separate.
-        let force_include = external.reviewed && external.ci_status == CiStatus::Failing;
-        let passes_filter = match filter {
-            "all" => true,
-            "recent" => {
-                if let Ok(updated) = chrono::DateTime::parse_from_rfc3339(&external.updated_at) {
-                    let age = chrono::Utc::now().signed_duration_since(updated);
-                    age.num_hours() <= 24
-                } else {
-                    false
-                }
-            }
-            f if f.starts_with("labeled:") => {
-                let target_label = &f["labeled:".len()..];
-                external.labels.iter().any(|l| l == target_label)
-            }
-            _ => {
-                warn!(filter = %filter, "unknown review filter, treating as 'all'");
-                true
-            }
-        };
-        if passes_filter || force_include {
-            result.push(external);
-        }
-    }
-
-    info!(count = result.len(), filter = %filter, "detected external PRs for review");
-    result
-}
-
 /// Fetch open issues matching the given label filter.
 /// Excludes issues already labeled autoanneal:investigating or autoanneal:attempted.
 async fn fetch_issues(repo_slug: &str, label_filter: &str) -> Vec<GithubIssue> {
@@ -785,4 +777,237 @@ fn validate_env_vars() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+
+    /// Helper to build a mock PR JSON value.
+    fn mock_pr(
+        number: u64,
+        branch: &str,
+        labels: &[&str],
+        mergeable: &str,
+        updated_at: &str,
+        author: &str,
+    ) -> serde_json::Value {
+        let label_arr: Vec<serde_json::Value> = labels
+            .iter()
+            .map(|l| serde_json::json!({"name": l}))
+            .collect();
+        serde_json::json!({
+            "number": number,
+            "title": format!("PR #{number}"),
+            "body": "",
+            "headRefName": branch,
+            "labels": label_arr,
+            "mergeable": mergeable,
+            "updatedAt": updated_at,
+            "author": {"login": author},
+            "files": [],
+        })
+    }
+
+    #[test]
+    fn test_partition_prs_by_branch() {
+        let autoanneal_pr = mock_pr(1, "autoanneal/fix-typo", &[], "MERGEABLE", "", "bot");
+        let external_pr = mock_pr(2, "feature/add-login", &[], "MERGEABLE", "", "alice");
+
+        let all_prs = vec![autoanneal_pr, external_pr];
+        let (autoanneal, other): (Vec<_>, Vec<_>) = all_prs
+            .iter()
+            .partition(|pr| {
+                pr["headRefName"]
+                    .as_str()
+                    .map(|s| s.starts_with("autoanneal/"))
+                    .unwrap_or(false)
+            });
+
+        assert_eq!(autoanneal.len(), 1);
+        assert_eq!(other.len(), 1);
+        assert_eq!(autoanneal[0]["number"], 1);
+        assert_eq!(other[0]["number"], 2);
+    }
+
+    #[test]
+    fn test_external_filter_review_only() {
+        let unreviewed = mock_pr(1, "feat/a", &[], "MERGEABLE", "2026-03-29T00:00:00Z", "alice");
+        let reviewed = mock_pr(2, "feat/b", &["autoanneal:reviewed"], "MERGEABLE", "2026-03-29T00:00:00Z", "bob");
+        let prs: Vec<&serde_json::Value> = vec![&unreviewed, &reviewed];
+
+        let config = PrFetchConfig {
+            review_prs: true,
+            review_filter: "all".to_string(),
+            fix_external_ci: false,
+            fix_conflicts: false,
+        };
+
+        let result = filter_external_prs(&prs, &config);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].number, 1);
+        assert!(!result[0].reviewed);
+    }
+
+    #[test]
+    fn test_external_filter_conflicts() {
+        let reviewed_conflicting = mock_pr(
+            1, "feat/a", &["autoanneal:reviewed"], "CONFLICTING", "2026-03-29T00:00:00Z", "alice",
+        );
+        let reviewed_clean = mock_pr(
+            2, "feat/b", &["autoanneal:reviewed"], "MERGEABLE", "2026-03-29T00:00:00Z", "bob",
+        );
+        let prs: Vec<&serde_json::Value> = vec![&reviewed_conflicting, &reviewed_clean];
+
+        let config = PrFetchConfig {
+            review_prs: false,
+            review_filter: "all".to_string(),
+            fix_external_ci: false,
+            fix_conflicts: true,
+        };
+
+        let result = filter_external_prs(&prs, &config);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].number, 1);
+        assert!(result[0].has_merge_conflicts);
+        assert!(result[0].reviewed);
+    }
+
+    #[test]
+    fn test_external_filter_ci() {
+        // fix_external_ci includes all PRs as candidates (CI checked later).
+        let reviewed = mock_pr(1, "feat/a", &["autoanneal:reviewed"], "MERGEABLE", "2026-03-29T00:00:00Z", "alice");
+        let unreviewed = mock_pr(2, "feat/b", &[], "MERGEABLE", "2026-03-29T00:00:00Z", "bob");
+        let prs: Vec<&serde_json::Value> = vec![&reviewed, &unreviewed];
+
+        let config = PrFetchConfig {
+            review_prs: false,
+            review_filter: "all".to_string(),
+            fix_external_ci: true,
+            fix_conflicts: false,
+        };
+
+        let result = filter_external_prs(&prs, &config);
+        // Both included because fix_external_ci includes all as CI candidates.
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_external_filter_combined() {
+        let pr_review = mock_pr(1, "feat/a", &[], "MERGEABLE", "2026-03-29T00:00:00Z", "alice");
+        let pr_conflict = mock_pr(2, "feat/b", &["autoanneal:reviewed"], "CONFLICTING", "2026-03-29T00:00:00Z", "bob");
+        let pr_ci = mock_pr(3, "feat/c", &["autoanneal:reviewed"], "MERGEABLE", "2026-03-29T00:00:00Z", "carol");
+        let prs: Vec<&serde_json::Value> = vec![&pr_review, &pr_conflict, &pr_ci];
+
+        let config = PrFetchConfig {
+            review_prs: true,
+            review_filter: "all".to_string(),
+            fix_external_ci: true,
+            fix_conflicts: true,
+        };
+
+        let result = filter_external_prs(&prs, &config);
+        // All 3 included: #1 for review, #2 for conflicts, #3 for CI candidate.
+        assert_eq!(result.len(), 3);
+        // No duplicates.
+        let numbers: Vec<u64> = result.iter().map(|p| p.number).collect();
+        assert_eq!(numbers, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_external_filter_nothing_enabled() {
+        let pr = mock_pr(1, "feat/a", &[], "MERGEABLE", "2026-03-29T00:00:00Z", "alice");
+        let prs: Vec<&serde_json::Value> = vec![&pr];
+
+        let config = PrFetchConfig {
+            review_prs: false,
+            review_filter: "all".to_string(),
+            fix_external_ci: false,
+            fix_conflicts: false,
+        };
+
+        let result = filter_external_prs(&prs, &config);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_reviewed_label_detection() {
+        let reviewed = mock_pr(1, "feat/a", &["autoanneal:reviewed"], "MERGEABLE", "", "alice");
+        let not_reviewed = mock_pr(2, "feat/b", &["bug", "enhancement"], "MERGEABLE", "", "bob");
+        let no_labels = mock_pr(3, "feat/c", &[], "MERGEABLE", "", "carol");
+        let prs: Vec<&serde_json::Value> = vec![&reviewed, &not_reviewed, &no_labels];
+
+        let config = PrFetchConfig {
+            review_prs: true,
+            review_filter: "all".to_string(),
+            fix_external_ci: false,
+            fix_conflicts: false,
+        };
+
+        let result = filter_external_prs(&prs, &config);
+        // Only unreviewed PRs included for review.
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|pr| !pr.reviewed));
+        assert!(result.iter().any(|pr| pr.number == 2));
+        assert!(result.iter().any(|pr| pr.number == 3));
+    }
+
+    #[test]
+    fn test_review_filter_recent() {
+        let recent = mock_pr(1, "feat/a", &[], "MERGEABLE", "2026-03-29T00:00:00Z", "alice");
+        let old = mock_pr(2, "feat/b", &[], "MERGEABLE", "2025-01-01T00:00:00Z", "bob");
+        let prs: Vec<&serde_json::Value> = vec![&recent, &old];
+
+        let config = PrFetchConfig {
+            review_prs: true,
+            review_filter: "recent".to_string(),
+            fix_external_ci: false,
+            fix_conflicts: false,
+        };
+
+        let result = filter_external_prs(&prs, &config);
+        // Only the recent PR should be included (the old one is >24h old).
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].number, 1);
+    }
+
+    #[test]
+    fn test_review_filter_labeled() {
+        let labeled = mock_pr(1, "feat/a", &["needs-review"], "MERGEABLE", "", "alice");
+        let unlabeled = mock_pr(2, "feat/b", &["bug"], "MERGEABLE", "", "bob");
+        let prs: Vec<&serde_json::Value> = vec![&labeled, &unlabeled];
+
+        let config = PrFetchConfig {
+            review_prs: true,
+            review_filter: "labeled:needs-review".to_string(),
+            fix_external_ci: false,
+            fix_conflicts: false,
+        };
+
+        let result = filter_external_prs(&prs, &config);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].number, 1);
+    }
+
+    #[test]
+    fn test_conflicts_includes_reviewed_prs() {
+        // A reviewed PR with conflicts should still be included when fix_conflicts is enabled.
+        let reviewed_conflicting = mock_pr(
+            1, "feat/a", &["autoanneal:reviewed"], "CONFLICTING", "", "alice",
+        );
+        let prs: Vec<&serde_json::Value> = vec![&reviewed_conflicting];
+
+        let config = PrFetchConfig {
+            review_prs: false,
+            review_filter: "all".to_string(),
+            fix_external_ci: false,
+            fix_conflicts: true,
+        };
+
+        let result = filter_external_prs(&prs, &config);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].reviewed);
+        assert!(result[0].has_merge_conflicts);
+    }
 }

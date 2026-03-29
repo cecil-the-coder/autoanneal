@@ -263,6 +263,7 @@ async fn run_pipeline(
             &config.review_filter,
             &config.investigate_issues,
             config.fix_external_ci,
+            config.fix_conflicts,
         ),
     )
     .await
@@ -304,9 +305,12 @@ async fn run_pipeline(
             pr.ci_status == CiStatus::Failing
                 && pr.autoanneal_commit_count < config.max_pr_fix_attempts as u64
         });
+    let has_external_conflicts = config.fix_conflicts
+        && preflight_output.external_prs.iter().any(|pr| pr.has_merge_conflicts);
     let has_maintenance = !preflight_output.prs_needing_ci_fix().is_empty()
         || !preflight_output.prs_needing_rebase().is_empty()
-        || has_external_ci_failures;
+        || has_external_ci_failures
+        || has_external_conflicts;
     let has_reviews = preflight_output.external_prs.iter().any(|pr| !pr.reviewed);
     let has_issues = !preflight_output.issues.is_empty();
     let at_pr_limit = config.max_open_prs > 0
