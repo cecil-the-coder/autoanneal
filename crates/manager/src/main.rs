@@ -10,7 +10,7 @@ use anyhow::Result;
 use clap::Parser;
 use config::ManagerCli;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -23,14 +23,23 @@ async fn main() -> Result<()> {
 
     // Load config
     let config = config::load_config(&cli.config)?;
+    config.validate()?;
     info!(
         repos = config.repos.len(),
         concurrency = config.manager.global_concurrency,
         "loaded config"
     );
 
+    // Warn if webhook secret is empty (signature verification will be skipped)
+    if config.manager.webhook_secret.is_empty() {
+        warn!(
+            "webhook_secret is empty: webhook signature verification is DISABLED. \
+             This is a security risk in production. Set manager.webhook_secret in your config."
+        );
+    }
+
     // Create shared state
-    let state_store = Arc::new(state::StateStore::new());
+    let state_store = Arc::new(state::StateStore::new(config.manager.history_limit));
 
     // Create metrics
     let metrics = Arc::new(metrics::Metrics::new()?);
@@ -69,6 +78,8 @@ async fn main() -> Result<()> {
         webhook_secret: config.manager.webhook_secret.clone(),
         repo_configs,
         webhook_cooldowns: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        webhook_cooldown_secs: config.manager.webhook_cooldown_secs,
+        api_token: config.manager.api_token.clone(),
     };
     let listen_addr = config.manager.listen_addr.clone();
     let server_handle = tokio::spawn(async move {

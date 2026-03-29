@@ -17,6 +17,7 @@ pub struct Scheduler {
     semaphore: Arc<Semaphore>,
     trigger_rx: mpsc::UnboundedReceiver<TriggerMessage>,
     metrics: Arc<Metrics>,
+    poll_interval_secs: u64,
 }
 
 pub struct TriggerMessage {
@@ -33,6 +34,7 @@ impl Scheduler {
         metrics: Arc<Metrics>,
     ) -> Self {
         let permits = config.manager.global_concurrency.max(1);
+        let poll_interval_secs = config.manager.poll_interval_secs;
         Self {
             config,
             executor,
@@ -40,6 +42,7 @@ impl Scheduler {
             semaphore: Arc::new(Semaphore::new(permits)),
             trigger_rx,
             metrics,
+            poll_interval_secs,
         }
     }
 
@@ -125,6 +128,7 @@ impl Scheduler {
         let state = self.state.clone();
         let repo_name = entry.name.clone();
         let repo = entry.repo.clone();
+        let poll_interval_secs = self.poll_interval_secs;
 
         tokio::spawn(async move {
             let _permit = permit; // Hold permit for the duration
@@ -136,7 +140,7 @@ impl Scheduler {
             }
 
             // Poll until completion
-            let mut interval = time::interval(Duration::from_secs(5));
+            let mut interval = time::interval(Duration::from_secs(poll_interval_secs));
             loop {
                 interval.tick().await;
                 match executor.collect(&repo_name, &run_id).await {

@@ -7,9 +7,14 @@ services:
       - "8080:8080"
     volumes:
       - ./config.yaml:/config/manager.yaml:ro
+      # WARNING: Mounting the Docker socket grants the container full control over
+      # the Docker daemon (effectively root on the host). Only do this in trusted
+      # environments. Consider using TCP with TLS or a socket proxy for production.
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
     environment:
       - AUTOANNEAL_EXECUTOR=docker
+    security_opt:
+      - no-new-privileges
     restart: unless-stopped
