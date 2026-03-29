@@ -82,8 +82,22 @@ pub async fn validate_diff(
         }
 
         // Binary files use "-" for both added and removed; count as 0 lines.
-        let added: usize = added_str.parse().unwrap_or(0);
-        let removed: usize = removed_str.parse().unwrap_or(0);
+        let added: usize = added_str.parse().unwrap_or_else(|_| {
+            tracing::warn!(
+                added_str,
+                filename,
+                "Failed to parse added lines from git diff --numstat, defaulting to 0"
+            );
+            0
+        });
+        let removed: usize = removed_str.parse().unwrap_or_else(|_| {
+            tracing::warn!(
+                removed_str,
+                filename,
+                "Failed to parse removed lines from git diff --numstat, defaulting to 0"
+            );
+            0
+        });
 
         lines_added += added;
         lines_removed += removed;

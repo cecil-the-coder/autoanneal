@@ -5,10 +5,14 @@
 use crate::agent::api_types::{ContentBlock, Message, ToolDefinition};
 use serde_json::json;
 use std::collections::HashMap;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Default context window in tokens (128K — safe for most models).
 pub const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
+
+/// Minimum allowed context window in tokens. Values below this are likely
+/// misconfigured and will cause immediate eviction pressure.
+const MIN_CONTEXT_WINDOW: u64 = 4096;
 
 /// Start evicting when context usage exceeds this fraction of the window.
 const EVICTION_THRESHOLD: f64 = 0.8;
@@ -28,7 +32,22 @@ pub struct ContextManager {
 }
 
 impl ContextManager {
+    /// Create a new `ContextManager` with the given context window size in tokens.
+    ///
+    /// If `context_window` is less than `MIN_CONTEXT_WINDOW` (4096), a warning
+    /// is logged and `DEFAULT_CONTEXT_WINDOW` is used instead.
     pub fn new(context_window: u64) -> Self {
+        let context_window = if context_window < MIN_CONTEXT_WINDOW {
+            warn!(
+                provided = context_window,
+                minimum = MIN_CONTEXT_WINDOW,
+                fallback = DEFAULT_CONTEXT_WINDOW,
+                "context window is below minimum; falling back to default"
+            );
+            DEFAULT_CONTEXT_WINDOW
+        } else {
+            context_window
+        };
         Self {
             context_window,
             store: HashMap::new(),
@@ -368,14 +387,66 @@ mod tests {
 
     #[test]
     fn test_small_context_window_aggressive_eviction() {
-        let mut mgr = ContextManager::new(1_000); // Tiny window
+        let mut mgr = ContextManager::new(4_096); // Minimum allowed window
         let mut messages = vec![
             make_tool_result_message("tr_1", &"x".repeat(4_000)),
         ];
         mgr.track(0, "tr_1");
 
-        // 900 tokens, threshold = 800 — should evict.
-        let evicted = mgr.maybe_evict(&mut messages, 900);
+        // 3400 tokens, threshold = 4096 * 0.8 = 3276 — should evict.
+        let evicted = mgr.maybe_evict(&mut messages, 3400);
         assert_eq!(evicted, 1);
+    }
+
+    #[test]
+    fn test_zero_context_window_falls_back_to_default() {
+        let mgr = ContextManager::new(0);
+        // Internal context_window should be DEFAULT_CONTEXT_WINDOW, not 0.
+        // We verify indirectly: with default 128K, threshold is ~102_400,
+        // so 50K tokens should NOT trigger eviction.
+        let mut messages = vec![
+            make_tool_result_message("tr_1", "some content"),
+        ];
+        mgr.track(0, "tr_1");
+        let evicted = mgr.maybe_evict(&mut messages, 50_000);
+        assert_eq!(evicted, 0);
+    }
+
+    #[test]
+    fn test_tiny_context_window_falls_back_to_default() {
+        let mgr = ContextManager::new(100);
+        // Same as above — should fall back to default 128K.
+        let mut messages = vec![
+            make_tool_result_message("tr_1", "some content"),
+        ];
+        mgr.track(0, "tr_1");
+        let evicted = mgr.maybe_evict(&mut messages, 50_000);
+        assert_eq!(evicted, 0);
+    }
+
+    #[test]
+    fn test_min_context_window_accepted() {
+        // Exactly MIN_CONTEXT_WINDOW (4096) should be accepted as-is.
+        let mgr = ContextManager::new(4096);
+        // Threshold = 4096 * 0.8 = 3276. 3400 tokens should trigger eviction.
+        let mut messages = vec![
+            make_tool_result_message("tr_1", &"x".repeat(16_000)),
+        ];
+        mgr.track(0, "tr_1");
+        let evicted = mgr.maybe_evict(&mut messages, 3400);
+        assert_eq!(evicted, 1);
+    }
+
+    #[test]
+    fn test_just_below_min_falls_back() {
+        // 4095 is just below the minimum — should fall back to default.
+        let mgr = ContextManager::new(4095);
+        let mut messages = vec![
+            make_tool_result_message("tr_1", "some content"),
+        ];
+        mgr.track(0, "tr_1");
+        // With default 128K window, 50K tokens is well below threshold.
+        let evicted = mgr.maybe_evict(&mut messages, 50_000);
+        assert_eq!(evicted, 0);
     }
 }
