@@ -2,7 +2,7 @@ use crate::cleanup::CleanupGuard;
 use crate::config::Config;
 use crate::logging;
 use crate::models::{
-    ExternalPr, GithubIssue, InFlightPr, OpenPr, PhaseReport, RepoInfo, StackInfo,
+    CiStatus, ExternalPr, GithubIssue, InFlightPr, OpenPr, PhaseReport, RepoInfo, StackInfo,
     TaskStatus,
 };
 use crate::llm::{self, LlmInvocation};
@@ -238,6 +238,7 @@ async fn run_pipeline(
             config.review_prs,
             &config.review_filter,
             &config.investigate_issues,
+            config.fix_external_ci,
         ),
     )
     .await
@@ -274,8 +275,11 @@ async fn run_pipeline(
     };
 
     // ─── Early exit checks (before recon to save money) ────────────────
+    let has_external_ci_failures = config.fix_external_ci
+        && preflight_output.external_prs.iter().any(|pr| pr.ci_status == CiStatus::Failing);
     let has_maintenance = !preflight_output.prs_needing_ci_fix().is_empty()
-        || !preflight_output.prs_needing_rebase().is_empty();
+        || !preflight_output.prs_needing_rebase().is_empty()
+        || has_external_ci_failures;
     let has_reviews = !preflight_output.external_prs.is_empty();
     let has_issues = !preflight_output.issues.is_empty();
     let at_pr_limit = config.max_open_prs > 0
@@ -534,7 +538,32 @@ fn collect_work_items(
 ) -> Vec<WorkItem> {
     let mut items = Vec::new();
 
-    // CI fix items.
+    // External PR CI fix items.
+    if config.fix_external_ci {
+        for ext_pr in external_prs.iter().filter(|pr| pr.ci_status == CiStatus::Failing) {
+            // Convert ExternalPr to InFlightPr for the CI fix phase.
+            let as_inflight = InFlightPr {
+                number: ext_pr.number,
+                title: ext_pr.title.clone(),
+                body: String::new(),
+                branch: ext_pr.branch.clone(),
+                ci_status: CiStatus::Failing,
+                has_fixing_label: false,
+                has_merge_conflicts: false,
+                files: Vec::new(),
+            };
+            items.push(WorkItem {
+                kind: WorkItemKind::CiFix {
+                    pr: as_inflight,
+                    default_branch: repo_info.default_branch.clone(),
+                },
+                budget_cap: budget_remaining,
+                context_window,
+            });
+        }
+    }
+
+    // CI fix items (autoanneal PRs).
     if config.fix_ci || config.fix_conflicts {
         let mut prs_to_fix: Vec<&InFlightPr> = Vec::new();
         if config.fix_ci {

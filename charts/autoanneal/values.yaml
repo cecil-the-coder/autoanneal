@@ -40,6 +40,7 @@ defaults:
   criticModels: ""      # Comma-separated models for critic panel (empty = single critic)
   improveDocs: true     # Fall back to documentation improvements when no code improvements found
   docCriticThreshold: 7 # Minimum critic score for documentation changes
+  fixExternalCi: false   # Fix CI failures on external PRs (not created by autoanneal)
   reviewPrs: false       # Review external PRs (not created by autoanneal)
   reviewFilter: "all"    # Filter for external PRs: "all", "labeled:<label>", or "recent"
   reviewFixThreshold: 7  # If critic score is below this, attempt to fix instead of just commenting

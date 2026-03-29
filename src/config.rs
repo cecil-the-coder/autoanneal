@@ -109,6 +109,10 @@ pub struct Config {
     #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     pub review_prs: bool,
 
+    /// Fix CI failures on external PRs (not created by autoanneal).
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    pub fix_external_ci: bool,
+
     /// Only review PRs matching this filter: "all", "labeled:<label>", or "recent" (updated in last 24h).
     #[arg(long, default_value = "all")]
     pub review_filter: String,
@@ -331,6 +335,7 @@ mod tests {
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
+            fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
             concurrency: 3,
@@ -371,6 +376,7 @@ mod tests {
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
+            fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
             concurrency: 3,
@@ -411,6 +417,7 @@ mod tests {
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
+            fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
             concurrency: 3,
@@ -451,6 +458,7 @@ mod tests {
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
+            fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
             concurrency: 3,
@@ -491,6 +499,7 @@ mod tests {
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
+            fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
             concurrency: 3,
@@ -531,6 +540,7 @@ mod tests {
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
+            fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
             concurrency: 3,

@@ -101,6 +101,8 @@ Expects a dict with keys: repo (the repo entry), root (top-level context).
 - {{ (ternary $repo.fixCi $defaults.fixCi (hasKey $repo "fixCi")) | quote }}
 - "--fix-conflicts"
 - {{ (ternary $repo.fixConflicts $defaults.fixConflicts (hasKey $repo "fixConflicts")) | quote }}
+- "--fix-external-ci"
+- {{ (ternary $repo.fixExternalCi $defaults.fixExternalCi (hasKey $repo "fixExternalCi")) | quote }}
 - "--critic-threshold"
 - {{ ($repo.criticThreshold | default $defaults.criticThreshold) | quote }}
 {{- if or $repo.criticModels $defaults.criticModels }}

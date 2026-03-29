@@ -140,11 +140,12 @@ pub struct PrBody {
 }
 
 /// CI status of a pull request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CiStatus {
     Passing,
     Failing,
+    #[default]
     Pending,
     Fixing,
 }
@@ -207,6 +208,8 @@ pub struct ExternalPr {
     pub author: String,
     pub updated_at: String,
     pub labels: Vec<String>,
+    #[serde(default)]
+    pub ci_status: CiStatus,
 }
 
 /// A GitHub issue fetched for investigation.

@@ -38,7 +38,7 @@ impl PreflightOutput {
 }
 
 /// Validate environment and repo, return repo metadata plus in-flight PR info.
-pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str, investigate_issues: &str) -> Result<PreflightOutput> {
+pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str, investigate_issues: &str, fix_external_ci: bool) -> Result<PreflightOutput> {
     // 1. Validate environment variables.
     validate_env_vars()?;
 
@@ -98,8 +98,8 @@ pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str, investi
     // 6. Get HEAD SHA.
     let head_sha = get_head_sha(repo_slug, &default_branch).await;
 
-    // 7. Detect external PRs if review is enabled.
-    let external_prs = if review_prs {
+    // 7. Detect external PRs if review or external CI fix is enabled.
+    let external_prs = if review_prs || fix_external_ci {
         detect_external_prs(repo_slug, review_filter).await
     } else {
         Vec::new()
@@ -578,6 +578,8 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
         let author = pr["author"]["login"].as_str().unwrap_or("").to_string();
         let updated_at = pr["updatedAt"].as_str().unwrap_or("").to_string();
 
+        let ci_status = check_ci_status(repo_slug, number).await;
+
         let external = ExternalPr {
             number,
             title,
@@ -585,6 +587,7 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
             author,
             updated_at,
             labels,
+            ci_status,
         };
 
         // 4. Apply configured filter.
