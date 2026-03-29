@@ -162,6 +162,7 @@ pub async fn run(
         context_window,
         provider_hint: None,
         max_tokens_per_turn: None,
+        ci_context: None,
     };
 
     // 3. Invoke Claude.
@@ -223,6 +224,7 @@ pub async fn run_doc_analysis(
         context_window,
         provider_hint: None,
         max_tokens_per_turn: None,
+        ci_context: None,
     };
 
     // 3. Invoke Claude.

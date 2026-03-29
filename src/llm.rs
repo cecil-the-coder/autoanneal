@@ -24,6 +24,8 @@ pub struct LlmInvocation {
     /// Maximum tokens per API response. Defaults to 16384 when None.
     /// Set lower for simple structured-output calls to avoid model limits.
     pub max_tokens_per_turn: Option<u32>,
+    /// CI context for CI-fix invocations (repo slug and run ID).
+    pub ci_context: Option<crate::agent::tools::CiContext>,
 }
 
 /// Parsed response from an LLM invocation.

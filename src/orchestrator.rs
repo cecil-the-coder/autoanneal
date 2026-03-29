@@ -299,11 +299,14 @@ async fn run_pipeline(
 
     // ─── Early exit checks (before recon to save money) ────────────────
     let has_external_ci_failures = config.fix_external_ci
-        && preflight_output.external_prs.iter().any(|pr| pr.ci_status == CiStatus::Failing);
+        && preflight_output.external_prs.iter().any(|pr| {
+            pr.ci_status == CiStatus::Failing
+                && pr.autoanneal_commit_count < config.max_pr_fix_attempts as u64
+        });
     let has_maintenance = !preflight_output.prs_needing_ci_fix().is_empty()
         || !preflight_output.prs_needing_rebase().is_empty()
         || has_external_ci_failures;
-    let has_reviews = !preflight_output.external_prs.is_empty();
+    let has_reviews = preflight_output.external_prs.iter().any(|pr| !pr.reviewed);
     let has_issues = !preflight_output.issues.is_empty();
     let at_pr_limit = config.max_open_prs > 0
         && preflight_output.in_flight_prs.len() >= config.max_open_prs;
@@ -597,6 +600,16 @@ fn collect_work_items(
             if !needs_ci_fix && !needs_conflict_fix {
                 continue;
             }
+            // Skip PRs that have hit the CI fix attempt limit.
+            if needs_ci_fix && ext_pr.autoanneal_commit_count >= config.max_pr_fix_attempts as u64 {
+                info!(
+                    pr_number = ext_pr.number,
+                    attempts = ext_pr.autoanneal_commit_count,
+                    max = config.max_pr_fix_attempts,
+                    "skipping external CI fix — attempt limit reached"
+                );
+                continue;
+            }
             // Convert ExternalPr to InFlightPr for the CI fix phase.
             let as_inflight = InFlightPr {
                 number: ext_pr.number,
@@ -650,9 +663,9 @@ fn collect_work_items(
         }
     }
 
-    // PR review items.
+    // PR review items — skip PRs already reviewed by autoanneal.
     if config.review_prs {
-        for pr in external_prs.iter().take(3) {
+        for pr in external_prs.iter().filter(|pr| !pr.reviewed).take(3) {
             items.push(WorkItem {
                 kind: WorkItemKind::PrReview {
                     pr: pr.clone(),
@@ -1232,6 +1245,8 @@ async fn run_analysis_pipeline(
 
     // ─── Critic Review ─────────────────────────────────────────────────
     let mut critic_summary: Option<String> = None;
+    // (made_fixes, initial_score, initial_summary, final_score, score_unverified)
+    let mut critic_fix_info: Option<(bool, Option<u32>, Option<String>, u32, bool)> = None;
     let threshold = if is_doc_improvements {
         doc_critic_threshold
     } else {
@@ -1274,6 +1289,9 @@ async fn run_analysis_pipeline(
             const MAX_FIX_ROUNDS: u32 = 2;
             let mut panel_result = initial_panel;
             if let Some(ref mut cr) = panel_result {
+                // Capture initial state before fix loop mutates cr.
+                let pre_fix_summary = cr.summary.clone();
+                let pre_fix_score = cr.score;
                 let mut remaining_fix = budget - cr.cost_usd;
                 for fix_round in 1..=MAX_FIX_ROUNDS {
                     if cr.verdict != "needs_work" {
@@ -1316,6 +1334,7 @@ async fn run_analysis_pipeline(
                         context_window,
                         provider_hint: None,
                         max_tokens_per_turn: None,
+                        ci_context: None,
                     };
 
                     let fix_response = llm::invoke::<serde_json::Value>(
@@ -1436,6 +1455,11 @@ async fn run_analysis_pipeline(
                         }
                     }
                 }
+                // If fixes were made, record the initial state for PR body formatting.
+                if cr.made_fixes {
+                    cr.initial_summary = Some(pre_fix_summary);
+                    cr.initial_score = Some(pre_fix_score);
+                }
             }
             panel_result
         } else {
@@ -1464,6 +1488,11 @@ async fn run_analysis_pipeline(
             }
         };
 
+        // Save fix metadata before consuming critic_result.
+        critic_fix_info = critic_result.as_ref().map(|c| {
+            (c.made_fixes, c.initial_score, c.initial_summary.clone(), c.score, c.score_unverified)
+        });
+
         if let Some(critic_output) = critic_result {
             budget -= critic_output.cost_usd;
             cost_total += critic_output.cost_usd;
@@ -1486,10 +1515,31 @@ async fn run_analysis_pipeline(
                     cost_total,
                 ));
             }
-            critic_summary = Some(format!(
-                "## Review\n\nScore: {}/10\n\n{}",
-                critic_output.score, critic_output.summary
-            ));
+
+            critic_summary = if critic_output.made_fixes {
+                let initial_part = critic_output.initial_summary
+                    .as_deref()
+                    .unwrap_or("(initial review unavailable)");
+                let initial_score = critic_output.initial_score.unwrap_or(0);
+                // Strikethrough each line of the initial issues.
+                let struck = initial_part.lines()
+                    .map(|line| if line.trim().is_empty() { String::new() } else { format!("~~{}~~", line) })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(format!(
+                    "## Review\n\n\
+                     **Initial review: {initial_score}/10**\n\n\
+                     {struck}\n\n\
+                     **After fixes: {}/10**\n\n\
+                     {}",
+                    critic_output.score, critic_output.summary
+                ))
+            } else {
+                Some(format!(
+                    "## Review\n\nScore: {}/10\n\n{}",
+                    critic_output.score, critic_output.summary
+                ))
+            };
         } else {
             critic_summary = Some("## Review\n\nCritic review unavailable.".to_string());
         }
@@ -1529,6 +1579,35 @@ async fn run_analysis_pipeline(
     .context("PR creation failed")?;
 
     cost_total += pr_output.cost_usd;
+
+    // Post a comment if the critic made fixes, so reviewers see the progression.
+    if let Some((true, initial_score, _, final_score, unverified)) = critic_fix_info {
+        let score_note = if unverified {
+            " (score unverified — re-review was skipped)"
+        } else {
+            ""
+        };
+        let comment_body = format!(
+            "The automated reviewer found issues (initial score: {}/10) and applied fixes \
+             during review, improving the score to {}/10{}.\n\n\
+             See the PR description for the full review progression.",
+            initial_score.unwrap_or(0),
+            final_score,
+            score_note,
+        );
+        let repo_slug = format!("{}/{}", repo_info.owner, repo_info.name);
+        if let Err(e) = crate::retry::gh_command(
+            clone_path,
+            &[
+                "pr", "comment",
+                &pr_output.pr_number.to_string(),
+                "--body", &comment_body,
+                "-R", &repo_slug,
+            ],
+        ).await {
+            warn!(error = %e, "failed to post critic-fix comment (non-fatal)");
+        }
+    }
 
     Ok((
         WorkItemResult::AnalysisPipeline {

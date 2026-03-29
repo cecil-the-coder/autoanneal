@@ -33,6 +33,16 @@ pub struct ToolDefinition {
 }
 
 // ---------------------------------------------------------------------------
+// CI context (passed into ToolExecutor for CI-fix phases)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct CiContext {
+    pub repo_slug: String,
+    pub run_id: u64,
+}
+
+// ---------------------------------------------------------------------------
 // Executor
 // ---------------------------------------------------------------------------
 
@@ -42,13 +52,22 @@ const MAX_OUTPUT_BYTES: usize = 128 * 1024;
 pub struct ToolExecutor {
     working_dir: PathBuf,
     command_timeout: Duration,
+    ci_context: Option<CiContext>,
+    enabled_tools: Option<Vec<String>>,
 }
 
 impl ToolExecutor {
-    pub fn new(working_dir: PathBuf, command_timeout: Duration) -> Self {
+    pub fn new(
+        working_dir: PathBuf,
+        command_timeout: Duration,
+        ci_context: Option<CiContext>,
+        enabled_tools: Option<Vec<String>>,
+    ) -> Self {
         Self {
             working_dir,
             command_timeout,
+            ci_context,
+            enabled_tools,
         }
     }
 
@@ -438,10 +457,124 @@ impl ToolExecutor {
         }
     }
 
+    /// Run a read-only git command inside `working_dir`.
+    ///
+    /// Only an allowlist of safe, read-only subcommands is permitted:
+    /// status, diff, log, show, rev-parse.
+    ///
+    /// The command is executed directly via `git` (no shell) to prevent
+    /// injection through shell metacharacters like backticks or `$()`.
+    pub fn git(&self, command: &str) -> Result<String, ToolError> {
+        let trimmed = command.trim();
+        let args: Vec<&str> = trimmed.split_whitespace().collect();
+
+        // Accept both "git diff ..." and "diff ..."
+        let (subcommand, git_args) = if args.first() == Some(&"git") {
+            (args.get(1).copied().unwrap_or(""), &args[2..])
+        } else {
+            (args.first().copied().unwrap_or(""), &args[1..])
+        };
+
+        const ALLOWED: &[&str] = &["status", "diff", "log", "show", "rev-parse"];
+        if !ALLOWED.contains(&subcommand) {
+            return Err(ToolError::InvalidInput(format!(
+                "git {subcommand} is not allowed — only {} are permitted",
+                ALLOWED.join(", ")
+            )));
+        }
+
+        // Execute directly without a shell to prevent injection.
+        let rt = tokio::runtime::Handle::try_current().map_err(|e| {
+            ToolError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
+        })?;
+        let working_dir = self.working_dir.clone();
+        let subcommand = subcommand.to_string();
+        let git_args: Vec<String> = git_args.iter().map(|s| s.to_string()).collect();
+        let timeout = self.command_timeout;
+
+        rt.block_on(async move {
+            let output = tokio::time::timeout(
+                timeout,
+                tokio::process::Command::new("git")
+                    .arg(&subcommand)
+                    .args(&git_args)
+                    .current_dir(&working_dir)
+                    .output(),
+            )
+            .await;
+
+            match output {
+                Ok(Ok(out)) if out.status.success() => {
+                    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                    Ok(stdout)
+                }
+                Ok(Ok(out)) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+                    Err(ToolError::CommandFailed {
+                        code: out.status.code().unwrap_or(-1),
+                        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                        stderr,
+                    })
+                }
+                Ok(Err(e)) => Err(ToolError::IoError(e)),
+                Err(_) => Err(ToolError::CommandFailed {
+                    code: -1,
+                    stdout: String::new(),
+                    stderr: format!("git {subcommand} timed out after {}s", timeout.as_secs()),
+                }),
+            }
+        })
+    }
+
+    /// Query GitHub Actions workflow data. Requires `ci_context` to be set.
+    ///
+    /// Actions:
+    /// - `job_logs`:    fetch full logs for a specific job ID
+    /// - `job_summary`: fetch structured job/step failure summary for the run
+    pub fn gh_workflow_logs(&self, action: &str, job_id: Option<u64>) -> Result<String, ToolError> {
+        let ctx = self.ci_context.as_ref().ok_or_else(|| {
+            ToolError::InvalidInput("gh_workflow_logs requires CI context (run_id and repo_slug)".into())
+        })?;
+        match action {
+            "job_logs" => {
+                let jid = job_id.ok_or_else(|| {
+                    ToolError::InvalidInput("job_id is required for action 'job_logs'".into())
+                })?;
+                let cmd = format!(
+                    "gh run view {} --log --job {} -R {}",
+                    ctx.run_id, jid, ctx.repo_slug
+                );
+                self.run_command(&cmd, None)
+            }
+            "job_summary" => {
+                let cmd = format!(
+                    "gh run view {} --json jobs -R {}",
+                    ctx.run_id, ctx.repo_slug
+                );
+                self.run_command(&cmd, None)
+            }
+            other => Err(ToolError::InvalidInput(format!(
+                "unknown action '{other}' — use 'job_logs' or 'job_summary'"
+            ))),
+        }
+    }
+
     // -- catalogue ----------------------------------------------------------
 
+    /// Return tool definitions, filtered by `enabled_tools` if set.
+    pub fn get_tool_definitions(&self) -> Vec<ToolDefinition> {
+        let all = Self::all_tool_definitions();
+        match &self.enabled_tools {
+            Some(enabled) => all
+                .into_iter()
+                .filter(|d| enabled.contains(&d.name))
+                .collect(),
+            None => all,
+        }
+    }
+
     /// Return the full set of tool definitions for the Claude API.
-    pub fn get_tool_definitions() -> Vec<ToolDefinition> {
+    fn all_tool_definitions() -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {
                 name: "read_file".into(),
@@ -519,6 +652,29 @@ impl ToolExecutor {
                     "required": ["command"]
                 }),
             },
+            ToolDefinition {
+                name: "git".into(),
+                description: "Run a read-only git command. Allowed subcommands: status, diff, log, show, rev-parse.".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "Full git command, e.g. 'git diff HEAD~1 --stat'" }
+                    },
+                    "required": ["command"]
+                }),
+            },
+            ToolDefinition {
+                name: "gh_workflow_logs".into(),
+                description: "Query GitHub Actions workflow data for the current CI run. Use 'job_summary' to see which jobs/steps failed, then 'job_logs' to fetch full logs for a specific job.".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "action":  { "type": "string", "enum": ["job_logs", "job_summary"], "description": "What to fetch" },
+                        "job_id":  { "type": "integer", "description": "The CI job ID (required for job_logs, ignored for job_summary)" }
+                    },
+                    "required": ["action"]
+                }),
+            },
         ]
     }
 
@@ -526,6 +682,14 @@ impl ToolExecutor {
 
     /// Route a tool call by name to the correct implementation.
     pub fn execute_tool(&self, name: &str, input: &Value) -> Result<String, ToolError> {
+        // Check enabled_tools filter.
+        if let Some(ref enabled) = self.enabled_tools {
+            if !enabled.iter().any(|t| t == name) {
+                return Err(ToolError::InvalidInput(format!(
+                    "tool '{name}' is not enabled for this invocation"
+                )));
+            }
+        }
         match name {
             "read_file" => {
                 let path = input
@@ -610,6 +774,25 @@ impl ToolExecutor {
                     .map(Duration::from_secs);
                 self.run_command(command, timeout)
             }
+            "git" => {
+                let command = input
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ToolError::InvalidInput("missing required field: command".into())
+                    })?;
+                self.git(command)
+            }
+            "gh_workflow_logs" => {
+                let action = input
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ToolError::InvalidInput("missing required field: action".into())
+                    })?;
+                let job_id = input.get("job_id").and_then(|v| v.as_u64());
+                self.gh_workflow_logs(action, job_id)
+            }
             other => Err(ToolError::InvalidInput(format!("unknown tool: {other}"))),
         }
     }
@@ -627,7 +810,7 @@ mod tests {
     /// Create a ToolExecutor rooted in a fresh temp directory and return both.
     fn make_executor() -> (ToolExecutor, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("create temp dir");
-        let exec = ToolExecutor::new(tmp.path().to_path_buf(), Duration::from_secs(30));
+        let exec = ToolExecutor::new(tmp.path().to_path_buf(), Duration::from_secs(30), None, None);
         (exec, tmp)
     }
 
@@ -979,7 +1162,7 @@ mod tests {
 
     #[test]
     fn tool_definitions_complete() {
-        let defs = ToolExecutor::get_tool_definitions();
+        let defs = ToolExecutor::all_tool_definitions();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
@@ -987,11 +1170,13 @@ mod tests {
         assert!(names.contains(&"search_files"));
         assert!(names.contains(&"search_content"));
         assert!(names.contains(&"run_command"));
+        assert!(names.contains(&"git"));
+        assert!(names.contains(&"gh_workflow_logs"));
     }
 
     #[test]
     fn tool_definitions_valid_json_schema() {
-        let defs = ToolExecutor::get_tool_definitions();
+        let defs = ToolExecutor::all_tool_definitions();
         for def in &defs {
             // Every schema must be an object type with "properties".
             assert_eq!(
@@ -1115,7 +1300,7 @@ mod tests {
         fs::create_dir(&sibling).unwrap();
         fs::write(sibling.join("secret.txt"), "nope").unwrap();
 
-        let exec = ToolExecutor::new(wd, Duration::from_secs(30));
+        let exec = ToolExecutor::new(wd, Duration::from_secs(30), None, None);
         let sibling_file = sibling.join("secret.txt");
         let err = exec
             .read_file(&sibling_file.to_string_lossy(), None, None)

@@ -126,6 +126,7 @@ pub async fn create_pr(
         context_window,
         provider_hint: None,
         max_tokens_per_turn: None,
+        ci_context: None,
     };
 
     let response = invoke::<PrBody>(&invocation, Duration::from_secs(120))

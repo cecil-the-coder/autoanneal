@@ -146,6 +146,11 @@ pub struct Config {
     /// retrieve them on demand. Lower values reduce cost.
     #[arg(long, default_value = "128000")]
     pub context_window: u64,
+
+    /// Maximum number of fix attempts (CI fix, review fix) on an external PR.
+    /// Counted by commits whose message starts with "autoanneal:".
+    #[arg(long, default_value = "3")]
+    pub max_pr_fix_attempts: u32,
 }
 
 impl Config {
@@ -344,6 +349,7 @@ mod tests {
             issue_budget: 3.0,
             max_open_prs: 5,
             context_window: 128_000,
+            max_pr_fix_attempts: 3,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -385,6 +391,7 @@ mod tests {
             issue_budget: 3.0,
             max_open_prs: 5,
             context_window: 128_000,
+            max_pr_fix_attempts: 3,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -426,6 +433,7 @@ mod tests {
             issue_budget: 3.0,
             max_open_prs: 5,
             context_window: 128_000,
+            max_pr_fix_attempts: 3,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -467,6 +475,7 @@ mod tests {
             issue_budget: 3.0,
             max_open_prs: 5,
             context_window: 128_000,
+            max_pr_fix_attempts: 3,
         };
         assert_eq!(config.repo_slug(), "owner/repo");
     }
@@ -508,6 +517,7 @@ mod tests {
             issue_budget: 3.0,
             max_open_prs: 5,
             context_window: 128_000,
+            max_pr_fix_attempts: 3,
         };
         assert_eq!(config.min_severity(), Severity::Moderate);
     }
@@ -549,6 +559,7 @@ mod tests {
             issue_budget: 3.0,
             max_open_prs: 5,
             context_window: 128_000,
+            max_pr_fix_attempts: 3,
         };
         assert_eq!(config.min_severity(), Severity::Minor);
     }

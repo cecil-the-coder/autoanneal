@@ -34,6 +34,10 @@ pub struct CriticOutput {
     /// or re-review failed). Callers should treat the score as a lower bound
     /// and may enforce a stricter threshold.
     pub score_unverified: bool,
+    /// The initial review summary before fixes were applied (for strikethrough in PR body).
+    pub initial_summary: Option<String>,
+    /// The initial score before fixes were applied.
+    pub initial_score: Option<u32>,
 }
 
 pub async fn run(
@@ -56,6 +60,8 @@ pub async fn run(
             cost_usd: 0.0,
             made_fixes: false,
             score_unverified: false,
+            initial_summary: None,
+            initial_score: None,
         });
     }
 
@@ -73,6 +79,7 @@ pub async fn run(
         context_window,
         provider_hint: None,
         max_tokens_per_turn: None,
+        ci_context: None,
     };
 
     let response = llm::invoke::<CriticResult>(&invocation, Duration::from_secs(600)).await?;
@@ -108,6 +115,8 @@ pub async fn run(
             cost_usd: total_cost,
             made_fixes: false,
             score_unverified: false,
+            initial_summary: None,
+            initial_score: None,
         });
     }
 
@@ -131,6 +140,7 @@ pub async fn run(
         context_window,
         provider_hint: None,
         max_tokens_per_turn: None,
+        ci_context: None,
     };
 
     let fix_response = llm::invoke::<serde_json::Value>(&fix_invocation, Duration::from_secs(600)).await;
@@ -178,6 +188,8 @@ pub async fn run(
                         cost_usd: total_cost,
                         made_fixes: false,
                         score_unverified: false,
+                        initial_summary: None,
+                        initial_score: None,
                     });
                 }
 
@@ -200,6 +212,7 @@ pub async fn run(
                         context_window,
                         provider_hint: None,
                         max_tokens_per_turn: None,
+                        ci_context: None,
                     };
 
                     if let Ok(re_response) = llm::invoke::<CriticResult>(
@@ -216,14 +229,12 @@ pub async fn run(
                             return Ok(CriticOutput {
                                 score: re_review.score,
                                 verdict: re_review.verdict,
-                                summary: format!(
-                                    "Initial review: {}/10 — {}. After fixes: {}/10 — {}",
-                                    initial_review.score, initial_review.summary,
-                                    re_review.score, re_review.summary
-                                ),
+                                summary: re_review.summary,
                                 cost_usd: total_cost,
                                 made_fixes: true,
                                 score_unverified: false,
+                                initial_summary: Some(initial_review.summary),
+                                initial_score: Some(initial_review.score),
                             });
                         }
                     }
@@ -233,14 +244,13 @@ pub async fn run(
                 // The score is unverified since fixes were applied without re-review.
                 return Ok(CriticOutput {
                     score: initial_review.score,
-                    verdict: initial_review.verdict,
-                    summary: format!(
-                        "Initial: {}/10 — {}. Fixes applied but re-review skipped.",
-                        initial_review.score, initial_review.summary
-                    ),
+                    verdict: initial_review.verdict.clone(),
+                    summary: "Fixes applied but re-review skipped.".to_string(),
                     cost_usd: total_cost,
                     made_fixes: true,
                     score_unverified: true,
+                    initial_summary: Some(initial_review.summary),
+                    initial_score: Some(initial_review.score),
                 });
             }
 
@@ -259,6 +269,8 @@ pub async fn run(
         cost_usd: total_cost,
         made_fixes: false,
         score_unverified: false,
+        initial_summary: None,
+        initial_score: None,
     })
 }
 
