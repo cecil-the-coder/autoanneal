@@ -73,7 +73,7 @@ pub async fn handle_github_webhook(
         match cooldowns.get(&cooldown_key) {
             Some(last) => {
                 let elapsed = last.elapsed();
-                elapsed.as_secs() >= 120 // 2-minute cooldown
+                elapsed.as_secs() >= state.webhook_cooldown_secs
             }
             None => true,
         }
