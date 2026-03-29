@@ -8,6 +8,7 @@ on:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
+  MANAGER_IMAGE: ghcr.io/${{ github.repository }}-manager
 
 jobs:
   build:
@@ -44,7 +45,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push worker
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -53,8 +54,21 @@ jobs:
           tags: ${{ env.IMAGE }}:${{ steps.sha.outputs.short }}-${{ matrix.suffix }}
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=${{ matrix.suffix }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.suffix }}
+          cache-from: type=gha,scope=worker-${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=worker-${{ matrix.suffix }}
+
+      - name: Build and push manager
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.manager
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ env.MANAGER_IMAGE }}:${{ steps.sha.outputs.short }}-${{ matrix.suffix }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=manager-${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=manager-${{ matrix.suffix }}
 
   manifest:
     needs: build
@@ -76,7 +90,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create and push multi-arch manifest
+      - name: Create and push worker manifests
         run: |
           docker manifest create ${{ env.IMAGE }}:${{ steps.sha.outputs.short }} \
             ${{ env.IMAGE }}:${{ steps.sha.outputs.short }}-amd64 \
@@ -88,3 +102,16 @@ jobs:
 
           docker manifest push ${{ env.IMAGE }}:${{ steps.sha.outputs.short }}
           docker manifest push ${{ env.IMAGE }}:latest
+
+      - name: Create and push manager manifests
+        run: |
+          docker manifest create ${{ env.MANAGER_IMAGE }}:${{ steps.sha.outputs.short }} \
+            ${{ env.MANAGER_IMAGE }}:${{ steps.sha.outputs.short }}-amd64 \
+            ${{ env.MANAGER_IMAGE }}:${{ steps.sha.outputs.short }}-arm64
+
+          docker manifest create ${{ env.MANAGER_IMAGE }}:latest \
+            ${{ env.MANAGER_IMAGE }}:${{ steps.sha.outputs.short }}-amd64 \
+            ${{ env.MANAGER_IMAGE }}:${{ steps.sha.outputs.short }}-arm64
+
+          docker manifest push ${{ env.MANAGER_IMAGE }}:${{ steps.sha.outputs.short }}
+          docker manifest push ${{ env.MANAGER_IMAGE }}:latest

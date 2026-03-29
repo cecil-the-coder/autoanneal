@@ -88,8 +88,10 @@ pub async fn run(
 
     let critic_output: CriticOutput = if let Some(models) = critic_models {
         // Panel mode: skip Gate 1 (human PR, worthwhileness is assumed)
+        // Pass the gh pr diff so the panel reviews the correct PR changes,
+        // not a git diff that may include unrelated commits from main.
         info!(pr_number = pr.number, models = models.len(), "PR review using critic panel");
-        super::critic_panel::run(
+        super::critic_panel::run_with_diff(
             &clone_dir,
             default_branch,
             models,
@@ -97,6 +99,7 @@ pub async fn run(
             context_window,
             true, // skip_gate1 — human PRs are assumed worthwhile
             0,    // no web searches for PR reviews
+            Some(&diff),
         )
         .await
         .unwrap_or(CriticOutput {

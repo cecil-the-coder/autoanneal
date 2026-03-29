@@ -1,4 +1,4 @@
-{{- if not .Values.job.enabled }}
+{{- if and (not .Values.job.enabled) (not .Values.manager.enabled) }}
 {{- range .Values.repos }}
 {{- if .schedule }}
 ---

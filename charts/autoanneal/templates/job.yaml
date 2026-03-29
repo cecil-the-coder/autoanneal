@@ -1,4 +1,4 @@
-{{- if .Values.job.enabled }}
+{{- if and .Values.job.enabled (not .Values.manager.enabled) }}
 {{- range .Values.repos }}
 {{- if or (not $.Values.job.repoFilter) (eq $.Values.job.repoFilter .name) }}
 ---

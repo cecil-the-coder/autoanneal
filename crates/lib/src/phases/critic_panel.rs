@@ -36,15 +36,38 @@ pub async fn run(
     skip_gate1: bool,
     exa_max_searches: u32,
 ) -> Result<CriticOutput> {
+    run_with_diff(clone_path, default_branch, models, budget, context_window, skip_gate1, exa_max_searches, None).await
+}
+
+/// Run the critic panel with an optional pre-fetched diff.
+///
+/// When `override_diff` is provided (e.g. from `gh pr diff`), it is used for
+/// the initial review instead of computing a git diff in the worktree. Re-reviews
+/// after fix rounds always use a fresh git diff since the code has changed.
+pub async fn run_with_diff(
+    clone_path: &Path,
+    default_branch: &str,
+    models: &[String],
+    budget: f64,
+    context_window: u64,
+    skip_gate1: bool,
+    exa_max_searches: u32,
+    override_diff: Option<&str>,
+) -> Result<CriticOutput> {
     info!(
         models = models.len(),
         budget,
         skip_gate1,
+        override_diff = override_diff.is_some(),
         "starting critic panel deliberation"
     );
 
     // ── Get diff ────────────────────────────────────────────────────
-    let diff = get_diff(clone_path, default_branch).await?;
+    let diff = if let Some(d) = override_diff {
+        d.to_string()
+    } else {
+        get_diff(clone_path, default_branch).await?
+    };
     if diff.trim().is_empty() {
         return Ok(CriticOutput {
             score: 0,
@@ -217,9 +240,10 @@ pub async fn run(
         }
     };
 
-    // Collect deductions from all critics for transparency.
+    // Collect deductions from real critics only (exclude failed/unavailable).
     let all_deductions: Vec<String> = g2_responses
         .iter()
+        .filter(|(r, _)| !r.reasoning.starts_with("(critic unavailable"))
         .flat_map(|(r, _)| r.deductions.iter().cloned())
         .collect();
     let dedup_deductions: Vec<String> = {
@@ -571,7 +595,7 @@ async fn run_gate2(
                         reasoning: "(critic unavailable — defaulting to needs_fix)".into(),
                         score: 5,
                         summary: "(critic unavailable)".into(),
-                        deductions: vec!["Critic unavailable".into()],
+                        deductions: vec![],
                     },
                     0.0,
                 ));
@@ -585,7 +609,7 @@ async fn run_gate2(
                         reasoning: "(critic unavailable — defaulting to needs_fix)".into(),
                         score: 5,
                         summary: "(critic unavailable)".into(),
-                        deductions: vec!["Critic unavailable".into()],
+                        deductions: vec![],
                     },
                     0.0,
                 ));
@@ -1046,10 +1070,15 @@ async fn run_research(
     }
 }
 
-/// Get the diff between the default branch and HEAD.
+/// Get the diff between the default branch and HEAD using three-dot diff.
+///
+/// Three-dot (`...`) shows only changes on the current branch since it diverged
+/// from the default branch, excluding commits added to the default branch after
+/// the branch point. Two-dot (`..`) would incorrectly show those commits as
+/// deletions.
 async fn get_diff(clone_path: &Path, default_branch: &str) -> Result<String> {
     let diff_output = tokio::process::Command::new("git")
-        .args(["diff", &format!("{default_branch}..HEAD")])
+        .args(["diff", &format!("{default_branch}...HEAD")])
         .current_dir(clone_path)
         .output()
         .await
