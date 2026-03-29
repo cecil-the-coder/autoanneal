@@ -210,6 +210,7 @@ pub struct ExternalPr {
     pub labels: Vec<String>,
     #[serde(default)]
     pub ci_status: CiStatus,
+    pub has_merge_conflicts: bool,
 }
 
 /// A GitHub issue fetched for investigation.

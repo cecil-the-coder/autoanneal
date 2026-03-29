@@ -545,7 +545,7 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
             "--state",
             "open",
             "--json",
-            "number,title,headRefName,author,updatedAt,labels",
+            "number,title,headRefName,author,updatedAt,labels,mergeable",
             "--limit",
             "50",
             "-R",
@@ -604,6 +604,11 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
 
         let ci_status = check_ci_status(repo_slug, number).await;
 
+        let has_merge_conflicts = pr["mergeable"]
+            .as_str()
+            .map(|m| m == "CONFLICTING")
+            .unwrap_or(false);
+
         let external = ExternalPr {
             number,
             title,
@@ -612,6 +617,7 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
             updated_at,
             labels,
             ci_status,
+            has_merge_conflicts,
         };
 
         // 4. Apply configured filter.
