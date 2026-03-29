@@ -89,6 +89,11 @@ pub async fn gh_command(repo_dir: &Path, args: &[&str]) -> Result<String> {
             bail!("gh authentication failure: {stderr}");
         }
 
+        // "no checks reported" is permanent, not transient -- bail immediately.
+        if stderr_lower.contains("no checks reported") {
+            bail!("gh command failed: {stderr}");
+        }
+
         // Determine whether the error is transient (worth retrying).
         let is_transient = stderr_lower.contains("rate limit")
             || stderr_lower.contains("403")
