@@ -337,12 +337,31 @@ pub async fn invoke<T: DeserializeOwned>(
     let client = ApiClient::new(creds.base_url, creds.api_key, creds.provider, creds.use_bearer);
 
     let enabled_tools = parse_enabled_tools(invocation.tools);
-    let executor = ToolExecutor::new(
-        invocation.working_dir.clone(),
-        Duration::from_secs(120),
-        invocation.ci_context.clone(),
-        enabled_tools,
-    );
+    let executor = if invocation.exa_max_searches > 0
+        || invocation.tools.contains("CheckVulnerability")
+        || invocation.tools.contains("CheckPackage")
+        || invocation.tools.contains("SearchIssues")
+    {
+        let exa_api_key = std::env::var("EXA_API_KEY").ok();
+        let repo_slug = derive_repo_slug(&invocation.working_dir);
+        ToolExecutor::new_with_research(
+            invocation.working_dir.clone(),
+            Duration::from_secs(120),
+            invocation.ci_context.clone(),
+            enabled_tools,
+            exa_api_key,
+            invocation.exa_max_searches,
+            repo_slug,
+            invocation.tools.to_string(),
+        )
+    } else {
+        ToolExecutor::new(
+            invocation.working_dir.clone(),
+            Duration::from_secs(120),
+            invocation.ci_context.clone(),
+            enabled_tools,
+        )
+    };
     let debug_stream = std::env::var("AUTOANNEAL_DEBUG_STREAM")
         .map_or(false, |v| v == "1" || v == "true");
     let tool_handler = ToolExecutorAdapter {
@@ -374,6 +393,8 @@ pub async fn invoke<T: DeserializeOwned>(
     let duration_ms = start.elapsed().as_millis() as u64;
     let rss_after = rss_mb();
 
+    let exa_cost = tool_handler.executor.exa_cost();
+
     info!(
         turns = result.turns,
         input_tokens = result.total_input_tokens,
@@ -382,10 +403,60 @@ pub async fn invoke<T: DeserializeOwned>(
         duration_ms = duration_ms,
         rss_before_mb = rss_before,
         rss_after_mb = rss_after,
+        exa_cost_usd = exa_cost,
         "bridge: conversation complete"
     );
 
-    map_result(result, duration_ms)
+    let mut response = map_result(result, duration_ms)?;
+    response.cost_usd += exa_cost;
+    Ok(response)
+}
+
+// ---------------------------------------------------------------------------
+// Repo slug derivation
+// ---------------------------------------------------------------------------
+
+/// Derive an "owner/repo" slug from the git remote in the working directory.
+fn derive_repo_slug(working_dir: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(working_dir)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    // Parse common formats:
+    // https://github.com/owner/repo.git
+    // git@github.com:owner/repo.git
+    let slug = if let Some(rest) = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+    {
+        rest.to_string()
+    } else if let Some(at_pos) = url.find('@') {
+        let after_at = &url[at_pos + 1..];
+        if let Some(colon_pos) = after_at.find(':') {
+            after_at[colon_pos + 1..].to_string()
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+
+    let slug = slug.strip_suffix(".git").unwrap_or(&slug);
+    let slug = slug.trim_end_matches('/');
+
+    if slug.contains('/') {
+        Some(slug.to_string())
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -495,6 +566,7 @@ mod tests {
             provider_hint: None,
             max_tokens_per_turn: None,
             ci_context: None,
+            exa_max_searches: 0,
         }
     }
 

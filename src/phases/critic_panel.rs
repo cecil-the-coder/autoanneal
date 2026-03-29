@@ -34,6 +34,7 @@ pub async fn run(
     budget: f64,
     context_window: u64,
     skip_gate1: bool,
+    exa_max_searches: u32,
 ) -> Result<CriticOutput> {
     info!(
         models = models.len(),
@@ -77,7 +78,7 @@ pub async fn run(
 
     if !skip_gate1 {
         let (g1_passed, g1_responses, g1_cost, g1_research) =
-            run_gate1(&diff, &critics, gate1_budget / (critics.len() as f64 * 2.0), context_window, clone_path)
+            run_gate1(&diff, &critics, gate1_budget / (critics.len() as f64 * 2.0), context_window, clone_path, exa_max_searches)
                 .await?;
         total_cost += g1_cost;
         gate1_research = g1_research;
@@ -118,6 +119,25 @@ pub async fn run(
     let gate1_research_for_gate2: Option<(String, f64)> = if let Some(findings) = gate1_research {
         info!(findings_len = findings.len(), "reusing research from gate 1 rebuttal");
         Some((findings, 0.0)) // cost already counted in gate 1
+    } else if !skip_gate1 {
+        // Gate 1 passed without rebuttal — run research now
+        let research_budget = budget * 0.10;
+        let findings = run_research(
+            "Review the diff and investigate any potential issues with the changes.",
+            &diff,
+            &critics[0],
+            research_budget,
+            context_window,
+            clone_path,
+            exa_max_searches,
+        )
+        .await;
+
+        if let Some((ref text, cost)) = findings {
+            total_cost += cost;
+            info!(cost, findings_len = text.len(), "research agent completed");
+        }
+        findings
     } else {
         None
     };
@@ -138,6 +158,7 @@ pub async fn run(
             clone_path,
             gate1_research_for_gate2.as_ref().map(|(f, _)| f.as_str()),
             budget * 0.10, // research budget (only used if no gate1 research)
+            exa_max_searches,
         )
         .await?;
     total_cost += g2_cost;
@@ -246,6 +267,7 @@ async fn run_gate1(
     budget_per_critic: f64,
     context_window: u64,
     clone_path: &Path,
+    exa_max_searches: u32,
 ) -> Result<(bool, Vec<(WorthwhileResponse, f64)>, f64, Option<String>)> {
     let user_prompt = format!(
         "## Changes Under Review\n\n```\n{}\n```\n\nEvaluate whether this PR should exist.",
@@ -370,6 +392,7 @@ async fn run_gate1(
         research_budget,
         context_window,
         clone_path,
+        exa_max_searches,
     )
     .await;
 
@@ -484,6 +507,7 @@ async fn run_gate2(
     clone_path: &Path,
     gate1_research: Option<&str>,
     research_budget: f64,
+    exa_max_searches: u32,
 ) -> Result<(bool, Vec<(ReadyResponse, f64)>, Vec<CriticIssue>, u32, String, f64)> {
     let mut total_cost = 0.0;
 
@@ -584,6 +608,7 @@ async fn run_gate2(
             research_budget,
             context_window,
             clone_path,
+            exa_max_searches,
         )
         .await;
 
@@ -768,6 +793,7 @@ async fn invoke_critic<T: serde::de::DeserializeOwned + Send + 'static>(
         provider_hint,
         max_tokens_per_turn: Some(4096), // critics output small JSON, no need for 16K
         ci_context: None,
+        exa_max_searches: 0,
     };
 
     let response = llm::invoke::<T>(&invocation, Duration::from_secs(300))
@@ -979,6 +1005,7 @@ async fn run_research(
     budget: f64,
     context_window: u64,
     clone_path: &Path,
+    exa_max_searches: u32,
 ) -> Option<(String, f64)> {
     let (provider_hint, model_name) = parse_provider_model(model);
 
@@ -993,13 +1020,14 @@ async fn run_research(
         max_budget_usd: budget,
         max_turns: 15,
         effort: "high",
-        tools: "Read,Glob,Grep,Bash",
+        tools: "Read,Glob,Grep,Bash,WebSearch,CheckVulnerability,CheckPackage,SearchIssues",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
         context_window,
         provider_hint,
         max_tokens_per_turn: None,
         ci_context: None,
+        exa_max_searches,
     };
 
     match llm::invoke::<serde_json::Value>(&invocation, Duration::from_secs(120)).await {

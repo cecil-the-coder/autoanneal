@@ -134,7 +134,15 @@ Rules:
 - Use Read, Glob, and Grep to find answers. Use Bash only for git commands (git log, git blame, git show).
 - Do NOT run build, compile, test, lint, or format commands. These consume too much memory and time.
 - Be concise. Quote relevant code snippets when helpful.
-- If you cannot find the answer, say so clearly."#;
+- If you cannot find the answer, say so clearly.
+
+You have additional research tools available:
+- WebSearch: Search the web for documentation, best practices, and known issues. Use when critics reference external knowledge.
+- CheckVulnerability: Check if a package has known security vulnerabilities. Use when critics claim security issues.
+- CheckPackage: Check a package's current status, latest version, and deprecation status on its registry.
+- SearchIssues: Search the repository's GitHub issues for related discussions and bug reports.
+
+These tools return pre-formatted verdicts. Quote them directly in your findings — do not reinterpret or summarize their output."#;
 
 /// Returns the Gate 1 system prompt for critic instance `index` (0-based).
 /// Cycles through variants A, B, C for role diversity.

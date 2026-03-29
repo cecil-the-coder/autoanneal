@@ -54,6 +54,10 @@ pub struct ToolExecutor {
     command_timeout: Duration,
     ci_context: Option<CiContext>,
     enabled_tools: Option<Vec<String>>,
+    /// Optional research tools (web search, vulnerability check, etc.)
+    research: Option<super::research_tools::ResearchToolExecutor>,
+    /// The tools string from the invocation, used to filter definitions.
+    tools_filter: String,
 }
 
 impl ToolExecutor {
@@ -68,7 +72,49 @@ impl ToolExecutor {
             command_timeout,
             ci_context,
             enabled_tools,
+            research: None,
+            tools_filter: String::new(),
         }
+    }
+
+    /// Create an executor with research tool support.
+    pub fn new_with_research(
+        working_dir: PathBuf,
+        command_timeout: Duration,
+        ci_context: Option<CiContext>,
+        enabled_tools: Option<Vec<String>>,
+        exa_api_key: Option<String>,
+        exa_max_searches: u32,
+        repo_slug: Option<String>,
+        tools_filter: String,
+    ) -> Self {
+        let research = if exa_max_searches > 0
+            || tools_filter.contains("CheckVulnerability")
+            || tools_filter.contains("CheckPackage")
+            || tools_filter.contains("SearchIssues")
+        {
+            Some(super::research_tools::ResearchToolExecutor::new(
+                exa_api_key,
+                exa_max_searches,
+                repo_slug,
+            ))
+        } else {
+            None
+        };
+
+        Self {
+            working_dir,
+            command_timeout,
+            ci_context,
+            enabled_tools,
+            research,
+            tools_filter,
+        }
+    }
+
+    /// Return accumulated Exa search cost in USD.
+    pub fn exa_cost(&self) -> f64 {
+        self.research.as_ref().map_or(0.0, |r| r.exa_cost())
     }
 
     // -- path helpers -------------------------------------------------------
@@ -561,16 +607,24 @@ impl ToolExecutor {
 
     // -- catalogue ----------------------------------------------------------
 
-    /// Return tool definitions, filtered by `enabled_tools` if set.
+    /// Return tool definitions, filtered by `enabled_tools` if set,
+    /// including research tools when configured.
     pub fn get_tool_definitions(&self) -> Vec<ToolDefinition> {
         let all = Self::all_tool_definitions();
-        match &self.enabled_tools {
+        let mut defs = match &self.enabled_tools {
             Some(enabled) => all
                 .into_iter()
                 .filter(|d| enabled.contains(&d.name))
                 .collect(),
             None => all,
+        };
+
+        // Append research tool definitions when configured.
+        if let Some(ref research) = self.research {
+            defs.extend(research.tool_definitions(&self.tools_filter));
         }
+
+        defs
     }
 
     /// Return the full set of tool definitions for the Claude API.
@@ -793,7 +847,15 @@ impl ToolExecutor {
                 let job_id = input.get("job_id").and_then(|v| v.as_u64());
                 self.gh_workflow_logs(action, job_id)
             }
-            other => Err(ToolError::InvalidInput(format!("unknown tool: {other}"))),
+            other => {
+                // Check if it's a research tool.
+                if let Some(ref research) = self.research {
+                    if research.handles_tool(other) {
+                        return research.execute_tool(other, input);
+                    }
+                }
+                Err(ToolError::InvalidInput(format!("unknown tool: {other}")))
+            }
         }
     }
 }

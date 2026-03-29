@@ -361,6 +361,7 @@ async fn llm_recon(
         provider_hint: None,
         max_tokens_per_turn: None,
         ci_context: None,
+        exa_max_searches: 0,
     };
 
     let timeout = Duration::from_secs(300);
