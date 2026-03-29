@@ -148,16 +148,20 @@ pub async fn run(
         .await?;
     total_cost += g2_cost;
 
-    // Determine the dominant verdict from responses
-    let approve_count = g2_responses.iter().filter(|(r, _)| r.verdict == "approve").count();
-    let needs_fix_count = g2_responses.iter().filter(|(r, _)| r.verdict == "needs_fix").count();
-    let reject_count = g2_responses.iter().filter(|(r, _)| r.verdict == "reject").count();
+    // Determine the dominant verdict from real responses only (exclude failed critics).
+    let real_responses: Vec<&(ReadyResponse, f64)> = g2_responses
+        .iter()
+        .filter(|(r, _)| !r.reasoning.starts_with("(critic unavailable"))
+        .collect();
+    let approve_count = real_responses.iter().filter(|(r, _)| r.verdict == "approve").count();
+    let needs_fix_count = real_responses.iter().filter(|(r, _)| r.verdict == "needs_fix").count();
+    let reject_count = real_responses.iter().filter(|(r, _)| r.verdict == "reject").count();
 
     let (verdict, score) = if g2_passed && approve_count >= needs_fix_count && approve_count >= reject_count && g2_median_score >= 6 {
-        // Approve: majority approves and score meets threshold
+        // Approve: majority of real critics approves and score meets threshold
         ("approve".to_string(), g2_median_score)
-    } else if reject_count > (critics.len() / 2) {
-        // Reject: majority rejects
+    } else if !real_responses.is_empty() && reject_count > (real_responses.len() / 2) {
+        // Reject: majority of real critics rejects
         ("reject".to_string(), g2_median_score)
     } else if needs_fix_count > 0 || !g2_passed {
         // Needs work: some critics want fixes
@@ -314,18 +318,37 @@ async fn run_gate1(
         }
     }
 
-    // Check for unanimous decision
-    let reject_count = responses.iter().filter(|(r, _)| r.verdict == "reject").count();
-    let needs_work_count = responses.iter().filter(|(r, _)| r.verdict == "needs_work").count();
-    let worthwhile_count = responses.len() - reject_count - needs_work_count;
+    // Filter out failed critics — only real responses count.
+    let real_responses: Vec<&(WorthwhileResponse, f64)> = responses
+        .iter()
+        .filter(|(r, _)| !r.reasoning.starts_with("(critic unavailable"))
+        .collect();
+    let real_count = real_responses.len();
 
-    if reject_count == responses.len() {
-        // Unanimous reject — abort immediately
+    info!(
+        real_critics = real_count,
+        total_critics = responses.len(),
+        failed = responses.len() - real_count,
+        "gate1: filtering out failed critics from voting"
+    );
+
+    // If no real responses, skip — we can't determine anything. Let the next run try.
+    if real_responses.is_empty() {
+        warn!("gate1: all critics failed, skipping (inconclusive)");
+        anyhow::bail!("all Gate 1 critics failed — skipping review (will retry next run)");
+    }
+
+    let reject_count = real_responses.iter().filter(|(r, _)| r.verdict == "reject").count();
+    let needs_work_count = real_responses.iter().filter(|(r, _)| r.verdict == "needs_work").count();
+    let worthwhile_count = real_count - reject_count - needs_work_count;
+
+    if reject_count == real_count {
+        // Unanimous reject from real critics — abort immediately
         info!(reject_count, "gate1 round 1 — unanimous reject");
         return Ok((false, responses, total_cost, None));
     }
     if reject_count == 0 {
-        // No rejects — proceed (even if some say needs_work)
+        // No rejects from real critics — proceed (even if some say needs_work)
         info!(worthwhile_count, needs_work_count, "gate1 round 1 — no rejects");
         return Ok((true, responses, total_cost, None));
     }
@@ -420,8 +443,18 @@ async fn run_gate1(
         merged
     };
 
-    let reject_count = final_responses.iter().filter(|(r, _)| r.verdict == "reject").count();
-    let passed = reject_count <= final_responses.len() / 2;
+    // Exclude failed critics from rebuttal vote too.
+    let real_final: Vec<&(WorthwhileResponse, f64)> = final_responses
+        .iter()
+        .filter(|(r, _)| !r.reasoning.starts_with("(critic unavailable"))
+        .collect();
+
+    if real_final.is_empty() {
+        anyhow::bail!("all Gate 1 rebuttal critics failed — skipping review (will retry next run)");
+    }
+
+    let reject_count = real_final.iter().filter(|(r, _)| r.verdict == "reject").count();
+    let passed = reject_count <= real_final.len() / 2;
 
     info!(
         passed,
@@ -556,15 +589,35 @@ async fn run_gate2(
         }
     }
 
-    // Count rejects
-    let reject_count = responses
+    // Separate real responses from failed critics.
+    let real_responses: Vec<&(ReadyResponse, f64)> = responses
+        .iter()
+        .filter(|(r, _)| !r.reasoning.starts_with("(critic unavailable"))
+        .collect();
+    let real_count = real_responses.len();
+
+    info!(
+        real_critics = real_count,
+        total_critics = responses.len(),
+        failed = responses.len() - real_count,
+        "gate2: filtering out failed critics from scoring"
+    );
+
+    // If no real responses, fail gracefully.
+    if real_responses.is_empty() {
+        warn!("gate2: all critics failed, skipping (inconclusive)");
+        anyhow::bail!("all Gate 2 critics failed — skipping review (will retry next run)");
+    }
+
+    // Count rejects from real responses only.
+    let reject_count = real_responses
         .iter()
         .filter(|(r, _)| r.verdict == "reject")
         .count();
-    let passed = reject_count < (critics.len() + 1) / 2; // strict majority to reject
+    let passed = reject_count < (real_count + 1) / 2; // strict majority of real critics to reject
 
-    // Compute median score
-    let mut scores: Vec<u32> = responses.iter().map(|(r, _)| r.score).collect();
+    // Compute median score from real responses only.
+    let mut scores: Vec<u32> = real_responses.iter().map(|(r, _)| r.score).collect();
     let med = median(&mut scores);
 
     // Pick summary from the critic whose score is closest to the median
