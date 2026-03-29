@@ -68,11 +68,17 @@ pub async fn run(
     let mut total_cost = 0.0;
 
     // ── Gate 1: WORTHWHILE ──────────────────────────────────────────
-    let g1_responses: Option<Vec<(WorthwhileResponse, f64)>> = if !skip_gate1 {
-        let (g1_passed, g1_responses, g1_cost) =
+    // Gate 1 may run research internally during rebuttal (on split votes).
+    // If it does, we reuse those findings for Gate 2 instead of running
+    // research again.
+    let mut gate1_research: Option<String> = None;
+
+    if !skip_gate1 {
+        let (g1_passed, g1_responses, g1_cost, g1_research) =
             run_gate1(&diff, &critics, gate1_budget / (critics.len() as f64 * 2.0), context_window, clone_path)
                 .await?;
         total_cost += g1_cost;
+        gate1_research = g1_research;
 
         if !g1_passed {
             let summary = g1_responses
@@ -93,18 +99,21 @@ pub async fn run(
             });
         }
         info!(cost = g1_cost, "gate 1 passed");
-        Some(g1_responses)
     } else {
         info!("gate 1 skipped (skip_gate1=true)");
-        None
     };
 
     // ── Research agent ───────────────────────────────────────────────
-    let research_findings = if let Some(ref responses) = g1_responses {
+    // If Gate 1 already ran research (during rebuttal), reuse those findings.
+    // Otherwise run research now before Gate 2.
+    let research_findings: Option<(String, f64)> = if let Some(findings) = gate1_research {
+        info!(findings_len = findings.len(), "reusing research from gate 1 rebuttal");
+        Some((findings, 0.0)) // cost already counted in gate 1
+    } else if !skip_gate1 {
+        // Gate 1 passed without rebuttal — run research now
         let research_budget = budget * 0.10;
-        let g1_text = format_all_responses_for_research(responses);
         let findings = run_research(
-            &g1_text,
+            "Review the diff and investigate any potential issues with the changes.",
             &diff,
             &critics[0],
             research_budget,
@@ -202,13 +211,15 @@ pub async fn run(
 
 // ── Gate 1: WORTHWHILE ──────────────────────────────────────────────────
 
+/// Returns (passed, responses, cost, research_findings).
+/// research_findings is Some if research ran during a rebuttal round.
 async fn run_gate1(
     diff: &str,
     critics: &[String],
     budget_per_critic: f64,
     context_window: u64,
     clone_path: &Path,
-) -> Result<(bool, Vec<(WorthwhileResponse, f64)>, f64)> {
+) -> Result<(bool, Vec<(WorthwhileResponse, f64)>, f64, Option<String>)> {
     let user_prompt = format!(
         "## Changes Under Review\n\n```\n{}\n```\n\nEvaluate whether this PR should exist.",
         diff
@@ -286,26 +297,47 @@ async fn run_gate1(
     if reject_count == responses.len() {
         // Unanimous reject — abort immediately
         info!(reject_count, "gate1 round 1 — unanimous reject");
-        return Ok((false, responses, total_cost));
+        return Ok((false, responses, total_cost, None));
     }
     if reject_count == 0 {
         // No rejects — proceed (even if some say needs_work)
         info!(worthwhile_count, needs_work_count, "gate1 round 1 — no rejects");
-        return Ok((true, responses, total_cost));
+        return Ok((true, responses, total_cost, None));
     }
 
-    // Mixed votes with some rejects — run rebuttal round
+    // Mixed votes with some rejects — run research then rebuttal
     info!(
         reject_count,
         needs_work_count,
         worthwhile_count,
-        "gate1 round 1 — mixed votes, running rebuttal"
+        "gate1 round 1 — mixed votes, running research then rebuttal"
     );
+
+    // Run research agent to investigate disagreement before rebuttal
+    let g1_text = format_all_responses_for_research(&responses);
+    let research_budget = budget_per_critic * critics.len() as f64; // use one round's worth
+    let research_result = run_research(
+        &g1_text,
+        diff,
+        &critics[0],
+        research_budget,
+        context_window,
+        clone_path,
+    )
+    .await;
+
+    let research_text = if let Some((ref findings, cost)) = research_result {
+        total_cost += cost;
+        info!(cost, "gate1 research agent completed");
+        format!("## Research Findings\n\n{findings}")
+    } else {
+        "(no research findings available)".to_string()
+    };
 
     let peer_text = format_responses_for_rebuttal(&responses);
     let rebuttal_user = prompts::GATE1_REBUTTAL
         .replace("{peer_responses}", &peer_text)
-        .replace("{research_findings}", "(not available)");
+        .replace("{research_findings}", &research_text);
 
     let mut rebuttal_set: JoinSet<Result<(WorthwhileResponse, f64)>> = JoinSet::new();
     for i in 0..critics.len() {
@@ -373,7 +405,9 @@ async fn run_gate1(
         "gate1 after rebuttal — majority vote"
     );
 
-    Ok((passed, final_responses, total_cost))
+    // Return research findings so run() can pass them to Gate 2
+    let gate1_research = research_result.map(|(text, _)| text);
+    Ok((passed, final_responses, total_cost, gate1_research))
 }
 
 // ── Gate 2: REVIEW ─────────────────────────────────────────────────────
