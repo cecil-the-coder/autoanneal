@@ -103,6 +103,7 @@ dependencies = [
  "clap",
  "glob",
  "hex",
+ "libc",
  "regex",
  "reqwest",
  "serde",

@@ -292,13 +292,23 @@ impl ToolExecutor {
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped());
 
-                // On Linux, set OOM score adjustment to maximum (1000) so the
-                // kernel kills this child process before our agent process if
-                // the cgroup memory limit is hit.
+                // On Linux, protect the agent from child process memory usage:
+                // 1. OOM score 1000 = kernel kills this child first
+                // 2. RLIMIT_AS caps virtual address space so malloc/mmap fail
+                //    instead of triggering container-wide OOM kill
                 #[cfg(target_os = "linux")]
                 unsafe {
                     cmd.pre_exec(|| {
                         let _ = std::fs::write("/proc/self/oom_score_adj", "1000");
+
+                        // Cap virtual memory at 3 GiB — child gets allocation
+                        // failure instead of triggering container OOM kill.
+                        let limit = libc::rlimit {
+                            rlim_cur: 3 * 1024 * 1024 * 1024,
+                            rlim_max: 3 * 1024 * 1024 * 1024,
+                        };
+                        libc::setrlimit(libc::RLIMIT_AS, &limit);
+
                         Ok(())
                     });
                 }
