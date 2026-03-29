@@ -51,17 +51,21 @@ pub async fn gh_command(repo_dir: &Path, args: &[&str]) -> Result<String> {
     // If rate limit is exhausted, wait until reset.
     if remaining == 0 {
         let reset = RATE_RESET.load(Ordering::Relaxed);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        if reset > now {
-            let wait = reset.saturating_sub(now).saturating_add(1);
-            tracing::warn!(
-                wait_secs = wait,
-                "GitHub rate limit exhausted, waiting for reset"
-            );
-            tokio::time::sleep(Duration::from_secs(wait.min(300))).await;
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => {
+                let now = d.as_secs();
+                if reset > now {
+                    let wait = reset.saturating_sub(now).saturating_add(1);
+                    tracing::warn!(
+                        wait_secs = wait,
+                        "GitHub rate limit exhausted, waiting for reset"
+                    );
+                    tokio::time::sleep(Duration::from_secs(wait.min(300))).await;
+                }
+            }
+            Err(_) => {
+                tracing::warn!("system clock is before UNIX epoch, skipping rate limit wait");
+            }
         }
     }
 

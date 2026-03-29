@@ -37,6 +37,11 @@ impl CleanupGuard {
 
     /// Best-effort cleanup of GitHub resources. Never panics.
     /// Uses `spawn_blocking` to avoid blocking the async runtime when available.
+    ///
+    /// Performs validation to avoid race conditions and inconsistent state:
+    /// - Verifies `repo_dir` still exists before running git commands.
+    /// - Validates that the PR's head branch matches `branch_name` before closing,
+    ///   to prevent closing an unrelated PR if state becomes inconsistent.
     fn cleanup(&self) {
         // Clone values needed for the closure since it may outlive self
         let pr_number = self.pr_number;
@@ -54,6 +59,20 @@ impl CleanupGuard {
                         repo = %repo_slug,
                         "Closing PR and deleting branch (no successful tasks)"
                     );
+
+                    // Validate that the PR's head branch matches our expected branch_name
+                    // to avoid closing an unrelated PR due to inconsistent state.
+                    if let Some(ref expected_branch) = branch_name {
+                        if !validate_pr_branch(&pr, &repo_slug, expected_branch) {
+                            tracing::warn!(
+                                pr_number = pr,
+                                expected_branch = %expected_branch,
+                                "Skipping PR close: head branch mismatch or lookup failed, \
+                                 state may be inconsistent"
+                            );
+                            return;
+                        }
+                    }
 
                     let output = std::process::Command::new("gh")
                         .args([
@@ -100,6 +119,17 @@ impl CleanupGuard {
                 // No PR, no successful tasks -- delete the remote branch (lock cleanup).
                 (None, false) => {
                     if let Some(branch) = branch_name {
+                        // Validate repo_dir still exists before running git commands
+                        // to avoid race conditions where the directory was removed concurrently.
+                        if !repo_dir.exists() {
+                            tracing::warn!(
+                                branch = %branch,
+                                repo_dir = %repo_dir.display(),
+                                "Skipping remote branch deletion: repo_dir no longer exists"
+                            );
+                            return;
+                        }
+
                         tracing::info!(
                             branch = %branch,
                             repo = %repo_slug,
@@ -157,6 +187,97 @@ impl CleanupGuard {
             cleanup_fn();
         }
     }
+}
+
+/// Validates that the PR's head branch matches the expected branch name.
+///
+/// Returns `true` if the branches match or if the branch name cannot be determined
+/// (in which case we log a warning but still allow the close to proceed only if
+/// `expected_branch` is `None`). Returns `false` if there is a definitive mismatch.
+fn validate_pr_branch(pr_number: &u64, repo_slug: &str, expected_branch: &str) -> bool {
+    let output = match std::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "headRefName",
+            "-R",
+            repo_slug,
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            tracing::warn!(
+                pr_number = pr_number,
+                stderr = %stderr,
+                "Failed to query PR head branch for validation"
+            );
+            // If we can't verify, don't proceed — safer to skip than close wrong PR
+            return false;
+        }
+        Err(e) => {
+            tracing::warn!(
+                pr_number = pr_number,
+                error = %e,
+                "Failed to run gh pr view for branch validation"
+            );
+            return false;
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Parse JSON like {"headRefName":"branch-name"}
+    match extract_head_ref_name(&stdout) {
+        Some(head_branch) => {
+            if head_branch == expected_branch {
+                true
+            } else {
+                tracing::warn!(
+                    pr_number = pr_number,
+                    expected_branch = %expected_branch,
+                    actual_branch = %head_branch,
+                    "PR head branch does not match expected branch name"
+                );
+                false
+            }
+        }
+        None => {
+            tracing::warn!(
+                pr_number = pr_number,
+                stdout = %stdout,
+                "Could not parse headRefName from gh pr view output"
+            );
+            false
+        }
+    }
+}
+
+/// Extracts the `headRefName` value from a JSON string like `{"headRefName":"branch-name"}`.
+///
+/// This uses simple string matching rather than pulling in a JSON parser dependency.
+fn extract_head_ref_name(json: &str) -> Option<String> {
+    // Look for "headRefName":"<value>"
+    let key = r#""headRefName""#;
+    let start = json.find(key)?;
+    let after_key = &json[start + key.len()..];
+
+    // Skip optional whitespace and colon
+    let after_key = after_key.trim_start();
+    if !after_key.starts_with(':') {
+        return None;
+    }
+    let after_colon = after_key[1..].trim_start();
+
+    // Extract quoted value
+    if !after_colon.starts_with('"') {
+        return None;
+    }
+    let value_start = &after_colon[1..];
+    let value_end = value_start.find('"')?;
+    Some(value_start[..value_end].to_string())
 }
 
 impl Drop for CleanupGuard {
