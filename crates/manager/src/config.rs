@@ -316,19 +316,19 @@ impl RepoEntry {
             "--context-window".to_string(), self.context_window.unwrap_or(defaults.context_window).to_string(),
         ];
 
-        // Boolean flags
+        // Boolean flags (clap uses ArgAction::Set, so all require explicit true/false value)
         let fix_ci = self.fix_ci.unwrap_or(defaults.fix_ci);
-        args.push(if fix_ci { "--fix-ci".into() } else { "--no-fix-ci".into() });
+        args.extend_from_slice(&["--fix-ci".into(), fix_ci.to_string()]);
         let fix_conflicts = self.fix_conflicts.unwrap_or(defaults.fix_conflicts);
-        args.push(if fix_conflicts { "--fix-conflicts".into() } else { "--no-fix-conflicts".into() });
+        args.extend_from_slice(&["--fix-conflicts".into(), fix_conflicts.to_string()]);
         let improve_docs = self.improve_docs.unwrap_or(defaults.improve_docs);
-        args.push(if improve_docs { "--improve-docs".into() } else { "--no-improve-docs".into() });
+        args.extend_from_slice(&["--improve-docs".into(), improve_docs.to_string()]);
         let dry_run = self.dry_run.unwrap_or(defaults.dry_run);
-        if dry_run { args.push("--dry-run".into()); }
+        args.extend_from_slice(&["--dry-run".into(), dry_run.to_string()]);
         let fix_external_ci = self.fix_external_ci.unwrap_or(defaults.fix_external_ci);
-        if fix_external_ci { args.push("--fix-external-ci".into()); }
+        args.extend_from_slice(&["--fix-external-ci".into(), fix_external_ci.to_string()]);
         let review_prs = self.review_prs.unwrap_or(defaults.review_prs);
-        if review_prs { args.push("--review-prs".into()); }
+        args.extend_from_slice(&["--review-prs".into(), review_prs.to_string()]);
 
         // Investigate issues
         let investigate = self.investigate_issues.as_deref().unwrap_or(&defaults.investigate_issues);
@@ -456,21 +456,22 @@ mod tests {
 
         // First arg is the repo slug
         assert_eq!(args[0], "owner/repo");
-        // Check a few key flags use defaults
-        assert!(args.contains(&"--max-budget".to_string()));
-        assert!(args.contains(&"5.00".to_string()));
-        assert!(args.contains(&"--model".to_string()));
-        assert!(args.contains(&"sonnet".to_string()));
-        // Default boolean flags
-        assert!(args.contains(&"--fix-ci".to_string()));
-        assert!(args.contains(&"--fix-conflicts".to_string()));
-        assert!(args.contains(&"--improve-docs".to_string()));
-        // dry_run=false means --dry-run should NOT appear
-        assert!(!args.contains(&"--dry-run".to_string()));
-        // fix_external_ci=false means --fix-external-ci should NOT appear
-        assert!(!args.contains(&"--fix-external-ci".to_string()));
-        // review_prs=false means --review-prs should NOT appear
-        assert!(!args.contains(&"--review-prs".to_string()));
+
+        let check = |flag: &str, val: &str| {
+            let idx = args.iter().position(|a| a == flag)
+                .unwrap_or_else(|| panic!("missing flag {flag}"));
+            assert_eq!(args[idx + 1], val, "wrong value for {flag}");
+        };
+
+        check("--max-budget", "5.00");
+        check("--model", "sonnet");
+        // Default boolean flags (all use --flag value format)
+        check("--fix-ci", "true");
+        check("--fix-conflicts", "true");
+        check("--improve-docs", "true");
+        check("--dry-run", "false");
+        check("--fix-external-ci", "false");
+        check("--review-prs", "false");
     }
 
     #[test]
@@ -491,9 +492,13 @@ mod tests {
         let model_idx = args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(args[model_idx + 1], "opus");
 
-        assert!(args.contains(&"--dry-run".to_string()));
-        assert!(args.contains(&"--no-fix-ci".to_string()));
-        assert!(!args.contains(&"--fix-ci".to_string()));
+        let check = |flag: &str, val: &str| {
+            let idx = args.iter().position(|a| a == flag)
+                .unwrap_or_else(|| panic!("missing flag {flag}"));
+            assert_eq!(args[idx + 1], val, "wrong value for {flag}");
+        };
+        check("--dry-run", "true");
+        check("--fix-ci", "false");
     }
 
     #[test]
@@ -567,13 +572,13 @@ mod tests {
         check("--setup-command", "make setup");
         check("--investigate-issues", "all");
 
-        // Boolean flags
-        assert!(args.contains(&"--no-fix-ci".to_string()));
-        assert!(args.contains(&"--no-fix-conflicts".to_string()));
-        assert!(args.contains(&"--no-improve-docs".to_string()));
-        assert!(args.contains(&"--dry-run".to_string()));
-        assert!(args.contains(&"--fix-external-ci".to_string()));
-        assert!(args.contains(&"--review-prs".to_string()));
+        // Boolean flags (all use --flag value format)
+        check("--fix-ci", "false");
+        check("--fix-conflicts", "false");
+        check("--improve-docs", "false");
+        check("--dry-run", "true");
+        check("--fix-external-ci", "true");
+        check("--review-prs", "true");
     }
 
     #[test]
