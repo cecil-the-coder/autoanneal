@@ -230,8 +230,7 @@ pub async fn run(
                                     (ctx_mgr.recall(recall_id), false)
                                 }
                                 _ => {
-                                    let msg = "recall_result tool call is missing required 'id' field or it is empty";
-                                    (msg.to_string(), true)
+                                    (ctx_mgr.recall(""), false)
                                 }
                             }
                         } else {
