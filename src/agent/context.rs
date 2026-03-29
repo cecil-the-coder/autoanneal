@@ -26,9 +26,20 @@ pub struct ContextManager {
     /// Maximum context window size in tokens.
     context_window: u64,
     /// Evicted tool results, keyed by tool_use_id.
-    store: HashMap<String, String>,
+    store: HashMap<String, Vec<u8>>,
     /// Insertion order for eviction (oldest first). Stores (message_index, tool_use_id).
     eviction_order: Vec<(usize, String)>,
+}
+
+pub(crate) fn compress(data: &str) -> Vec<u8> {
+    lz4_flex::compress_prepend_size(data.as_bytes())
+}
+
+pub(crate) fn decompress(data: &[u8]) -> String {
+    match lz4_flex::decompress_size_prepended(data) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(_) => "(decompression failed)".to_string(),
+    }
 }
 
 impl ContextManager {
@@ -103,12 +114,20 @@ impl ContextManager {
         evicted
     }
 
-    /// Handle a `recall_result` tool call. Returns the original content if found.
-    pub fn recall(&self, tool_use_id: &str) -> String {
+    /// Handle a `recall_result` tool call. Returns the original content if found,
+    /// or `None` if not found.
+    pub fn recall(&self, tool_use_id: &str) -> Option<String> {
         match self.store.get(tool_use_id) {
-            Some(content) => content.clone(),
-            None => format!("No stored result found for id: {tool_use_id}"),
+            Some(compressed) => Some(decompress(compressed)),
+            None => None,
         }
+    }
+
+    /// Store content under the given ID (compressed). Used for proactive
+    /// storage of full command output before the filtered version enters
+    /// the conversation.
+    pub fn store_raw(&mut self, id: &str, content: String) {
+        self.store.insert(id.to_string(), compress(&content));
     }
 
     /// Returns the `recall_result` tool definition to inject into API requests.
@@ -193,7 +212,7 @@ impl ContextManager {
                     );
                     // Rough estimate: 4 chars ≈ 1 token
                     let tokens_freed = (original.len() as u64) / 4;
-                    self.store.insert(tool_use_id.to_string(), original);
+                    self.store.insert(tool_use_id.to_string(), compress(&original));
                     return Some(tokens_freed);
                 }
             }
@@ -292,14 +311,14 @@ mod tests {
         assert!(mgr.has_evicted());
 
         let recalled = mgr.recall("tr_1");
-        assert_eq!(recalled, original);
+        assert_eq!(recalled, Some(original.to_string()));
     }
 
     #[test]
     fn test_recall_unknown_id() {
         let mgr = ContextManager::new(100_000);
         let result = mgr.recall("nonexistent");
-        assert!(result.contains("No stored result"));
+        assert!(result.is_none());
     }
 
     #[test]
@@ -400,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_zero_context_window_falls_back_to_default() {
-        let mgr = ContextManager::new(0);
+        let mut mgr = ContextManager::new(0);
         // Internal context_window should be DEFAULT_CONTEXT_WINDOW, not 0.
         // We verify indirectly: with default 128K, threshold is ~102_400,
         // so 50K tokens should NOT trigger eviction.
@@ -414,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_tiny_context_window_falls_back_to_default() {
-        let mgr = ContextManager::new(100);
+        let mut mgr = ContextManager::new(100);
         // Same as above — should fall back to default 128K.
         let mut messages = vec![
             make_tool_result_message("tr_1", "some content"),
@@ -427,7 +446,7 @@ mod tests {
     #[test]
     fn test_min_context_window_accepted() {
         // Exactly MIN_CONTEXT_WINDOW (4096) should be accepted as-is.
-        let mgr = ContextManager::new(4096);
+        let mut mgr = ContextManager::new(4096);
         // Threshold = 4096 * 0.8 = 3276. 3400 tokens should trigger eviction.
         let mut messages = vec![
             make_tool_result_message("tr_1", &"x".repeat(16_000)),
@@ -440,7 +459,7 @@ mod tests {
     #[test]
     fn test_just_below_min_falls_back() {
         // 4095 is just below the minimum — should fall back to default.
-        let mgr = ContextManager::new(4095);
+        let mut mgr = ContextManager::new(4095);
         let mut messages = vec![
             make_tool_result_message("tr_1", "some content"),
         ];
