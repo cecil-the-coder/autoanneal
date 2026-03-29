@@ -92,6 +92,41 @@ async fn get_recent_commits(clone_path: &Path) -> String {
     }
 }
 
+/// Filter, sort, and truncate improvements according to severity/risk/size criteria.
+///
+/// Applies the following post-processing steps in order:
+/// 1. Remove high-risk improvements
+/// 2. Remove improvements exceeding 500 estimated lines changed
+/// 3. Remove improvements below `min_severity`
+/// 4. Sort by severity descending, then risk ascending
+/// 5. Truncate to `max_tasks`
+fn post_process_improvements(
+    improvements: Vec<Improvement>,
+    min_severity: &Severity,
+    max_tasks: usize,
+) -> Vec<Improvement> {
+    let min_rank = severity_rank(min_severity);
+
+    let mut filtered: Vec<Improvement> = improvements
+        .into_iter()
+        .filter(|imp| imp.risk != Risk::High)
+        .filter(|imp| imp.estimated_lines_changed <= 500)
+        .filter(|imp| severity_rank(&imp.severity) >= min_rank)
+        .collect();
+
+    // Sort by severity descending, then risk ascending.
+    filtered.sort_by(|a, b| {
+        severity_rank(&b.severity)
+            .cmp(&severity_rank(&a.severity))
+            .then_with(|| risk_rank(&a.risk).cmp(&risk_rank(&b.risk)))
+    });
+
+    // Truncate to max_tasks.
+    filtered.truncate(max_tasks);
+
+    filtered
+}
+
 pub async fn run(
     clone_path: &Path,
     arch_summary: &str,
@@ -142,25 +177,7 @@ pub async fn run(
     info!(total_found, "analysis phase: raw improvements from Claude");
 
     // 4. Post-process improvements.
-    let min_rank = severity_rank(min_severity);
-
-    let mut filtered: Vec<Improvement> = analysis
-        .improvements
-        .into_iter()
-        .filter(|imp| imp.risk != Risk::High)
-        .filter(|imp| imp.estimated_lines_changed <= 500)
-        .filter(|imp| severity_rank(&imp.severity) >= min_rank)
-        .collect();
-
-    // Sort by severity descending, then risk ascending.
-    filtered.sort_by(|a, b| {
-        severity_rank(&b.severity)
-            .cmp(&severity_rank(&a.severity))
-            .then_with(|| risk_rank(&a.risk).cmp(&risk_rank(&b.risk)))
-    });
-
-    // Truncate to max_tasks.
-    filtered.truncate(max_tasks);
+    let filtered = post_process_improvements(analysis.improvements, min_severity, max_tasks);
 
     info!(
         total_found,
@@ -220,25 +237,8 @@ pub async fn run_doc_analysis(
     let total_found = analysis.improvements.len();
     info!(total_found, "doc analysis phase: raw improvements from Claude");
 
-    // 4. Post-process: apply severity filter and standard filtering for docs.
-    let min_rank = severity_rank(min_severity);
-    let mut filtered: Vec<Improvement> = analysis
-        .improvements
-        .into_iter()
-        .filter(|imp| imp.risk != Risk::High)
-        .filter(|imp| imp.estimated_lines_changed <= 500)
-        .filter(|imp| severity_rank(&imp.severity) >= min_rank)
-        .collect();
-
-    // Sort by severity descending, then risk ascending.
-    filtered.sort_by(|a, b| {
-        severity_rank(&b.severity)
-            .cmp(&severity_rank(&a.severity))
-            .then_with(|| risk_rank(&a.risk).cmp(&risk_rank(&b.risk)))
-    });
-
-    // Truncate to max_tasks.
-    filtered.truncate(max_tasks);
+    // 4. Post-process improvements.
+    let filtered = post_process_improvements(analysis.improvements, min_severity, max_tasks);
 
     info!(
         total_found,
