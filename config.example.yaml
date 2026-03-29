@@ -1,0 +1,38 @@
+manager:
+  listen_addr: "0.0.0.0:8080"
+  global_concurrency: 3
+  # WARNING: An empty webhook_secret means webhook signature verification is
+  # DISABLED. Any HTTP client can trigger runs via the webhook endpoint.
+  # Always set this in production to your GitHub webhook secret.
+  webhook_secret: ""
+  worker_image: "autoanneal:latest"
+  result_path: "/tmp/autoanneal-result.json"
+  docker_mode: true
+  # Bearer token for the /api/v1/trigger endpoint. When set, requests must
+  # include "Authorization: Bearer <token>". Leave unset for no auth.
+  # api_token: "your-secret-token-here"
+  webhook_cooldown_secs: 120
+  poll_interval_secs: 5
+  history_limit: 100
+
+defaults:
+  maxBudget: "5.00"
+  timeout: "30m"
+  model: "sonnet"
+  maxTasks: 3
+  minSeverity: "minor"
+  logLevel: "info"
+  fixCi: true
+  fixConflicts: true
+  criticThreshold: 6
+  improveDocs: true
+  docCriticThreshold: 7
+  concurrency: 3
+  maxOpenPrs: 5
+  contextWindow: 128000
+
+repos:
+  - name: my-service
+    repo: "myorg/my-service"
+    schedule: "*/10 * * * *"
+    enabled: true
