@@ -140,3 +140,74 @@ pub async fn run_server(state: AppState, listen_addr: &str) -> anyhow::Result<()
     axum::serve(listener, app).await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    fn test_app_state() -> AppState {
+        let (trigger_tx, _trigger_rx) = tokio::sync::mpsc::unbounded_channel();
+        let metrics = Arc::new(crate::metrics::Metrics::new().unwrap());
+        AppState {
+            state_store: Arc::new(StateStore::new()),
+            trigger_tx,
+            metrics: Some(metrics),
+            webhook_secret: String::new(),
+            repo_configs: Arc::new(Mutex::new(HashMap::new())),
+            webhook_cooldowns: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoint() {
+        let app = create_router(test_app_state());
+        let req = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"ok");
+    }
+
+    #[tokio::test]
+    async fn test_ready_endpoint() {
+        let app = create_router(test_app_state());
+        let req = Request::builder()
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"ready");
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoint() {
+        let app = create_router(test_app_state());
+        let req = Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let content_type = response.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(content_type.contains("text/plain"));
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = std::str::from_utf8(&body_bytes).unwrap();
+        assert!(body.contains("autoanneal_runs_total"));
+    }
+}
