@@ -234,6 +234,7 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
         let title = pr["title"].as_str().unwrap_or("").to_string();
         let body = pr["body"].as_str().unwrap_or("").to_string();
         if number == 0 {
+            warn!("Skipping in-flight PR with invalid number 0 (malformed API response)");
             continue;
         }
 
@@ -571,6 +572,7 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
 
         let number = pr["number"].as_u64().unwrap_or(0);
         if number == 0 {
+            warn!("Skipping external PR with invalid number 0 (malformed API response)");
             continue;
         }
 
@@ -680,6 +682,7 @@ async fn fetch_issues(repo_slug: &str, label_filter: &str) -> Vec<GithubIssue> {
 
         let number = issue["number"].as_u64().unwrap_or(0);
         if number == 0 {
+            warn!("Skipping issue with invalid number 0 (malformed API response)");
             continue;
         }
 
