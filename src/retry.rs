@@ -143,11 +143,20 @@ pub async fn gh_json<T: serde::de::DeserializeOwned>(
 /// Check the current GitHub API rate limit and update cached values.
 async fn check_rate_limit() {
     let dot = Path::new(".");
-    let output = tokio::process::Command::new("gh")
+    let command_future = tokio::process::Command::new("gh")
         .args(["api", "rate_limit", "--jq", ".rate | \"\\(.remaining) \\(.reset)\""])
         .current_dir(dot)
-        .output()
-        .await;
+        .output();
+
+    let output = tokio::time::timeout(Duration::from_secs(10), command_future).await;
+
+    let output = match output {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::warn!("Rate limit check timed out after 10 seconds");
+            return;
+        }
+    };
 
     if let Ok(out) = output {
         if out.status.success() {
