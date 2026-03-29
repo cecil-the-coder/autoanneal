@@ -319,23 +319,21 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
 fn extract_nonzero_number(obj: &serde_json::Value, entity_type: &str) -> Option<u64> {
     match obj.get("number") {
         None => {
-            warn!("{entity_type} has no \"number\" field (malformed API response)");
+            warn!(entity_type, "has no 'number' field (malformed API response)");
             None
-        }
-        Some(v) if v.is_u64() => {
-            let n = v.as_u64().unwrap();
-            if n == 0 {
-                warn!("{entity_type} number is 0 (malformed API response)");
-                None
-            } else {
-                Some(n)
-            }
         }
         Some(v) => {
-            warn!(
-                "{entity_type} number is not a valid integer: {v} (malformed API response)"
-            );
-            None
+            if let Some(n) = v.as_u64() {
+                if n == 0 {
+                    warn!(entity_type, "number is 0 (malformed API response)");
+                    None
+                } else {
+                    Some(n)
+                }
+            } else {
+                warn!(entity_type, value = %v, "number is not a valid integer (malformed API response)");
+                None
+            }
         }
     }
 }
