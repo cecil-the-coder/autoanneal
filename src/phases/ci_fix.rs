@@ -169,7 +169,7 @@ pub async fn run(
         max_budget_usd: budget,
         max_turns: 100,
         effort: "high",
-        tools: "Read,Glob,Grep,Bash,Edit,Write",
+        tools: "read_file,search_files,search_content,run_command,edit_file,write_file",
         json_schema: None,
         working_dir: clone_dir.clone(),
         context_window,

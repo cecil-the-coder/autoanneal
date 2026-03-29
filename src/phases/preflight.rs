@@ -100,7 +100,7 @@ pub async fn run(repo_slug: &str, review_prs: bool, review_filter: &str, investi
 
     // 7. Detect external PRs if review or external CI fix is enabled.
     let external_prs = if review_prs || fix_external_ci {
-        detect_external_prs(repo_slug, review_filter).await
+        detect_external_prs(repo_slug, review_filter, fix_external_ci).await
     } else {
         Vec::new()
     };
@@ -533,7 +533,9 @@ async fn check_newest_commit_age_api(repo_slug: &str) -> u64 {
 
 
 /// Detect external (non-autoanneal) open PRs, filtered according to config.
-async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
+/// When `include_reviewed` is true (for CI fix mode), PRs with the autoanneal:reviewed
+/// label are still included. When false (for PR review mode), reviewed PRs are filtered out.
+async fn detect_external_prs(repo_slug: &str, filter: &str, include_reviewed: bool) -> Vec<ExternalPr> {
     let dot = Path::new(".");
 
     // 1. List all open PRs with relevant fields.
@@ -589,8 +591,8 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
             })
             .unwrap_or_default();
 
-        // Filter OUT PRs already reviewed by autoanneal.
-        if labels.iter().any(|l| l == "autoanneal:reviewed") {
+        // Filter OUT PRs already reviewed by autoanneal (only for review mode, not CI fix).
+        if !include_reviewed && labels.iter().any(|l| l == "autoanneal:reviewed") {
             continue;
         }
 
