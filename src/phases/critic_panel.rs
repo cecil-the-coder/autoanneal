@@ -255,22 +255,23 @@ async fn run_gate1(
     );
 
     // Round 1: parallel invocations
-    let mut set = JoinSet::new();
+    let mut set: JoinSet<(String, Result<(WorthwhileResponse, f64)>)> = JoinSet::new();
     for i in 0..critics.len() {
         let system = prompts::gate1_system_prompt(i).to_string();
         let prompt = user_prompt.clone();
         let model = critics[i].clone();
         let wd = clone_path.to_path_buf();
         set.spawn(async move {
-            invoke_critic::<WorthwhileResponse>(
+            let result = invoke_critic::<WorthwhileResponse>(
                 system,
                 prompt,
-                model,
+                model.clone(),
                 budget_per_critic,
                 context_window,
                 &wd,
             )
-            .await
+            .await;
+            (model, result)
         });
     }
 
@@ -279,11 +280,11 @@ async fn run_gate1(
 
     while let Some(result) = set.join_next().await {
         match result {
-            Ok(Ok((resp, cost))) => {
+            Ok((model_name, Ok((resp, cost)))) => {
                 let preview: String = resp.reasoning.chars().take(120).collect();
                 info!(
                     gate = "worthwhile",
-                    critic = responses.len() + 1,
+                    model = %model_name,
                     verdict = %resp.verdict,
                     confidence = resp.confidence,
                     cost_usd = cost,
@@ -293,8 +294,8 @@ async fn run_gate1(
                 total_cost += cost;
                 responses.push((resp, cost));
             }
-            Ok(Err(e)) => {
-                warn!(error = %e, critic = responses.len() + 1, "gate1 critic failed");
+            Ok((model_name, Err(e))) => {
+                warn!(error = %e, model = %model_name, "gate1 critic failed");
                 responses.push((
                     WorthwhileResponse {
                         verdict: "needs_work".to_string(),
@@ -305,7 +306,7 @@ async fn run_gate1(
                 ));
             }
             Err(e) => {
-                warn!(error = %e, critic = responses.len() + 1, "gate1 critic panicked");
+                warn!(error = %e, "gate1 critic task panicked");
                 responses.push((
                     WorthwhileResponse {
                         verdict: "needs_work".to_string(),
@@ -387,22 +388,23 @@ async fn run_gate1(
         .replace("{peer_responses}", &peer_text)
         .replace("{research_findings}", &research_text);
 
-    let mut rebuttal_set: JoinSet<Result<(WorthwhileResponse, f64)>> = JoinSet::new();
+    let mut rebuttal_set: JoinSet<(String, Result<(WorthwhileResponse, f64)>)> = JoinSet::new();
     for i in 0..critics.len() {
         let system = prompts::gate1_system_prompt(i).to_string();
         let prompt = rebuttal_user.clone();
         let model = critics[i].clone();
         let wd = clone_path.to_path_buf();
         rebuttal_set.spawn(async move {
-            invoke_critic::<WorthwhileResponse>(
+            let result = invoke_critic::<WorthwhileResponse>(
                 system,
                 prompt,
-                model,
+                model.clone(),
                 budget_per_critic,
                 context_window,
                 &wd,
             )
-            .await
+            .await;
+            (model, result)
         });
     }
 
@@ -410,11 +412,11 @@ async fn run_gate1(
 
     while let Some(result) = rebuttal_set.join_next().await {
         match result {
-            Ok(Ok((resp, cost))) => {
+            Ok((model_name, Ok((resp, cost)))) => {
                 let preview: String = resp.reasoning.chars().take(120).collect();
                 info!(
                     gate = "worthwhile_rebuttal",
-                    critic = rebuttal_responses.len() + 1,
+                    model = %model_name,
                     verdict = %resp.verdict,
                     confidence = resp.confidence,
                     cost_usd = cost,
@@ -424,8 +426,8 @@ async fn run_gate1(
                 total_cost += cost;
                 rebuttal_responses.push((resp, cost));
             }
-            Ok(Err(e)) => {
-                warn!(error = %e, "gate1 rebuttal critic failed, keeping original vote");
+            Ok((model_name, Err(e))) => {
+                warn!(error = %e, model = %model_name, "gate1 rebuttal critic failed, keeping original vote");
             }
             Err(e) => {
                 warn!(error = %e, "gate1 rebuttal task panicked, keeping original vote");
@@ -490,22 +492,23 @@ async fn run_gate2(
         )
     };
 
-    let mut set = JoinSet::new();
+    let mut set: JoinSet<(String, Result<(ReadyResponse, f64)>)> = JoinSet::new();
     for i in 0..critics.len() {
         let system = prompts::GATE2_SYSTEM.to_string();
         let prompt = user_prompt.clone();
         let model = critics[i].clone();
         let wd = clone_path.to_path_buf();
         set.spawn(async move {
-            invoke_critic::<ReadyResponse>(
+            let result = invoke_critic::<ReadyResponse>(
                 system,
                 prompt,
-                model,
+                model.clone(),
                 budget_per_critic,
                 context_window,
                 &wd,
             )
-            .await
+            .await;
+            (model, result)
         });
     }
 
@@ -514,7 +517,7 @@ async fn run_gate2(
 
     while let Some(result) = set.join_next().await {
         match result {
-            Ok(Ok((resp, cost))) => {
+            Ok((model_name, Ok((resp, cost)))) => {
                 let preview: String = resp.reasoning.chars().take(120).collect();
                 let deductions_preview = if resp.deductions.is_empty() {
                     "none".to_string()
@@ -523,7 +526,7 @@ async fn run_gate2(
                 };
                 info!(
                     gate = "review",
-                    critic = responses.len() + 1,
+                    model = %model_name,
                     verdict = %resp.verdict,
                     score = resp.score,
                     issues = resp.issues.len(),
@@ -535,8 +538,8 @@ async fn run_gate2(
                 total_cost += cost;
                 responses.push((resp, cost));
             }
-            Ok(Err(e)) => {
-                warn!(error = %e, critic = responses.len() + 1, "gate2 critic failed");
+            Ok((model_name, Err(e))) => {
+                warn!(error = %e, model = %model_name, "gate2 critic failed");
                 responses.push((
                     ReadyResponse {
                         verdict: "needs_fix".to_string(),
@@ -550,7 +553,7 @@ async fn run_gate2(
                 ));
             }
             Err(e) => {
-                warn!(error = %e, critic = responses.len() + 1, "gate2 critic panicked");
+                warn!(error = %e, "gate2 critic task panicked");
                 responses.push((
                     ReadyResponse {
                         verdict: "needs_fix".to_string(),
