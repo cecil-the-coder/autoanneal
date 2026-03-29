@@ -242,8 +242,8 @@ async fn run_batch(
         all_results.extend(output.results);
     }
 
-    // Sort results by title for deterministic output.
-    all_results.sort_by_key(|r| r.title.clone());
+    // Results are returned in the order groups completed; no deterministic
+    // ordering is required since callers process them sequentially.
 
     Ok(BatchOutput {
         results: all_results,
