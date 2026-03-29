@@ -128,7 +128,7 @@ pub async fn gh_command(repo_dir: &Path, args: &[&str]) -> Result<String> {
         }
     }
 
-    unreachable!()
+    bail!("gh command failed: no retry attempts were made (MAX_ATTEMPTS={MAX_ATTEMPTS})");
 }
 
 /// Run a gh CLI command that returns JSON, then parse it into `T`.
