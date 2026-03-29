@@ -196,9 +196,30 @@ pub async fn run(
         }
     };
 
+    // Collect deductions from all critics for transparency.
+    let all_deductions: Vec<String> = g2_responses
+        .iter()
+        .flat_map(|(r, _)| r.deductions.iter().cloned())
+        .collect();
+    let dedup_deductions: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        all_deductions.into_iter().filter(|d| seen.insert(d.clone())).collect()
+    };
+
+    let final_summary = if dedup_deductions.is_empty() {
+        g2_summary
+    } else {
+        format!(
+            "{}\n\n## Score Deductions\n{}",
+            g2_summary,
+            dedup_deductions.iter().map(|d| format!("- {d}")).collect::<Vec<_>>().join("\n")
+        )
+    };
+
     info!(
         score,
         verdict = %verdict,
+        deductions = dedup_deductions.len(),
         cost = total_cost,
         "critic panel deliberation complete"
     );
@@ -206,7 +227,7 @@ pub async fn run(
     Ok(CriticOutput {
         score,
         verdict,
-        summary: g2_summary,
+        summary: final_summary,
         cost_usd: total_cost,
         made_fixes: false,
         score_unverified: false,
@@ -462,12 +483,18 @@ async fn run_gate2(
         match result {
             Ok(Ok((resp, cost))) => {
                 let preview: String = resp.reasoning.chars().take(120).collect();
+                let deductions_preview = if resp.deductions.is_empty() {
+                    "none".to_string()
+                } else {
+                    resp.deductions.join("; ")
+                };
                 info!(
                     gate = "review",
                     critic = responses.len() + 1,
                     verdict = %resp.verdict,
                     score = resp.score,
                     issues = resp.issues.len(),
+                    deductions = %deductions_preview,
                     cost_usd = cost,
                     reasoning = %preview,
                     "gate2 critic responded"
@@ -484,6 +511,7 @@ async fn run_gate2(
                         reasoning: "(critic unavailable — defaulting to needs_fix)".into(),
                         score: 5,
                         summary: "(critic unavailable)".into(),
+                        deductions: vec!["Critic unavailable".into()],
                     },
                     0.0,
                 ));
@@ -497,6 +525,7 @@ async fn run_gate2(
                         reasoning: "(critic unavailable — defaulting to needs_fix)".into(),
                         score: 5,
                         summary: "(critic unavailable)".into(),
+                        deductions: vec!["Critic unavailable".into()],
                     },
                     0.0,
                 ));

@@ -249,6 +249,8 @@ pub struct ReadyResponse {
     pub score: u32,
     #[serde(default)]
     pub summary: String,
+    #[serde(default)]
+    pub deductions: Vec<String>,
 }
 
 fn default_score() -> u32 {

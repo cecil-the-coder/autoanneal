@@ -67,8 +67,12 @@ Score guide:
 - 1-3: Harmful, incorrect, or pure noise
 - 4-5: Marginal value, questionable quality
 - 6-7: Solid improvement, competent implementation
-- 8-9: High-value fix, excellent implementation
-- 10: Critical fix, flawless execution
+- 8-9: Excellent change, well-implemented with clear value
+- 10: Flawless — achieves exactly what it claims with no issues
+
+A clean refactoring that perfectly eliminates duplication deserves a 10. A critical bug fix with minor style issues deserves an 8. Score based on how well the change achieves its stated goal, not on the category of change.
+
+IMPORTANT: If your score is below 10, you MUST explain what specific issues prevent a higher score in the "deductions" field. Each deduction should name a concrete problem, not a vague concern.
 
 Output JSON:
 ```json
@@ -78,6 +82,7 @@ Output JSON:
   "issues": [
     {"file": "path/to/file.rs", "description": "...", "severity": "minor|major|blocking", "suggested_fix": "..."}
   ],
+  "deductions": ["Reason for each point deducted from 10"],
   "reasoning": "...",
   "summary": "One sentence summary"
 }
@@ -94,12 +99,13 @@ pub const GATE2_REBUTTAL: &str = r#"You previously reviewed this implementation.
 
 {research_findings}
 
-Revise your assessment. If other critics found issues you missed, incorporate them. If you disagree with their findings, explain why. Output JSON:
+Revise your assessment. If other critics found issues you missed, incorporate them. If you disagree with their findings, explain why. If your score is below 10, explain what specific issues prevent a higher score. Output JSON:
 ```json
 {
   "verdict": "approve|needs_fix|reject",
   "score": 1-10,
   "issues": [...],
+  "deductions": ["Reason for each point deducted from 10"],
   "reasoning": "...",
   "summary": "One sentence summary"
 }
