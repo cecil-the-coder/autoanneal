@@ -54,8 +54,6 @@ pub struct ConversationConfig {
     pub system_prompt: Option<String>,
     pub max_turns: u32,
     pub max_tokens_per_turn: u32,
-    pub max_total_input_tokens: u64,
-    pub max_total_output_tokens: u64,
     pub timeout_per_turn: Duration,
     pub tools_enabled: bool,
     pub temperature: Option<f64>,
@@ -72,8 +70,6 @@ impl Default for ConversationConfig {
             system_prompt: None,
             max_turns: 20,
             max_tokens_per_turn: 4096,
-            max_total_input_tokens: 500_000,
-            max_total_output_tokens: 100_000,
             timeout_per_turn: Duration::from_secs(120),
             tools_enabled: true,
             temperature: None,
@@ -95,7 +91,6 @@ pub struct ConversationResult {
 pub enum StopReason {
     EndTurn,
     MaxTurns,
-    BudgetExhausted,
     Timeout,
     Error(String),
 }
@@ -135,19 +130,6 @@ pub async fn run(
                 total_input_tokens,
                 total_output_tokens,
                 stop_reason: StopReason::MaxTurns,
-            };
-        }
-
-        // --- guard: token budget ---
-        if total_input_tokens >= config.max_total_input_tokens
-            || total_output_tokens >= config.max_total_output_tokens
-        {
-            return ConversationResult {
-                text: collected_text,
-                turns,
-                total_input_tokens,
-                total_output_tokens,
-                stop_reason: StopReason::BudgetExhausted,
             };
         }
 
@@ -789,49 +771,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_output_token_budget_exhausted() {
-        // Each turn uses 50 output tokens. Budget is 80, so after 2 turns
-        // (100 total) the loop should detect budget exceeded before turn 3.
-        let sender = MockSender::new(vec![
-            Ok(tool_use_response("tu_1", "bash", json!({"command": "a"}), 10, 50)),
-            Ok(tool_use_response("tu_2", "bash", json!({"command": "b"}), 10, 50)),
-            Ok(text_response("unreachable", 10, 5)),
-        ]);
-        let executor = MockToolHandler::new(vec![
-            ("ok".to_string(), false),
-            ("ok".to_string(), false),
-        ]);
-
-        let mut config = default_config();
-        config.max_total_output_tokens = 80;
-
-        let result = run(&sender, &executor, &config, "Budget test").await;
-
-        assert!(matches!(result.stop_reason, StopReason::BudgetExhausted));
-        assert_eq!(result.total_output_tokens, 100);
-        assert_eq!(result.turns, 2);
-    }
-
-    #[tokio::test]
-    async fn test_input_token_budget_exhausted() {
-        let sender = MockSender::new(vec![
-            Ok(tool_use_response("tu_1", "bash", json!({"command": "a"}), 100, 5)),
-            Ok(text_response("unreachable", 10, 5)),
-        ]);
-        let executor = MockToolHandler::new(vec![
-            ("ok".to_string(), false),
-        ]);
-
-        let mut config = default_config();
-        config.max_total_input_tokens = 50; // budget already exceeded after turn 1
-
-        let result = run(&sender, &executor, &config, "Budget test").await;
-
-        assert!(matches!(result.stop_reason, StopReason::BudgetExhausted));
-        assert_eq!(result.turns, 1);
-    }
-
-    #[tokio::test]
     async fn test_timeout() {
         let sender = MockSender::new(vec![Err(ApiError::Timeout)]);
         let executor = MockToolHandler::new(vec![]);
@@ -1124,32 +1063,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_budget_check_before_first_turn() {
-        // If budget is 0, we should stop immediately (before sending any request).
-        let sender = MockSender::new(vec![
-            Ok(text_response("unreachable", 10, 5)),
-        ]);
-        let executor = MockToolHandler::new(vec![]);
-
-        let mut config = default_config();
-        config.max_total_input_tokens = 0;
-
-        // Budget is already "exceeded" (0 >= 0) — but our check is >=,
-        // so the first turn should still attempt (total starts at 0, 0 >= 0 is true).
-        // Actually, 0 >= 0 is true, so budget is exhausted before turn 1.
-        // Let's use max_turns = 0 to be sure about the edge.
-        let result = run(&sender, &executor, &config, "Zero budget").await;
-
-        // With max_total_input_tokens=0, 0 >= 0 triggers budget exhausted
-        // before the first API call. Actually let me re-check the logic...
-        // The budget check happens at the top of the loop after incrementing turns.
-        // turns=1, then we check budget: total_input=0 >= 0 → true → BudgetExhausted.
-        assert!(matches!(result.stop_reason, StopReason::BudgetExhausted));
-        assert_eq!(result.turns, 0); // never actually sent a request
-        assert_eq!(sender.call_count.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
     async fn test_max_turns_one() {
         // With max_turns=1, the model gets exactly one turn.
         let sender = MockSender::new(vec![
@@ -1254,25 +1167,6 @@ mod tests {
         assert_eq!(result.text, "part1\npart2\npart3\npart4");
         assert_eq!(result.turns, 4);
         assert!(matches!(result.stop_reason, StopReason::EndTurn));
-    }
-
-    #[tokio::test]
-    async fn test_max_tokens_then_budget_exhausted() {
-        // First turn: max_tokens. Continuation triggers budget check.
-        let sender = MockSender::new(vec![
-            Ok(max_tokens_response("partial", 10, 90)),
-            // Second turn should not happen: budget exceeded.
-        ]);
-        let executor = MockToolHandler::new(vec![]);
-
-        let mut config = default_config();
-        config.max_total_output_tokens = 80;
-
-        let result = run(&sender, &executor, &config, "long").await;
-
-        assert!(matches!(result.stop_reason, StopReason::BudgetExhausted));
-        assert_eq!(result.turns, 1);
-        assert_eq!(result.text, "partial");
     }
 
     #[tokio::test]
@@ -1659,68 +1553,6 @@ mod tests {
         assert_eq!(result.turns, 2);
     }
 
-    // ===================================================================
-    // Token budget edge cases (tests 19-22)
-    // ===================================================================
-
-    #[tokio::test]
-    async fn test_budget_boundary_off_by_one() {
-        // Tokens at exactly max-1 allows one more turn.
-        let sender = MockSender::new(vec![
-            Ok(tool_use_response("tu_1", "bash", json!({"command": "a"}), 10, 49)),
-            // After turn 1: output=49, budget=50. 49 < 50 so turn 2 runs.
-            Ok(text_response("final", 10, 10)),
-        ]);
-        let executor = MockToolHandler::new(vec![
-            ("ok".to_string(), false),
-        ]);
-
-        let mut config = default_config();
-        config.max_total_output_tokens = 50;
-
-        let result = run(&sender, &executor, &config, "go").await;
-
-        assert!(matches!(result.stop_reason, StopReason::EndTurn));
-        assert_eq!(result.turns, 2);
-        assert_eq!(result.total_output_tokens, 59);
-    }
-
-    #[tokio::test]
-    async fn test_cache_tokens_trigger_budget() {
-        // cache_creation tokens push over input limit.
-        let resp = MessagesResponse {
-            id: "msg_cache".to_string(),
-            content: vec![ContentBlock::ToolUse {
-                id: "tu_1".to_string(),
-                name: "bash".to_string(),
-                input: json!({"command": "x"}),
-            }],
-            stop_reason: "tool_use".to_string(),
-            usage: Usage {
-                input_tokens: 10,
-                output_tokens: 5,
-                cache_creation_input_tokens: 100,
-                cache_read_input_tokens: 0,
-            },
-        };
-        let sender = MockSender::new(vec![
-            Ok(resp),
-            // Turn 2 should be blocked by budget (total_input = 110 >= 100).
-        ]);
-        let executor = MockToolHandler::new(vec![
-            ("ok".to_string(), false),
-        ]);
-
-        let mut config = default_config();
-        config.max_total_input_tokens = 100;
-
-        let result = run(&sender, &executor, &config, "cache").await;
-
-        assert!(matches!(result.stop_reason, StopReason::BudgetExhausted));
-        assert_eq!(result.turns, 1);
-        assert_eq!(result.total_input_tokens, 110);
-    }
-
     #[tokio::test]
     async fn test_zero_token_response() {
         // input=0, output=0, loop continues via turn limit.
@@ -1749,12 +1581,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_budget_and_max_turns_simultaneous() {
-        // Both would fire. max_turns is checked first in the loop.
+    async fn test_max_turns_one_with_tool_use() {
+        // With max_turns=1, a tool_use response still counts as the one turn.
         let sender = MockSender::new(vec![
             Ok(tool_use_response("tu_1", "bash", json!({"command": "a"}), 100, 100)),
-            // After turn 1: tokens over budget AND turns == max_turns.
-            // Turn 2: turns incremented to 2 > max_turns(1), so MaxTurns fires first.
         ]);
         let executor = MockToolHandler::new(vec![
             ("ok".to_string(), false),
@@ -1762,12 +1592,9 @@ mod tests {
 
         let mut config = default_config();
         config.max_turns = 1;
-        config.max_total_input_tokens = 50;
-        config.max_total_output_tokens = 50;
 
-        let result = run(&sender, &executor, &config, "both").await;
+        let result = run(&sender, &executor, &config, "once").await;
 
-        // max_turns is checked first in the loop (turns > config.max_turns).
         assert!(matches!(result.stop_reason, StopReason::MaxTurns));
         assert_eq!(result.turns, 1);
     }

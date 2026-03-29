@@ -132,39 +132,6 @@ pub fn parse_provider_model(s: &str) -> (Option<String>, String) {
 }
 
 // ---------------------------------------------------------------------------
-// Budget helpers
-// ---------------------------------------------------------------------------
-
-/// Approximate conversion from USD budget to token limits.
-///
-/// Rough heuristic based on typical Claude pricing:
-///   - Input:  ~$3/M tokens  -> $1 ~= 333k input tokens
-///   - Output: ~$15/M tokens -> $1 ~= 67k output tokens
-///
-/// We split the budget 60/40 between input and output to account for
-/// tool-heavy conversations that consume more input context.
-pub fn budget_to_tokens(budget_usd: f64, model: &str) -> (u64, u64) {
-    // Adjust multiplier based on model tier (cheaper models get more tokens per $).
-    let (input_per_dollar, output_per_dollar) = if model.contains("haiku") {
-        (4_000_000.0, 800_000.0) // haiku: ~$0.25/M in, $1.25/M out
-    } else if model.contains("opus") {
-        (66_000.0, 13_000.0) // opus: ~$15/M in, $75/M out
-    } else {
-        // sonnet / default
-        (333_000.0, 67_000.0) // ~$3/M in, $15/M out
-    };
-
-    let input_budget = budget_usd * 0.6;
-    let output_budget = budget_usd * 0.4;
-
-    let max_input = (input_budget * input_per_dollar) as u64;
-    let max_output = (output_budget * output_per_dollar) as u64;
-
-    // Enforce sane minimums so even tiny budgets can do something.
-    (max_input.max(10_000), max_output.max(4_000))
-}
-
-// ---------------------------------------------------------------------------
 // Adapter: ToolExecutor -> ToolHandler trait
 // ---------------------------------------------------------------------------
 
@@ -227,15 +194,11 @@ fn effort_to_temperature(effort: &str) -> Option<f64> {
 // ---------------------------------------------------------------------------
 
 fn build_config(invocation: &LlmInvocation, timeout: Duration) -> ConversationConfig {
-    let (max_input, max_output) = budget_to_tokens(invocation.max_budget_usd, &invocation.model);
-
     ConversationConfig {
         model: invocation.model.clone(),
         system_prompt: invocation.system_prompt.clone(),
         max_turns: invocation.max_turns,
         max_tokens_per_turn: invocation.max_tokens_per_turn.unwrap_or(16384),
-        max_total_input_tokens: max_input,
-        max_total_output_tokens: max_output,
         timeout_per_turn: timeout,
         tools_enabled: !invocation.tools.is_empty(),
         temperature: effort_to_temperature(invocation.effort),
@@ -272,9 +235,6 @@ fn map_result<T: DeserializeOwned>(result: ConversationResult, duration_ms: u64)
 
     // Map stop reason to subtype-like behavior (log warnings like parse_response does).
     match &result.stop_reason {
-        StopReason::BudgetExhausted => {
-            warn!("budget exhausted — treating as partial success");
-        }
         StopReason::MaxTurns => {
             warn!("hit max turns — treating as partial success");
         }
@@ -489,10 +449,6 @@ mod tests {
         assert_eq!(config.max_turns, 10);
         assert_eq!(config.timeout_per_turn, Duration::from_secs(300));
         assert!(config.tools_enabled);
-
-        // Token budget should be derived from $1.00 budget.
-        assert!(config.max_total_input_tokens > 0);
-        assert!(config.max_total_output_tokens > 0);
     }
 
     #[test]
@@ -574,17 +530,6 @@ mod tests {
         assert_eq!(response.num_turns, 10);
         assert_eq!(response.text, "partial");
 
-        // BudgetExhausted -> partial success.
-        let result = ConversationResult {
-            text: "budget hit".to_string(),
-            turns: 5,
-            total_input_tokens: 100_000,
-            total_output_tokens: 40_000,
-            stop_reason: StopReason::BudgetExhausted,
-        };
-        let response: LlmResponse<serde_json::Value> = map_result(result, 0).unwrap();
-        assert_eq!(response.text, "budget hit");
-
         // Error -> still returns Ok (the error is in the text/stop_reason log).
         let result = ConversationResult {
             text: "error occurred".to_string(),
@@ -632,8 +577,6 @@ mod tests {
             system_prompt: Some("test".to_string()),
             max_turns: 5,
             max_tokens_per_turn: 4096,
-            max_total_input_tokens: 100_000,
-            max_total_output_tokens: 50_000,
             timeout_per_turn: Duration::from_secs(30),
             tools_enabled: true,
             temperature: None,
@@ -646,30 +589,6 @@ mod tests {
         assert!(response.structured.is_some());
         assert_eq!(response.structured.unwrap()["answer"], 42);
         assert_eq!(response.num_turns, 1);
-    }
-
-    #[test]
-    fn test_budget_to_tokens_sonnet() {
-        let (input, output) = budget_to_tokens(1.0, "claude-sonnet-4-20250514");
-        // $1 sonnet: ~200k input, ~27k output (with 60/40 split).
-        assert!(input > 100_000, "expected >100k input tokens, got {input}");
-        assert!(output > 20_000, "expected >20k output tokens, got {output}");
-    }
-
-    #[test]
-    fn test_budget_to_tokens_haiku() {
-        let (input, output) = budget_to_tokens(0.5, "claude-haiku-3");
-        // Haiku is much cheaper, so more tokens per dollar.
-        assert!(input > 500_000, "expected >500k input tokens for haiku, got {input}");
-        assert!(output > 100_000, "expected >100k output tokens for haiku, got {output}");
-    }
-
-    #[test]
-    fn test_budget_to_tokens_minimum() {
-        let (input, output) = budget_to_tokens(0.0, "claude-sonnet-4-20250514");
-        // Even with $0 budget, we should get sane minimums.
-        assert!(input >= 10_000);
-        assert!(output >= 4_000);
     }
 
     #[test]
