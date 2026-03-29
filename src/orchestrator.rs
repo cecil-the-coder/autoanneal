@@ -447,16 +447,44 @@ async fn run_pipeline(
 
     info!(count = work_items.len(), "built work queue");
 
-    // ─── Execute work queue concurrently ─────────────────────────────────
-    let outcomes = run_work_queue(
-        config.concurrency,
-        work_items,
-        worktree_mgr,
-        repo_slug,
-        &config.model,
-        effective_budget,
-    )
-    .await;
+    // ─── Execute work queue ─────────────────────────────────────────────
+    // CI fix items run sequentially (concurrency=1) because they may spawn
+    // heavy child processes (cargo check, etc.) that compete for memory.
+    // All other items run at the configured concurrency level.
+    let (ci_fix_items, other_items): (Vec<_>, Vec<_>) = work_items
+        .into_iter()
+        .partition(|item| matches!(item.kind, WorkItemKind::CiFix { .. }));
+
+    let mut all_outcomes = Vec::new();
+
+    if !ci_fix_items.is_empty() {
+        info!(count = ci_fix_items.len(), "running CI fix items sequentially");
+        let ci_outcomes = run_work_queue(
+            1, // sequential
+            ci_fix_items,
+            worktree_mgr.clone(),
+            repo_slug,
+            &config.model,
+            effective_budget,
+        )
+        .await;
+        all_outcomes.extend(ci_outcomes);
+    }
+
+    if !other_items.is_empty() {
+        let other_outcomes = run_work_queue(
+            config.concurrency,
+            other_items,
+            worktree_mgr,
+            repo_slug,
+            &config.model,
+            effective_budget,
+        )
+        .await;
+        all_outcomes.extend(other_outcomes);
+    }
+
+    let outcomes = all_outcomes;
 
     // ─── Process outcomes ────────────────────────────────────────────────
     let exit_code = 0;
