@@ -146,7 +146,7 @@ pub async fn run(
             repo_slug: repo_slug.to_string(),
             run_id,
         };
-        (truncated, "Read,Glob,Grep,Edit,Write,FetchCiJobLogs,Git", Some(ctx))
+        (truncated, "Read,Glob,Grep,Edit,Write,GhWorkflowLogs,Git", Some(ctx))
     };
 
     // 6. Invoke Claude.

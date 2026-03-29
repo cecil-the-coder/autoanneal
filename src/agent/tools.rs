@@ -457,7 +457,10 @@ impl ToolExecutor {
         }
     }
 
-    /// Run a git command inside `working_dir`, blocking destructive operations.
+    /// Run a read-only git command inside `working_dir`.
+    ///
+    /// Only an allowlist of safe, read-only subcommands is permitted:
+    /// status, diff, log, show, rev-parse.
     pub fn git(&self, command: &str) -> Result<String, ToolError> {
         let trimmed = command.trim();
         if !trimmed.starts_with("git") {
@@ -465,44 +468,49 @@ impl ToolExecutor {
                 "command must start with 'git'".into(),
             ));
         }
-        // Block destructive operations.
         let args: Vec<&str> = trimmed.split_whitespace().collect();
-        if args.len() >= 2 {
-            match args[1] {
-                "push" => {
-                    return Err(ToolError::InvalidInput(
-                        "git push is blocked — the harness handles pushing".into(),
-                    ));
-                }
-                "clean" => {
-                    return Err(ToolError::InvalidInput(
-                        "git clean is blocked — destructive operation".into(),
-                    ));
-                }
-                "reset" => {
-                    // Block --hard and --mixed
-                    if args.iter().any(|a| *a == "--hard" || *a == "--mixed") {
-                        return Err(ToolError::InvalidInput(
-                            "git reset --hard/--mixed is blocked — destructive operation".into(),
-                        ));
-                    }
-                }
-                _ => {}
-            }
+        const ALLOWED: &[&str] = &["status", "diff", "log", "show", "rev-parse"];
+        let subcommand = args.get(1).copied().unwrap_or("");
+        if !ALLOWED.contains(&subcommand) {
+            return Err(ToolError::InvalidInput(format!(
+                "git {subcommand} is not allowed — only {} are permitted",
+                ALLOWED.join(", ")
+            )));
         }
         self.run_command(trimmed, None)
     }
 
-    /// Fetch CI job logs for a specific job ID. Requires `ci_context` to be set.
-    pub fn fetch_ci_job_logs(&self, job_id: u64) -> Result<String, ToolError> {
+    /// Query GitHub Actions workflow data. Requires `ci_context` to be set.
+    ///
+    /// Actions:
+    /// - `job_logs`:    fetch full logs for a specific job ID
+    /// - `job_summary`: fetch structured job/step failure summary for the run
+    pub fn gh_workflow_logs(&self, action: &str, job_id: Option<u64>) -> Result<String, ToolError> {
         let ctx = self.ci_context.as_ref().ok_or_else(|| {
-            ToolError::InvalidInput("fetch_ci_job_logs requires CI context (run_id and repo_slug)".into())
+            ToolError::InvalidInput("gh_workflow_logs requires CI context (run_id and repo_slug)".into())
         })?;
-        let cmd = format!(
-            "gh run view {} --log --job {} -R {}",
-            ctx.run_id, job_id, ctx.repo_slug
-        );
-        self.run_command(&cmd, None)
+        match action {
+            "job_logs" => {
+                let jid = job_id.ok_or_else(|| {
+                    ToolError::InvalidInput("job_id is required for action 'job_logs'".into())
+                })?;
+                let cmd = format!(
+                    "gh run view {} --log --job {} -R {}",
+                    ctx.run_id, jid, ctx.repo_slug
+                );
+                self.run_command(&cmd, None)
+            }
+            "job_summary" => {
+                let cmd = format!(
+                    "gh run view {} --json jobs -R {}",
+                    ctx.run_id, ctx.repo_slug
+                );
+                self.run_command(&cmd, None)
+            }
+            other => Err(ToolError::InvalidInput(format!(
+                "unknown action '{other}' — use 'job_logs' or 'job_summary'"
+            ))),
+        }
     }
 
     // -- catalogue ----------------------------------------------------------
@@ -600,24 +608,25 @@ impl ToolExecutor {
             },
             ToolDefinition {
                 name: "git".into(),
-                description: "Run a git command in the working directory. Destructive operations (push, clean, reset --hard/--mixed) are blocked.".into(),
+                description: "Run a read-only git command. Allowed subcommands: status, diff, log, show, rev-parse.".into(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "command": { "type": "string", "description": "Full git command (must start with 'git')" }
+                        "command": { "type": "string", "description": "Full git command, e.g. 'git diff HEAD~1 --stat'" }
                     },
                     "required": ["command"]
                 }),
             },
             ToolDefinition {
-                name: "fetch_ci_job_logs".into(),
-                description: "Fetch CI logs for a specific job ID from the current CI run.".into(),
+                name: "gh_workflow_logs".into(),
+                description: "Query GitHub Actions workflow data for the current CI run. Use 'job_summary' to see which jobs/steps failed, then 'job_logs' to fetch full logs for a specific job.".into(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "job_id": { "type": "integer", "description": "The CI job ID to fetch logs for" }
+                        "action":  { "type": "string", "enum": ["job_logs", "job_summary"], "description": "What to fetch" },
+                        "job_id":  { "type": "integer", "description": "The CI job ID (required for job_logs, ignored for job_summary)" }
                     },
-                    "required": ["job_id"]
+                    "required": ["action"]
                 }),
             },
         ]
@@ -728,14 +737,15 @@ impl ToolExecutor {
                     })?;
                 self.git(command)
             }
-            "fetch_ci_job_logs" => {
-                let job_id = input
-                    .get("job_id")
-                    .and_then(|v| v.as_u64())
+            "gh_workflow_logs" => {
+                let action = input
+                    .get("action")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| {
-                        ToolError::InvalidInput("missing required field: job_id".into())
+                        ToolError::InvalidInput("missing required field: action".into())
                     })?;
-                self.fetch_ci_job_logs(job_id)
+                let job_id = input.get("job_id").and_then(|v| v.as_u64());
+                self.gh_workflow_logs(action, job_id)
             }
             other => Err(ToolError::InvalidInput(format!("unknown tool: {other}"))),
         }
@@ -1115,7 +1125,7 @@ mod tests {
         assert!(names.contains(&"search_content"));
         assert!(names.contains(&"run_command"));
         assert!(names.contains(&"git"));
-        assert!(names.contains(&"fetch_ci_job_logs"));
+        assert!(names.contains(&"gh_workflow_logs"));
     }
 
     #[test]

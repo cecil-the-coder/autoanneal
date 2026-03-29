@@ -147,7 +147,7 @@ fn tool_alias_to_name(alias: &str) -> &str {
         "Grep" => "search_content",
         "Bash" => "run_command",
         "Git" => "git",
-        "FetchCiJobLogs" => "fetch_ci_job_logs",
+        "GhWorkflowLogs" => "gh_workflow_logs",
         other => other,
     }
 }
