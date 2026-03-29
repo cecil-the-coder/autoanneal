@@ -592,11 +592,16 @@ fn collect_work_items(
 ) -> Vec<WorkItem> {
     let mut items = Vec::new();
 
-    // External PR CI fix items.
-    if config.fix_external_ci {
-        for ext_pr in external_prs.iter().filter(|pr| pr.ci_status == CiStatus::Failing) {
-            // Skip PRs that have hit the fix attempt limit.
-            if ext_pr.autoanneal_commit_count >= config.max_pr_fix_attempts as u64 {
+    // External PR CI fix and merge conflict items.
+    if config.fix_external_ci || config.fix_conflicts {
+        for ext_pr in external_prs.iter() {
+            let needs_ci_fix = config.fix_external_ci && ext_pr.ci_status == CiStatus::Failing;
+            let needs_conflict_fix = config.fix_conflicts && ext_pr.has_merge_conflicts;
+            if !needs_ci_fix && !needs_conflict_fix {
+                continue;
+            }
+            // Skip PRs that have hit the CI fix attempt limit.
+            if needs_ci_fix && ext_pr.autoanneal_commit_count >= config.max_pr_fix_attempts as u64 {
                 info!(
                     pr_number = ext_pr.number,
                     attempts = ext_pr.autoanneal_commit_count,
@@ -611,9 +616,9 @@ fn collect_work_items(
                 title: ext_pr.title.clone(),
                 body: String::new(),
                 branch: ext_pr.branch.clone(),
-                ci_status: CiStatus::Failing,
+                ci_status: ext_pr.ci_status,
                 has_fixing_label: false,
-                has_merge_conflicts: false,
+                has_merge_conflicts: ext_pr.has_merge_conflicts,
                 files: Vec::new(),
             };
             items.push(WorkItem {

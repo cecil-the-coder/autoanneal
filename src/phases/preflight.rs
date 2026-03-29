@@ -574,7 +574,7 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
             "--state",
             "open",
             "--json",
-            "number,title,headRefName,author,updatedAt,labels",
+            "number,title,headRefName,author,updatedAt,labels,mergeable",
             "--limit",
             "50",
             "-R",
@@ -630,6 +630,11 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
 
         let ci_status = check_ci_status(repo_slug, number).await;
 
+        let has_merge_conflicts = pr["mergeable"]
+            .as_str()
+            .map(|m| m == "CONFLICTING")
+            .unwrap_or(false);
+
         // For PRs with failing CI, count autoanneal commits so the
         // orchestrator can enforce the attempt limit.
         let autoanneal_commit_count = if ci_status == CiStatus::Failing {
@@ -648,6 +653,7 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
             ci_status,
             reviewed,
             autoanneal_commit_count,
+            has_merge_conflicts,
         };
 
         // 4. Apply configured filter.

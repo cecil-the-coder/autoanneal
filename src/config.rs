@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn test_parse_duration_overflow() {
-        assert_eq!(parse_duration("99999999999999999h"), None);
+        assert_eq!(parse_duration("999999999999999999h"), None);
     }
 
     #[test]
