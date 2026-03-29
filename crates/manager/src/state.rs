@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_add_and_check_active() {
-        let store = StateStore::new();
+        let store = StateStore::new(100);
         let run = make_active_run("my-repo");
         store.insert_active(run);
         assert!(store.is_active("my-repo"));
@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn test_remove_active() {
-        let store = StateStore::new();
+        let store = StateStore::new(100);
         store.insert_active(make_active_run("my-repo"));
         assert!(store.is_active("my-repo"));
 
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn test_add_history() {
-        let store = StateStore::new();
+        let store = StateStore::new(100);
         store.record_completed(make_run_record("repo-a", 1));
         store.record_completed(make_run_record("repo-b", 2));
 
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_history_limit() {
-        let store = StateStore::new();
+        let store = StateStore::new(100);
         for i in 0..150 {
             store.record_completed(make_run_record("repo", i));
         }
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_recent_runs() {
-        let store = StateStore::new();
+        let store = StateStore::new(100);
         store.record_completed(make_run_record("first", 1));
         store.record_completed(make_run_record("second", 2));
         store.record_completed(make_run_record("third", 3));
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn test_concurrent_access() {
         use std::sync::Arc;
-        let store = Arc::new(StateStore::new());
+        let store = Arc::new(StateStore::new(100));
         let mut handles = vec![];
 
         // Spawn writers for active runs

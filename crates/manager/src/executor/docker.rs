@@ -2,10 +2,9 @@ use async_trait::async_trait;
 use anyhow::{Context, Result};
 use std::time::Duration;
 use tokio::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
-use super::{Executor, PendingRun, RunOutcome};
-use autoanneal_lib::result::{WorkerResult, RESULT_MARKER};
+use super::{Executor, PendingRun, RunOutcome, parse_result_from_logs};
 
 pub struct DockerExecutor;
 
@@ -118,23 +117,11 @@ impl Executor for DockerExecutor {
     }
 }
 
-fn parse_result_from_logs(logs: &str) -> Option<WorkerResult> {
-    for line in logs.lines().rev() {
-        if let Some(json) = line.strip_prefix(RESULT_MARKER) {
-            match serde_json::from_str::<WorkerResult>(json) {
-                Ok(result) => return Some(result),
-                Err(e) => {
-                    warn!(error = %e, "failed to parse result from logs");
-                }
-            }
-        }
-    }
-    None
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use autoanneal_lib::result::RESULT_MARKER;
 
     fn sample_worker_result_json() -> String {
         serde_json::json!({

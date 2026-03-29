@@ -7,8 +7,7 @@ use kube::Client;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-use super::{Executor, PendingRun, RunOutcome};
-use autoanneal_lib::result::{WorkerResult, RESULT_MARKER};
+use super::{Executor, PendingRun, RunOutcome, parse_result_from_logs};
 
 pub struct KubernetesExecutor {
     client: Client,
@@ -344,16 +343,3 @@ fn parse_timeout(timeout: &str) -> i64 {
     }
 }
 
-fn parse_result_from_logs(logs: &str) -> Option<WorkerResult> {
-    for line in logs.lines().rev() {
-        if let Some(json) = line.strip_prefix(RESULT_MARKER) {
-            match serde_json::from_str::<WorkerResult>(json) {
-                Ok(result) => return Some(result),
-                Err(e) => {
-                    warn!(error = %e, "failed to parse result from logs");
-                }
-            }
-        }
-    }
-    None
-}

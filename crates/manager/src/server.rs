@@ -153,12 +153,14 @@ mod tests {
         let (trigger_tx, _trigger_rx) = tokio::sync::mpsc::unbounded_channel();
         let metrics = Arc::new(crate::metrics::Metrics::new().unwrap());
         AppState {
-            state_store: Arc::new(StateStore::new()),
+            state_store: Arc::new(StateStore::new(100)),
             trigger_tx,
             metrics: Some(metrics),
             webhook_secret: String::new(),
             repo_configs: Arc::new(Mutex::new(HashMap::new())),
             webhook_cooldowns: Arc::new(Mutex::new(HashMap::new())),
+            webhook_cooldown_secs: 120,
+            api_token: None,
         }
     }
 

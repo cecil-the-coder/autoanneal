@@ -5,7 +5,8 @@ use std::time::Duration;
 use crate::config::WorkerDefaults;
 use crate::config::RepoEntry;
 use crate::state::TriggerReason;
-use autoanneal_lib::result::WorkerResult;
+use autoanneal_lib::result::{WorkerResult, RESULT_MARKER};
+use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub struct PendingRun {
@@ -34,6 +35,21 @@ pub trait Executor: Send + Sync {
 
 pub mod docker;
 pub mod kubernetes;
+
+/// Parse a `WorkerResult` from container/pod log output by scanning for the result marker.
+pub fn parse_result_from_logs(logs: &str) -> Option<WorkerResult> {
+    for line in logs.lines().rev() {
+        if let Some(json) = line.strip_prefix(RESULT_MARKER) {
+            match serde_json::from_str::<WorkerResult>(json) {
+                Ok(result) => return Some(result),
+                Err(e) => {
+                    warn!(error = %e, "failed to parse result from logs");
+                }
+            }
+        }
+    }
+    None
+}
 
 #[cfg(test)]
 mod tests {
