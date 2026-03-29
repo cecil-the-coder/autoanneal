@@ -1280,7 +1280,7 @@ mod tests {
 
         let reqs = sender.recorded_requests().await;
         // Second request has tool results as last user message.
-        let last_msg = reqs[1].messages.last().unwrap();
+        let last_msg = reqs[1].messages.last().expect("second request should have messages after tool use");
         assert_eq!(last_msg.role, "user");
         let ids: Vec<&str> = last_msg.content.iter().filter_map(|b| {
             if let ContentBlock::ToolResult { tool_use_id, .. } = b { Some(tool_use_id.as_str()) } else { None }
@@ -1326,7 +1326,7 @@ mod tests {
 
         let reqs = sender.recorded_requests().await;
         // Second request: messages = [user, assistant, user("Continue.")]
-        let last_msg = reqs[1].messages.last().unwrap();
+        let last_msg = reqs[1].messages.last().expect("second request should have messages after max_tokens stop");
         assert_eq!(last_msg.role, "user");
         assert_eq!(last_msg.content.len(), 1);
         match &last_msg.content[0] {

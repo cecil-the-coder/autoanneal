@@ -657,6 +657,18 @@ fn collect_work_items(
 /// Cost values in the shared tracker are stored as microdollars (cost_usd × 1_000_000).
 const MICRODOLLAR: f64 = 1_000_000.0;
 
+/// Maximum representable microdollar value that fits in a `u64`.
+const MAX_MICRODOLLAR: f64 = u64::MAX as f64;
+
+/// Convert a USD cost to microdollars, clamping to the valid `u64` range.
+///
+/// This prevents overflow when `cost_usd` is unexpectedly large (e.g. due to a
+/// malformed API response) and returns `u64::MAX` instead of wrapping.
+fn cost_to_microdollars(cost_usd: f64) -> u64 {
+    let microdollars = (cost_usd * MICRODOLLAR).round();
+    microdollars.clamp(0.0, MAX_MICRODOLLAR) as u64
+}
+
 async fn run_work_queue(
     concurrency: usize,
     items: Vec<WorkItem>,
@@ -672,7 +684,7 @@ async fn run_work_queue(
 
     // Shared atomic cost tracker so concurrent items can see aggregate spending.
     let shared_cost = Arc::new(AtomicU64::new(0));
-    let total_budget_microdollars = (total_budget * MICRODOLLAR).round() as u64;
+    let total_budget_microdollars = cost_to_microdollars(total_budget);
 
     /// Helper: check aggregate spend. When total_budget is zero (unlimited),
     /// always returns true. Otherwise returns false when budget is exhausted
@@ -733,7 +745,7 @@ async fn run_work_queue(
         });
 
         // Update the shared cost tracker with actual spend.
-        let cost_microdollars = (outcome.cost_usd * MICRODOLLAR).round() as u64;
+        let cost_microdollars = cost_to_microdollars(outcome.cost_usd);
         shared_cost.fetch_add(cost_microdollars, Ordering::Relaxed);
 
         outcomes.push(outcome);
