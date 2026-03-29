@@ -32,18 +32,18 @@ pub struct RunRecord {
     pub result: Option<WorkerResult>,
 }
 
-const MAX_RECENT_RUNS: usize = 100;
-
 pub struct StateStore {
     active_runs: DashMap<String, ActiveRun>,
     recent_runs: RwLock<VecDeque<RunRecord>>,
+    history_limit: usize,
 }
 
 impl StateStore {
-    pub fn new() -> Self {
+    pub fn new(history_limit: usize) -> Self {
         Self {
             active_runs: DashMap::new(),
             recent_runs: RwLock::new(VecDeque::new()),
+            history_limit,
         }
     }
 
@@ -69,7 +69,7 @@ impl StateStore {
 
     pub fn record_completed(&self, record: RunRecord) {
         let mut runs = self.recent_runs.write().unwrap();
-        if runs.len() >= MAX_RECENT_RUNS {
+        if runs.len() >= self.history_limit {
             runs.pop_front();
         }
         runs.push_back(record);

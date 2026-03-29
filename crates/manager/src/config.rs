@@ -9,6 +9,52 @@ pub struct ManagerConfig {
     pub repos: Vec<RepoEntry>,
 }
 
+impl ManagerConfig {
+    /// Validate configuration values. Call after loading config.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.manager.global_concurrency == 0 {
+            anyhow::bail!("manager.global_concurrency must be > 0");
+        }
+
+        if self.manager.worker_image.is_empty() {
+            anyhow::bail!("manager.worker_image must not be empty");
+        }
+
+        // Validate listen_address is parseable as a socket address
+        self.manager.listen_addr.parse::<std::net::SocketAddr>()
+            .map_err(|e| anyhow::anyhow!(
+                "manager.listen_addr '{}' is not a valid socket address: {}",
+                self.manager.listen_addr, e
+            ))?;
+
+        for (i, repo) in self.repos.iter().enumerate() {
+            if repo.name.is_empty() {
+                anyhow::bail!("repos[{}].name must not be empty", i);
+            }
+            if !is_dns_safe(&repo.name) {
+                anyhow::bail!(
+                    "repos[{}].name '{}' is not DNS-safe (must be lowercase alphanumeric + hyphens, \
+                     cannot start/end with hyphen)",
+                    i, repo.name
+                );
+            }
+            if repo.repo.is_empty() {
+                anyhow::bail!("repos[{}].repo must not be empty", i);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Check that a name is DNS-safe: lowercase alphanumeric + hyphens, no leading/trailing hyphen.
+fn is_dns_safe(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct ManagerSettings {
     #[serde(default = "default_listen_addr")]
@@ -23,13 +69,35 @@ pub struct ManagerSettings {
     pub result_path: String,
     #[serde(default = "default_true")]
     pub docker_mode: bool,
+    #[serde(default = "default_namespace")]
+    pub namespace: String,
+    #[serde(default)]
+    pub resource_cpu_limit: Option<String>,
+    #[serde(default)]
+    pub resource_memory_limit: Option<String>,
+    /// Bearer token for API authentication. None = no auth (backward compat).
+    #[serde(default)]
+    pub api_token: Option<String>,
+    /// Webhook cooldown in seconds (default 120).
+    #[serde(default = "default_webhook_cooldown_secs")]
+    pub webhook_cooldown_secs: u64,
+    /// Poll interval in seconds for checking worker status (default 5).
+    #[serde(default = "default_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    /// Maximum number of recent runs to keep in history (default 100).
+    #[serde(default = "default_history_limit")]
+    pub history_limit: usize,
 }
 
 fn default_listen_addr() -> String { "0.0.0.0:8080".into() }
 fn default_concurrency() -> usize { 3 }
+fn default_webhook_cooldown_secs() -> u64 { 120 }
+fn default_poll_interval_secs() -> u64 { 5 }
+fn default_history_limit() -> usize { 100 }
 fn default_worker_image() -> String { "autoanneal:latest".into() }
 fn default_result_path() -> String { "/tmp/autoanneal-result.json".into() }
 fn default_true() -> bool { true }
+fn default_namespace() -> String { "default".into() }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct WorkerDefaults {
