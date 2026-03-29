@@ -84,7 +84,11 @@ pub async fn run(
             let summary = g1_responses
                 .iter()
                 .filter(|(r, _)| r.verdict == "reject")
-                .max_by(|a, b| a.0.confidence.partial_cmp(&b.0.confidence).unwrap_or(std::cmp::Ordering::Equal))
+                .max_by(|a, b| {
+                    let a_conf = if a.0.confidence.is_nan() { f64::NEG_INFINITY } else { a.0.confidence };
+                    let b_conf = if b.0.confidence.is_nan() { f64::NEG_INFINITY } else { b.0.confidence };
+                    a_conf.partial_cmp(&b_conf).unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .map(|(r, _)| r.reasoning.clone())
                 .unwrap_or_else(|| "Gate 1 rejected: changes not worthwhile.".to_string());
 
