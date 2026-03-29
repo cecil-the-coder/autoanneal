@@ -1,0 +1,39 @@
+{{- if .Values.manager.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "autoanneal.managerConfigmapName" . }}
+  labels:
+    {{- include "autoanneal.labels" . | nindent 4 }}
+    app.kubernetes.io/component: manager
+data:
+  manager.yaml: |
+    manager:
+      listen_addr: "0.0.0.0:8080"
+      global_concurrency: {{ .Values.defaults.concurrency }}
+      docker_mode: {{ .Values.manager.dockerMode }}
+      namespace: "{{ .Values.manager.namespace }}"
+      worker_image: "{{ .Values.manager.workerImage | default (printf "%s:%s" .Values.image.repository (include "autoanneal.imageTag" .)) }}"
+      webhook_secret: "{{ .Values.manager.webhookSecret }}"
+      {{- if .Values.manager.apiToken }}
+      api_token: "{{ .Values.manager.apiToken }}"
+      {{- end }}
+      webhook_cooldown_secs: {{ .Values.manager.webhookCooldownSecs }}
+      poll_interval_secs: {{ .Values.manager.pollIntervalSecs }}
+      history_limit: {{ .Values.manager.historyLimit }}
+    defaults:
+    {{- toYaml .Values.defaults | nindent 6 }}
+    repos:
+    {{- range .Values.repos }}
+      - name: {{ .name }}
+        repo: {{ .repo }}
+        {{- if .schedule }}
+        schedule: "{{ .schedule }}"
+        {{- end }}
+        {{- if hasKey . "enabled" }}
+        enabled: {{ .enabled }}
+        {{- else }}
+        enabled: true
+        {{- end }}
+    {{- end }}
+{{- end }}
