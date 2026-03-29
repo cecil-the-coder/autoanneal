@@ -1,3 +1,4 @@
+use crate::agent::tools::CiContext;
 use crate::llm::{self, truncate_to_char_boundary, LlmInvocation};
 use crate::models::InFlightPr;
 use crate::prompts;
@@ -123,23 +124,29 @@ pub async fn run(
     }
 
     // 5. Fetch CI logs (for CI failures) or conflict markers (for merge conflicts).
-    let context = if pr.has_merge_conflicts {
+    let (context, tools, ci_context): (String, &'static str, Option<CiContext>) = if pr.has_merge_conflicts {
         // Get conflict markers from working tree
         let output = tokio::process::Command::new("git")
             .args(["diff"])
             .current_dir(&clone_dir)
             .output()
             .await;
-        match output {
+        let diff_text = match output {
             Ok(out) => {
                 let diff = String::from_utf8_lossy(&out.stdout).to_string();
                 truncate_to_char_boundary(&diff, 50_000)
             }
             Err(_) => "(could not get conflict diff)".to_string(),
-        }
+        };
+        (diff_text, "Read,Glob,Grep,Edit,Write,Git", None)
     } else {
-        let ci_logs = fetch_ci_logs(repo_slug, &pr.branch).await;
-        truncate_to_char_boundary(&ci_logs, 50_000)
+        let (ci_logs, run_id) = fetch_ci_logs(repo_slug, &pr.branch).await;
+        let truncated = truncate_to_char_boundary(&ci_logs, 50_000);
+        let ctx = CiContext {
+            repo_slug: repo_slug.to_string(),
+            run_id,
+        };
+        (truncated, "Read,Glob,Grep,Edit,Write,GhWorkflowLogs,Git", Some(ctx))
     };
 
     // 6. Invoke Claude.
@@ -167,14 +174,15 @@ pub async fn run(
         system_prompt: Some(system_prompt),
         model: model.to_string(),
         max_budget_usd: budget,
-        max_turns: 100,
+        max_turns: 30,
         effort: "high",
-        tools: "Read,Glob,Grep,Bash,Edit,Write",
+        tools,
         json_schema: None,
         working_dir: clone_dir.clone(),
         context_window,
         provider_hint: None,
         max_tokens_per_turn: None,
+        ci_context,
     };
 
     let response: llm::LlmResponse<serde_json::Value> =
@@ -198,7 +206,9 @@ pub async fn run(
 }
 
 
-async fn fetch_ci_logs(repo_slug: &str, branch: &str) -> String {
+/// Fetch CI logs and run_id for the latest run on `branch`.
+/// Returns (combined_logs, run_id). run_id is 0 if not found.
+async fn fetch_ci_logs(repo_slug: &str, branch: &str) -> (String, u64) {
     let dot = Path::new(".");
 
     // Get latest run ID
@@ -222,18 +232,37 @@ async fn fetch_ci_logs(repo_slug: &str, branch: &str) -> String {
         Ok(raw) => {
             let runs: Vec<serde_json::Value> = match serde_json::from_str(&raw) {
                 Ok(v) => v,
-                Err(_) => return String::from("(could not parse CI run list)"),
+                Err(_) => return (String::from("(could not parse CI run list)"), 0),
             };
             match runs.first().and_then(|r| r["databaseId"].as_u64()) {
                 Some(id) => id,
-                None => return String::from("(no CI runs found)"),
+                None => return (String::from("(no CI runs found)"), 0),
             }
         }
-        Err(e) => return format!("(failed to list CI runs: {e})"),
+        Err(e) => return (format!("(failed to list CI runs: {e})"), 0),
+    };
+
+    // Fetch structured job info
+    let job_summary = match gh_command(
+        dot,
+        &[
+            "run",
+            "view",
+            &run_id.to_string(),
+            "--json",
+            "jobs",
+            "-R",
+            repo_slug,
+        ],
+    )
+    .await
+    {
+        Ok(json_str) => format_job_summary(&json_str),
+        Err(e) => format!("(failed to fetch job info: {e})"),
     };
 
     // Get failed logs
-    match gh_command(
+    let failed_logs = match gh_command(
         dot,
         &[
             "run",
@@ -248,6 +277,54 @@ async fn fetch_ci_logs(repo_slug: &str, branch: &str) -> String {
     {
         Ok(logs) => logs,
         Err(e) => format!("(failed to fetch CI logs: {e})"),
+    };
+
+    let combined = format!(
+        "## Job Summary\n\n{job_summary}\n\n## Failed Logs\n\n{failed_logs}"
+    );
+    (combined, run_id)
+}
+
+/// Parse the `gh run view --json jobs` output and format a summary of which
+/// jobs/steps failed, including their job IDs (for use with `gh_workflow_logs`).
+fn format_job_summary(json_str: &str) -> String {
+    let parsed: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return "(could not parse jobs JSON)".to_string(),
+    };
+
+    let jobs = match parsed.get("jobs").and_then(|j| j.as_array()) {
+        Some(arr) => arr,
+        None => return "(no jobs found in response)".to_string(),
+    };
+
+    let mut lines = Vec::new();
+    for job in jobs {
+        let name = job.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let conclusion = job.get("conclusion").and_then(|v| v.as_str()).unwrap_or("?");
+        let job_id = job.get("databaseId").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        let marker = if conclusion == "failure" { "FAILED" } else { conclusion };
+        lines.push(format!("- [{marker}] {name} (job_id: {job_id})"));
+
+        // List failed steps within the job
+        if conclusion == "failure" {
+            if let Some(steps) = job.get("steps").and_then(|s| s.as_array()) {
+                for step in steps {
+                    let step_name = step.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let step_conclusion = step.get("conclusion").and_then(|v| v.as_str()).unwrap_or("?");
+                    if step_conclusion == "failure" {
+                        lines.push(format!("  - FAILED step: {step_name}"));
+                    }
+                }
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        "(no jobs found)".to_string()
+    } else {
+        lines.join("\n")
     }
 }
 

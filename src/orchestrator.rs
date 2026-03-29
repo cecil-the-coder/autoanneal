@@ -1329,6 +1329,7 @@ async fn run_analysis_pipeline(
                         context_window,
                         provider_hint: None,
                         max_tokens_per_turn: None,
+                        ci_context: None,
                     };
 
                     let fix_response = llm::invoke::<serde_json::Value>(

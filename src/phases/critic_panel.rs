@@ -683,6 +683,7 @@ async fn invoke_critic<T: serde::de::DeserializeOwned + Send + 'static>(
         context_window,
         provider_hint,
         max_tokens_per_turn: Some(4096), // critics output small JSON, no need for 16K
+        ci_context: None,
     };
 
     let response = llm::invoke::<T>(&invocation, Duration::from_secs(300))
@@ -854,6 +855,7 @@ async fn run_research(
         context_window,
         provider_hint,
         max_tokens_per_turn: None,
+        ci_context: None,
     };
 
     match llm::invoke::<serde_json::Value>(&invocation, Duration::from_secs(120)).await {
