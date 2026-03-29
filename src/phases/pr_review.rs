@@ -1,5 +1,6 @@
 use crate::llm::{self, LlmInvocation};
 use crate::models::{CriticResult, ExternalPr};
+use crate::phases::critic::CriticOutput;
 use crate::prompts::critic::CRITIC_PROMPT;
 use crate::prompts::pr_review::PR_REVIEW_FIX_PROMPT;
 use crate::prompts::system::{critic_system_prompt, pr_review_fix_system_prompt};
@@ -30,6 +31,8 @@ pub async fn run(
     budget: f64,
     fix_threshold: u32,
     context_window: u64,
+    critic_models: Option<&[String]>,
+    default_branch: &str,
 ) -> Result<PrReviewOutput> {
     let dot = Path::new(".");
     let clone_dir = worktree_path.to_path_buf();
@@ -80,49 +83,81 @@ pub async fn run(
         });
     }
 
-    // 4. Run critic on the diff.
-    let critic_prompt = CRITIC_PROMPT.replace("{diff}", &diff);
+    // 4. Run critic review — panel if configured, single critic otherwise.
     let critic_budget = budget * 0.30;
 
-    let critic_invocation = LlmInvocation {
-        prompt: critic_prompt,
-        system_prompt: Some(critic_system_prompt()),
-        model: model.to_string(),
-        max_budget_usd: critic_budget,
-        max_turns: 30,
-        effort: "high",
-        tools: "Read,Glob,Grep,Bash",
-        json_schema: None,
-        working_dir: clone_dir.clone(),
-        context_window,
-        provider_hint: None,
-        max_tokens_per_turn: None,
+    let critic_output: CriticOutput = if let Some(models) = critic_models {
+        // Panel mode: skip Gate 1 (human PR, worthwhileness is assumed)
+        info!(pr_number = pr.number, models = models.len(), "PR review using critic panel");
+        super::critic_panel::run(
+            &clone_dir,
+            default_branch,
+            models,
+            critic_budget,
+            context_window,
+            true, // skip_gate1 — human PRs are assumed worthwhile
+        )
+        .await
+        .unwrap_or(CriticOutput {
+            score: 5,
+            verdict: "needs_work".to_string(),
+            summary: "Critic panel failed.".to_string(),
+            cost_usd: 0.0,
+            made_fixes: false,
+            score_unverified: false,
+        })
+    } else {
+        // Single critic mode
+        let critic_prompt = CRITIC_PROMPT.replace("{diff}", &diff);
+        let critic_invocation = LlmInvocation {
+            prompt: critic_prompt,
+            system_prompt: Some(critic_system_prompt()),
+            model: model.to_string(),
+            max_budget_usd: critic_budget,
+            max_turns: 30,
+            effort: "high",
+            tools: "Read,Glob,Grep,Bash",
+            json_schema: None,
+            working_dir: clone_dir.clone(),
+            context_window,
+            provider_hint: None,
+            max_tokens_per_turn: None,
+        };
+
+        let critic_response =
+            llm::invoke::<CriticResult>(&critic_invocation, Duration::from_secs(300)).await?;
+
+        let critic = critic_response.structured.unwrap_or(CriticResult {
+            score: 5,
+            verdict: "needs_work".to_string(),
+            summary: "Critic did not return structured output.".to_string(),
+        });
+
+        CriticOutput {
+            score: critic.score,
+            verdict: critic.verdict,
+            summary: critic.summary,
+            cost_usd: critic_response.cost_usd,
+            made_fixes: false,
+            score_unverified: false,
+        }
     };
 
-    let critic_response =
-        llm::invoke::<CriticResult>(&critic_invocation, Duration::from_secs(300)).await?;
-
-    let mut total_cost = critic_response.cost_usd;
-
-    let critic = critic_response.structured.unwrap_or(CriticResult {
-        score: 5,
-        verdict: "needs_work".to_string(),
-        summary: "Critic did not return structured output.".to_string(),
-    });
+    let mut total_cost = critic_output.cost_usd;
 
     info!(
         pr_number = pr.number,
-        score = critic.score,
-        verdict = %critic.verdict,
+        score = critic_output.score,
+        verdict = %critic_output.verdict,
         "PR review critic complete"
     );
 
     // 5. If score >= fix_threshold, the PR looks fine. Just label and move on.
-    if critic.score >= fix_threshold {
+    if critic_output.score >= fix_threshold {
         add_reviewed_label(repo_slug, pr.number).await;
         return Ok(PrReviewOutput {
             pr_number: pr.number,
-            score: critic.score,
+            score: critic_output.score,
             fixed: false,
             commented: false,
             cost_usd: total_cost,
@@ -135,13 +170,13 @@ pub async fn run(
         // Not enough budget to attempt fixes; just comment.
         let comment = format!(
             "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated review by autoanneal. Not enough budget remaining to attempt fixes._",
-            critic.score, critic.verdict, critic.summary
+            critic_output.score, critic_output.verdict, critic_output.summary
         );
         leave_comment(repo_slug, pr.number, &comment).await;
         add_reviewed_label(repo_slug, pr.number).await;
         return Ok(PrReviewOutput {
             pr_number: pr.number,
-            score: critic.score,
+            score: critic_output.score,
             fixed: false,
             commented: true,
             cost_usd: total_cost,
@@ -152,8 +187,8 @@ pub async fn run(
     let fix_prompt = PR_REVIEW_FIX_PROMPT
         .replace("{pr_number}", &pr.number.to_string())
         .replace("{branch}", &pr.branch)
-        .replace("{score}", &critic.score.to_string())
-        .replace("{summary}", &critic.summary)
+        .replace("{score}", &critic_output.score.to_string())
+        .replace("{summary}", &critic_output.summary)
         .replace("{diff}", &diff);
 
     let fix_invocation = LlmInvocation {
@@ -192,14 +227,14 @@ pub async fn run(
             // Leave a comment so the PR author knows fixes were attempted but rejected.
             let comment = format!(
                 "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes were generated but discarded due to safety guardrails ({}). Please review the suggestions above._",
-                critic.score, critic.verdict, critic.summary, violation
+                critic_output.score, critic_output.verdict, critic_output.summary, violation
             );
             leave_comment(repo_slug, pr.number, &comment).await;
             add_reviewed_label(repo_slug, pr.number).await;
 
             return Ok(PrReviewOutput {
                 pr_number: pr.number,
-                score: critic.score,
+                score: critic_output.score,
                 fixed: false,
                 commented: true,
                 cost_usd: total_cost,
@@ -216,14 +251,14 @@ pub async fn run(
                     // Leave a comment summarizing what was fixed.
                     let comment = format!(
                         "## Autoanneal Review & Fix\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes have been pushed to this branch._",
-                        critic.score, critic.verdict, critic.summary
+                        critic_output.score, critic_output.verdict, critic_output.summary
                     );
                     leave_comment(repo_slug, pr.number, &comment).await;
                     add_reviewed_label(repo_slug, pr.number).await;
 
                     return Ok(PrReviewOutput {
                         pr_number: pr.number,
-                        score: critic.score,
+                        score: critic_output.score,
                         fixed: true,
                         commented: true,
                         cost_usd: total_cost,
@@ -232,14 +267,14 @@ pub async fn run(
                     // Push failed (no permission / protected branch). Leave review comment.
                     let comment = format!(
                         "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes were prepared but could not be pushed (insufficient permissions or protected branch). Please review the suggestions above._",
-                        critic.score, critic.verdict, critic.summary
+                        critic_output.score, critic_output.verdict, critic_output.summary
                     );
                     leave_comment(repo_slug, pr.number, &comment).await;
                     add_reviewed_label(repo_slug, pr.number).await;
 
                     return Ok(PrReviewOutput {
                         pr_number: pr.number,
-                        score: critic.score,
+                        score: critic_output.score,
                         fixed: false,
                         commented: true,
                         cost_usd: total_cost,
@@ -252,14 +287,14 @@ pub async fn run(
     // 6c. No changes made by Claude. Leave review comment.
     let comment = format!(
         "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}",
-        critic.score, critic.verdict, critic.summary
+        critic_output.score, critic_output.verdict, critic_output.summary
     );
     leave_comment(repo_slug, pr.number, &comment).await;
     add_reviewed_label(repo_slug, pr.number).await;
 
     Ok(PrReviewOutput {
         pr_number: pr.number,
-        score: critic.score,
+        score: critic_output.score,
         fixed: false,
         commented: true,
         cost_usd: total_cost,

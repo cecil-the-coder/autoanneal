@@ -52,6 +52,8 @@ enum WorkItemKind {
     PrReview {
         pr: ExternalPr,
         fix_threshold: u32,
+        default_branch: String,
+        critic_models: Option<Vec<String>>,
     },
     IssueInvestigation {
         issue: GithubIssue,
@@ -570,6 +572,8 @@ fn collect_work_items(
                 kind: WorkItemKind::PrReview {
                     pr: pr.clone(),
                     fix_threshold: config.review_fix_threshold,
+                    default_branch: repo_info.default_branch.clone(),
+                    critic_models: config.critic_model_list(),
                 },
                 budget_cap: budget_remaining,
                 context_window,
@@ -792,12 +796,13 @@ fn spawn_work_item(
                     Err(e) => Err(e),
                 }
             }
-            WorkItemKind::PrReview { pr, fix_threshold } => {
+            WorkItemKind::PrReview { pr, fix_threshold, default_branch, critic_models } => {
                 let wt_name = format!("review-{}", pr.number);
                 match mgr.create_at_branch(&wt_name, &pr.branch).await {
                     Ok(wt) => {
                         let r = phases::pr_review::run(
                             &pr, &repo_slug, &wt, &model, budget, fix_threshold, context_window,
+                            critic_models.as_deref(), &default_branch,
                         )
                         .await;
                         mgr.remove(&wt).await.ok();
