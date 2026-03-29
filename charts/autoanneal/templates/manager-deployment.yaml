@@ -37,7 +37,7 @@ spec:
       {{- end }}
       containers:
         - name: manager
-          image: "{{ .Values.manager.image.repository }}:{{ .Values.manager.image.tag }}"
+          image: "{{ .Values.manager.image.repository }}:{{ include "autoanneal.managerImageTag" . }}"
           imagePullPolicy: {{ .Values.manager.image.pullPolicy }}
           ports:
             - name: http
