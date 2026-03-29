@@ -52,6 +52,8 @@ pub async fn run(
             cost_usd: 0.0,
             made_fixes: false,
             score_unverified: false,
+            initial_summary: None,
+            initial_score: None,
         });
     }
 
@@ -100,6 +102,8 @@ pub async fn run(
                 cost_usd: total_cost,
                 made_fixes: false,
                 score_unverified: false,
+                initial_summary: None,
+                initial_score: None,
             });
         }
         info!(cost = g1_cost, "gate 1 passed");
@@ -190,6 +194,8 @@ pub async fn run(
             cost_usd: total_cost,
             made_fixes: false,
             score_unverified: false,
+            initial_summary: None,
+            initial_score: None,
         });
     } else {
         // Fallback: use score to determine
@@ -235,6 +241,8 @@ pub async fn run(
         cost_usd: total_cost,
         made_fixes: false,
         score_unverified: false,
+        initial_summary: None,
+        initial_score: None,
     })
 }
 
