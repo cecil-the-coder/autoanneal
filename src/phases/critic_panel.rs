@@ -564,8 +564,19 @@ fn sanitize_json(input: &str) -> String {
 
     for ch in input.chars() {
         if prev_was_escape {
-            result.push(ch);
             prev_was_escape = false;
+            // Only valid JSON escapes: " \ / b f n r t u
+            match ch {
+                '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u' => {
+                    result.push(ch);
+                }
+                _ => {
+                    // Invalid escape like \_ or \g — double the backslash
+                    // so it becomes a literal backslash in the JSON string.
+                    result.push('\\');
+                    result.push(ch);
+                }
+            }
             continue;
         }
 
