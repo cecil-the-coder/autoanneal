@@ -308,11 +308,31 @@ impl ToolExecutor {
 
                         // Cap virtual memory at 3 GiB — child gets allocation
                         // failure instead of triggering container OOM kill.
-                        let limit = libc::rlimit {
-                            rlim_cur: 3 * 1024 * 1024 * 1024,
-                            rlim_max: 3 * 1024 * 1024 * 1024,
-                        };
-                        libc::setrlimit(libc::RLIMIT_AS, &limit);
+                        const DESIRED_BYTES: u64 = 3 * 1024 * 1024 * 1024;
+                        let rlim_val = DESIRED_BYTES as libc::rlim_t;
+
+                        // On 32-bit or unusual platforms rlim_t may be too
+                        // narrow to hold the desired limit.  Detect truncation
+                        // so we don't silently apply a lower cap.
+                        if rlim_val as u64 != DESIRED_BYTES {
+                            tracing::warn!(
+                                desired_bytes = DESIRED_BYTES,
+                                "RLIMIT_AS value overflows rlim_t; \
+                                 skipping virtual-memory cap"
+                            );
+                        } else {
+                            let limit = libc::rlimit {
+                                rlim_cur: rlim_val,
+                                rlim_max: rlim_val,
+                            };
+                            if libc::setrlimit(libc::RLIMIT_AS, &limit) != 0 {
+                                tracing::warn!(
+                                    desired_bytes = DESIRED_BYTES,
+                                    "setrlimit(RLIMIT_AS) failed; \
+                                     virtual-memory cap not applied"
+                                );
+                            }
+                        }
 
                         Ok(())
                     });
@@ -391,8 +411,13 @@ impl ToolExecutor {
                     _ = tokio::time::sleep(effective_timeout) => {
                         // Timeout: kill the child process.
                         let _ = child.kill().await;
+                        // Abort the reader tasks and await them to ensure
+                        // they are fully cleaned up and don't leak as
+                        // zombie tasks.
                         stdout_task.abort();
                         stderr_task.abort();
+                        let _ = stdout_task.await;
+                        let _ = stderr_task.await;
                         Err(ToolError::CommandTimeout(timeout_secs))
                     }
                 }
