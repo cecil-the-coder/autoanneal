@@ -139,11 +139,11 @@ serviceAccount:
 # When enabled, a long-running manager Deployment is created instead
 # of per-repo CronJobs/Job resources.
 manager:
-  enabled: false
+  enabled: true
   image:
     repository: ghcr.io/cecil-the-coder/autoanneal-manager
     tag: "latest"
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   serviceAccount:
     create: true
     name: ""
