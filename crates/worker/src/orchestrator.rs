@@ -317,6 +317,7 @@ async fn run_pipeline(
         phases::preflight::run(
             repo_slug,
             config.review_prs,
+            config.force_review,
             &config.review_filter,
             &config.investigate_issues,
             config.fix_external_ci,

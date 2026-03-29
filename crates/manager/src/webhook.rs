@@ -100,6 +100,7 @@ pub async fn handle_github_webhook(
     let msg = TriggerMessage {
         repo_name: repo_name.clone(),
         reason,
+        overrides: None,
     };
 
     if state.trigger_tx.send(msg).is_err() {

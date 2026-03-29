@@ -76,6 +76,9 @@ async fn list_runs(
 #[derive(Deserialize)]
 struct TriggerRequest {
     repo: String,
+    /// Optional overrides for this run only.
+    #[serde(flatten)]
+    overrides: Option<crate::scheduler::TriggerOverrides>,
 }
 
 #[derive(Serialize)]
@@ -113,6 +116,7 @@ async fn trigger_run(
     let msg = TriggerMessage {
         repo_name: req.repo,
         reason: TriggerReason::Manual,
+        overrides: req.overrides,
     };
 
     if state.trigger_tx.send(msg).is_err() {
