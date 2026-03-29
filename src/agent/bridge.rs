@@ -160,7 +160,9 @@ fn parse_enabled_tools(tools: &str) -> Option<Vec<String>> {
     Some(
         tools
             .split(',')
-            .map(|s| tool_alias_to_name(s.trim()).to_string())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| tool_alias_to_name(s).to_string())
             .collect(),
     )
 }
@@ -190,7 +192,7 @@ impl ToolHandler for ToolExecutorAdapter {
             } else {
                 input_preview
             };
-            println!("[bridge] tool: {name} {preview} ({elapsed:.1?}, rss: {}MB)", rss_mb());
+            println!("[bridge] tool: {name} {preview} ({elapsed:?}, rss: {}MB)", rss_mb());
         }
 
         match result {

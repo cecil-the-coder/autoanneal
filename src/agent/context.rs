@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_zero_context_window_falls_back_to_default() {
-        let mgr = ContextManager::new(0);
+        let mut mgr = ContextManager::new(0);
         // Internal context_window should be DEFAULT_CONTEXT_WINDOW, not 0.
         // We verify indirectly: with default 128K, threshold is ~102_400,
         // so 50K tokens should NOT trigger eviction.
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_tiny_context_window_falls_back_to_default() {
-        let mgr = ContextManager::new(100);
+        let mut mgr = ContextManager::new(100);
         // Same as above — should fall back to default 128K.
         let mut messages = vec![
             make_tool_result_message("tr_1", "some content"),
@@ -427,7 +427,7 @@ mod tests {
     #[test]
     fn test_min_context_window_accepted() {
         // Exactly MIN_CONTEXT_WINDOW (4096) should be accepted as-is.
-        let mgr = ContextManager::new(4096);
+        let mut mgr = ContextManager::new(4096);
         // Threshold = 4096 * 0.8 = 3276. 3400 tokens should trigger eviction.
         let mut messages = vec![
             make_tool_result_message("tr_1", &"x".repeat(16_000)),
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn test_just_below_min_falls_back() {
         // 4095 is just below the minimum — should fall back to default.
-        let mgr = ContextManager::new(4095);
+        let mut mgr = ContextManager::new(4095);
         let mut messages = vec![
             make_tool_result_message("tr_1", "some content"),
         ];
