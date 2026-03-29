@@ -31,11 +31,11 @@ pub struct ContextManager {
     eviction_order: Vec<(usize, String)>,
 }
 
-fn compress(data: &str) -> Vec<u8> {
+pub(crate) fn compress(data: &str) -> Vec<u8> {
     lz4_flex::compress_prepend_size(data.as_bytes())
 }
 
-fn decompress(data: &[u8]) -> String {
+pub(crate) fn decompress(data: &[u8]) -> String {
     match lz4_flex::decompress_size_prepended(data) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(_) => "(decompression failed)".to_string(),
@@ -114,11 +114,12 @@ impl ContextManager {
         evicted
     }
 
-    /// Handle a `recall_result` tool call. Returns the original content if found.
-    pub fn recall(&self, tool_use_id: &str) -> String {
+    /// Handle a `recall_result` tool call. Returns the original content if found,
+    /// or `None` if not found.
+    pub fn recall(&self, tool_use_id: &str) -> Option<String> {
         match self.store.get(tool_use_id) {
-            Some(compressed) => decompress(compressed),
-            None => format!("No stored result found for id: {tool_use_id}"),
+            Some(compressed) => Some(decompress(compressed)),
+            None => None,
         }
     }
 
@@ -310,14 +311,14 @@ mod tests {
         assert!(mgr.has_evicted());
 
         let recalled = mgr.recall("tr_1");
-        assert_eq!(recalled, original);
+        assert_eq!(recalled, Some(original.to_string()));
     }
 
     #[test]
     fn test_recall_unknown_id() {
         let mgr = ContextManager::new(100_000);
         let result = mgr.recall("nonexistent");
-        assert!(result.contains("No stored result"));
+        assert!(result.is_none());
     }
 
     #[test]

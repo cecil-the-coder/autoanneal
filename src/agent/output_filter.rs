@@ -6,6 +6,7 @@
 //! conversation.
 
 use regex::Regex;
+use std::sync::OnceLock;
 
 /// Filter command output to reduce tokens. Returns the filtered output.
 /// The caller stores the full original if needed.
@@ -16,10 +17,10 @@ pub fn filter(command: &str, output: &str) -> String {
     }
 
     // Try static filters
-    for f in FILTERS.iter() {
+    for (idx, f) in FILTERS.iter().enumerate() {
         if let Ok(re) = Regex::new(f.command_pattern) {
             if re.is_match(command) {
-                return apply_filter(f, output);
+                return apply_filter(f, idx, output);
             }
         }
     }
@@ -796,8 +797,10 @@ static FILTERS: &[CommandFilter] = &[
 // ANSI stripping
 // ---------------------------------------------------------------------------
 
+static ANSI_REGEX: OnceLock<Regex> = OnceLock::new();
+
 fn strip_ansi_codes(s: &str) -> String {
-    let re = Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap();
+    let re = ANSI_REGEX.get_or_init(|| Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap());
     re.replace_all(s, "").into_owned()
 }
 
@@ -805,18 +808,43 @@ fn strip_ansi_codes(s: &str) -> String {
 // Generic filter engine
 // ---------------------------------------------------------------------------
 
-fn apply_filter(filter: &CommandFilter, output: &str) -> String {
+/// Cached compiled regexes for strip patterns.
+/// Each entry corresponds to the filter at the same index in FILTERS.
+static STRIP_REGEXES: OnceLock<Vec<Vec<Regex>>> = OnceLock::new();
+
+/// Get or initialize the cached strip regexes.
+fn get_strip_regexes() -> &'static Vec<Vec<Regex>> {
+    STRIP_REGEXES.get_or_init(|| {
+        FILTERS
+            .iter()
+            .map(|f| {
+                f.strip_patterns
+                    .iter()
+                    .filter_map(|p| Regex::new(p).ok())
+                    .collect()
+            })
+            .collect()
+    })
+}
+
+fn apply_filter(filter: &CommandFilter, filter_idx: usize, output: &str) -> String {
     let output = if filter.strip_ansi {
         strip_ansi_codes(output)
     } else {
         output.to_string()
     };
 
-    let strip_regexes: Vec<Regex> = filter
-        .strip_patterns
-        .iter()
-        .filter_map(|p| Regex::new(p).ok())
-        .collect();
+    // Use cached regexes, falling back to compiling if index is somehow out of bounds
+    let strip_regexes: Vec<Regex> = get_strip_regexes()
+        .get(filter_idx)
+        .cloned()
+        .unwrap_or_else(|| {
+            filter
+                .strip_patterns
+                .iter()
+                .filter_map(|p| Regex::new(p).ok())
+                .collect()
+        });
 
     let lines: Vec<&str> = output
         .lines()

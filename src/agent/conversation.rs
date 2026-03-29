@@ -228,10 +228,13 @@ pub async fn run(
                             recall_ids.push(id.clone());
                             match input.get("id").and_then(|v| v.as_str()) {
                                 Some(recall_id) if !recall_id.is_empty() => {
-                                    (ctx_mgr.recall(recall_id), false)
+                                    match ctx_mgr.recall(recall_id) {
+                                        Some(content) => (content, false),
+                                        None => (format!("No stored result found for id: {recall_id}"), true),
+                                    }
                                 }
                                 _ => {
-                                    (ctx_mgr.recall(""), false)
+                                    ("recall_result requires a non-empty 'id' parameter".to_string(), true)
                                 }
                             }
                         } else {
@@ -241,14 +244,17 @@ pub async fn run(
                     // Filter large command output and store full version for recall.
                     // Only filter run_command results that are large enough to benefit.
                     const FILTER_THRESHOLD: usize = 2000; // ~500 tokens
+                    /// Maximum fraction of original length that filtered output can have.
+                    /// E.g., 0.75 means filtered output must be ≤75% of original (≥25% reduction).
+                    const FILTER_MAX_SIZE_RATIO: f64 = 0.75;
                     if name == "run_command" && !is_error && result_content.len() > FILTER_THRESHOLD {
                         let command = input.get("command")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
                         let filtered = output_filter::filter(command, &result_content);
 
-                        // Only use filtered version if it's actually shorter
-                        if filtered.len() < result_content.len() * 3 / 4 {  // at least 25% reduction
+                        // Only use filtered version if it's actually shorter by the required ratio
+                        if (filtered.len() as f64) <= (result_content.len() as f64) * FILTER_MAX_SIZE_RATIO {
                             let store_id = format!("cmd_{}", id);
                             ctx_mgr.store_raw(&store_id, result_content);
                             result_content = format!(
