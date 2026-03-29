@@ -299,11 +299,14 @@ async fn run_pipeline(
 
     // ─── Early exit checks (before recon to save money) ────────────────
     let has_external_ci_failures = config.fix_external_ci
-        && preflight_output.external_prs.iter().any(|pr| pr.ci_status == CiStatus::Failing);
+        && preflight_output.external_prs.iter().any(|pr| {
+            pr.ci_status == CiStatus::Failing
+                && pr.autoanneal_commit_count < config.max_pr_fix_attempts as u64
+        });
     let has_maintenance = !preflight_output.prs_needing_ci_fix().is_empty()
         || !preflight_output.prs_needing_rebase().is_empty()
         || has_external_ci_failures;
-    let has_reviews = !preflight_output.external_prs.is_empty();
+    let has_reviews = preflight_output.external_prs.iter().any(|pr| !pr.reviewed);
     let has_issues = !preflight_output.issues.is_empty();
     let at_pr_limit = config.max_open_prs > 0
         && preflight_output.in_flight_prs.len() >= config.max_open_prs;
@@ -592,6 +595,16 @@ fn collect_work_items(
     // External PR CI fix items.
     if config.fix_external_ci {
         for ext_pr in external_prs.iter().filter(|pr| pr.ci_status == CiStatus::Failing) {
+            // Skip PRs that have hit the fix attempt limit.
+            if ext_pr.autoanneal_commit_count >= config.max_pr_fix_attempts as u64 {
+                info!(
+                    pr_number = ext_pr.number,
+                    attempts = ext_pr.autoanneal_commit_count,
+                    max = config.max_pr_fix_attempts,
+                    "skipping external CI fix — attempt limit reached"
+                );
+                continue;
+            }
             // Convert ExternalPr to InFlightPr for the CI fix phase.
             let as_inflight = InFlightPr {
                 number: ext_pr.number,
@@ -645,9 +658,9 @@ fn collect_work_items(
         }
     }
 
-    // PR review items.
+    // PR review items — skip PRs already reviewed by autoanneal.
     if config.review_prs {
-        for pr in external_prs.iter().take(3) {
+        for pr in external_prs.iter().filter(|pr| !pr.reviewed).take(3) {
             items.push(WorkItem {
                 kind: WorkItemKind::PrReview {
                     pr: pr.clone(),
