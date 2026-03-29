@@ -180,10 +180,6 @@ struct ToolExecutorAdapter {
 #[async_trait::async_trait]
 impl ToolHandler for ToolExecutorAdapter {
     async fn execute(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
-        let start = Instant::now();
-        let result = self.executor.execute_tool(name, input);
-        let elapsed = start.elapsed();
-
         if self.debug_stream {
             let input_preview = serde_json::to_string(input)
                 .unwrap_or_else(|_| "?".to_string());
@@ -192,7 +188,15 @@ impl ToolHandler for ToolExecutorAdapter {
             } else {
                 input_preview
             };
-            println!("[bridge] tool: {name} {preview} ({elapsed:?}, rss: {}MB)", rss_mb());
+            println!("[bridge] tool: {name} {preview} (rss: {}MB)", rss_mb());
+        }
+
+        let start = Instant::now();
+        let result = self.executor.execute_tool(name, input);
+        let elapsed = start.elapsed();
+
+        if self.debug_stream {
+            println!("[bridge] tool: {name} done ({elapsed:?})");
         }
 
         match result {

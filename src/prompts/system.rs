@@ -265,10 +265,10 @@ Constraints:
 - Do NOT add new dependencies.
 - Do NOT modify CI/CD configuration files (.github/workflows/*, .gitlab-ci.yml, etc.) unless the CI config itself is the cause of the failure.
 - Use the Git tool for any git operations (e.g., git status, git diff). Do NOT use Bash.
-- If you need more details about a specific CI job, use `fetch_ci_job_logs` with the job ID from the job summary.
+- If you need more details about a specific CI job, use `gh_workflow_logs` with action `job_logs` and the job ID from the job summary.
 
 Workflow:
-1. Read the CI failure logs and job summary carefully. Use `fetch_ci_job_logs` if you need full logs for a specific job.
+1. Read the CI failure logs and job summary carefully. Use `gh_workflow_logs` with action `job_logs` if you need full logs for a specific job.
 2. Read the relevant source files.
 3. Apply minimal fixes using Edit.
 4. CI will run the full verification after push."#;
