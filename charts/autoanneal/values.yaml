@@ -144,6 +144,15 @@ manager:
     repository: ghcr.io/cecil-the-coder/autoanneal-manager
     tag: "latest"
     pullPolicy: Always
+  # Runtime config (injected into manager.yaml ConfigMap)
+  dockerMode: true            # true = Docker executor, false = Kubernetes executor
+  namespace: "default"        # K8s namespace for worker Jobs (only used when dockerMode=false)
+  workerImage: ""             # Worker image override (empty = use image.repository:image.tag)
+  webhookSecret: ""           # GitHub webhook HMAC secret (empty = verification disabled)
+  apiToken: ""                # Bearer token for /api/v1/trigger (empty = no auth)
+  webhookCooldownSecs: 120    # Cooldown between webhook triggers per repo
+  pollIntervalSecs: 5         # Interval for polling worker status
+  historyLimit: 100           # Max recent runs to keep in memory
   serviceAccount:
     create: true
     name: ""

@@ -70,7 +70,15 @@ impl Scheduler {
             if !entry.enabled || entry.schedule.is_empty() {
                 continue;
             }
-            match Schedule::from_str(&entry.schedule) {
+            // The cron crate requires 6-7 fields (with seconds). Standard
+            // 5-field cron expressions (e.g. "*/10 * * * *") need a seconds
+            // field prepended.
+            let expr = if entry.schedule.split_whitespace().count() == 5 {
+                format!("0 {}", entry.schedule)
+            } else {
+                entry.schedule.clone()
+            };
+            match Schedule::from_str(&expr) {
                 Ok(sched) => {
                     let next = sched.upcoming(Utc).next().unwrap_or(now);
                     info!(

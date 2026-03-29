@@ -11,6 +11,16 @@ data:
     manager:
       listen_addr: "0.0.0.0:8080"
       global_concurrency: {{ .Values.defaults.concurrency }}
+      docker_mode: {{ .Values.manager.dockerMode }}
+      namespace: "{{ .Values.manager.namespace }}"
+      worker_image: "{{ .Values.manager.workerImage | default (printf "%s:%s" .Values.image.repository .Values.image.tag) }}"
+      webhook_secret: "{{ .Values.manager.webhookSecret }}"
+      {{- if .Values.manager.apiToken }}
+      api_token: "{{ .Values.manager.apiToken }}"
+      {{- end }}
+      webhook_cooldown_secs: {{ .Values.manager.webhookCooldownSecs }}
+      poll_interval_secs: {{ .Values.manager.pollIntervalSecs }}
+      history_limit: {{ .Values.manager.historyLimit }}
     defaults:
     {{- toYaml .Values.defaults | nindent 6 }}
     repos:
