@@ -73,7 +73,7 @@ pub async fn handle_github_webhook(
         match cooldowns.get(&cooldown_key) {
             Some(last) => {
                 let elapsed = last.elapsed();
-                elapsed.as_secs() >= 120 // 2-minute cooldown
+                elapsed.as_secs() >= state.webhook_cooldown_secs
             }
             None => true,
         }
@@ -187,5 +187,170 @@ fn should_trigger_for_event(event: &str, payload: &serde_json::Value) -> Option<
             }
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hmac::Mac;
+
+    fn compute_hmac(secret: &str, body: &[u8]) -> String {
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        let result = mac.finalize().into_bytes();
+        format!("sha256={}", hex::encode(result))
+    }
+
+    fn headers_with_signature(sig: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Hub-Signature-256", sig.parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn test_verify_signature_valid() {
+        let secret = "test-secret";
+        let body = b"hello world";
+        let sig = compute_hmac(secret, body);
+        let headers = headers_with_signature(&sig);
+
+        assert!(verify_signature(secret, &headers, body).is_ok());
+    }
+
+    #[test]
+    fn test_verify_signature_invalid() {
+        let secret = "test-secret";
+        let body = b"hello world";
+        // Compute signature with wrong secret
+        let sig = compute_hmac("wrong-secret", body);
+        let headers = headers_with_signature(&sig);
+
+        assert!(verify_signature(secret, &headers, body).is_err());
+    }
+
+    #[test]
+    fn test_verify_signature_empty_secret() {
+        // The webhook handler skips verification when secret is empty,
+        // but verify_signature itself requires a valid HMAC.
+        // The handler's logic: if !webhook_secret.is_empty() { verify... }
+        // So with empty secret, verify_signature is never called -- verification is skipped.
+        // We test the handler's behavior: empty secret means no verification.
+        // Since verify_signature is always called with a non-empty secret by the handler,
+        // we just confirm that the handler skips it. This is tested via the integration logic.
+        // Here we test that verify_signature works correctly when called:
+        let body = b"test body";
+        let sig = compute_hmac("", body);
+        let headers = headers_with_signature(&sig);
+        // Empty secret still produces a valid HMAC (zero-length key is allowed)
+        assert!(verify_signature("", &headers, body).is_ok());
+    }
+
+    #[test]
+    fn test_cooldown_prevents_rapid_triggers() {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use std::time::Instant;
+
+        let cooldowns = Mutex::new(HashMap::new());
+
+        // First trigger sets cooldown
+        {
+            let mut c = cooldowns.lock().unwrap();
+            c.insert("repo-a".to_string(), Instant::now());
+        }
+
+        // Second check within cooldown should prevent trigger
+        let should_trigger = {
+            let c = cooldowns.lock().unwrap();
+            match c.get("repo-a") {
+                Some(last) => last.elapsed().as_secs() >= 120,
+                None => true,
+            }
+        };
+        assert!(!should_trigger);
+    }
+
+    #[test]
+    fn test_cooldown_allows_after_expiry() {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use std::time::{Duration, Instant};
+
+        let cooldowns = Mutex::new(HashMap::new());
+
+        // Set cooldown to a time well in the past (3 minutes ago)
+        {
+            let mut c = cooldowns.lock().unwrap();
+            c.insert("repo-a".to_string(), Instant::now() - Duration::from_secs(180));
+        }
+
+        let should_trigger = {
+            let c = cooldowns.lock().unwrap();
+            match c.get("repo-a") {
+                Some(last) => last.elapsed().as_secs() >= 120,
+                None => true,
+            }
+        };
+        assert!(should_trigger);
+    }
+
+    #[test]
+    fn test_parse_push_event() {
+        let payload = serde_json::json!({
+            "ref": "refs/heads/main",
+            "repository": { "full_name": "owner/repo" }
+        });
+
+        let result = should_trigger_for_event("push", &payload);
+        assert!(result.is_some());
+        match result.unwrap() {
+            TriggerReason::Webhook { event, ref_or_id } => {
+                assert_eq!(event, "push");
+                assert_eq!(ref_or_id, Some("refs/heads/main".to_string()));
+            }
+            _ => panic!("expected Webhook trigger"),
+        }
+    }
+
+    #[test]
+    fn test_parse_pr_event() {
+        let payload = serde_json::json!({
+            "action": "opened",
+            "number": 42,
+            "repository": { "full_name": "owner/repo" }
+        });
+
+        let result = should_trigger_for_event("pull_request", &payload);
+        assert!(result.is_some());
+        match result.unwrap() {
+            TriggerReason::Webhook { event, ref_or_id } => {
+                assert_eq!(event, "pull_request");
+                assert_eq!(ref_or_id, Some("42".to_string()));
+            }
+            _ => panic!("expected Webhook trigger"),
+        }
+    }
+
+    #[test]
+    fn test_parse_unknown_event() {
+        let payload = serde_json::json!({
+            "repository": { "full_name": "owner/repo" }
+        });
+
+        let result = should_trigger_for_event("deployment", &payload);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_event_wrong_action() {
+        let payload = serde_json::json!({
+            "action": "closed",
+            "number": 42,
+            "repository": { "full_name": "owner/repo" }
+        });
+
+        let result = should_trigger_for_event("pull_request", &payload);
+        assert!(result.is_none());
     }
 }

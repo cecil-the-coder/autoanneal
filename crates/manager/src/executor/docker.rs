@@ -2,10 +2,9 @@ use async_trait::async_trait;
 use anyhow::{Context, Result};
 use std::time::Duration;
 use tokio::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
-use super::{Executor, PendingRun, RunOutcome};
-use autoanneal_lib::result::{WorkerResult, RESULT_MARKER};
+use super::{Executor, PendingRun, RunOutcome, parse_result_from_logs};
 
 pub struct DockerExecutor;
 
@@ -118,16 +117,47 @@ impl Executor for DockerExecutor {
     }
 }
 
-fn parse_result_from_logs(logs: &str) -> Option<WorkerResult> {
-    for line in logs.lines().rev() {
-        if let Some(json) = line.strip_prefix(RESULT_MARKER) {
-            match serde_json::from_str::<WorkerResult>(json) {
-                Ok(result) => return Some(result),
-                Err(e) => {
-                    warn!(error = %e, "failed to parse result from logs");
-                }
-            }
-        }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use autoanneal_lib::result::RESULT_MARKER;
+
+    fn sample_worker_result_json() -> String {
+        serde_json::json!({
+            "version": 1,
+            "repo": "owner/repo",
+            "exit_code": 0,
+            "total_cost_usd": 1.25,
+            "total_duration_secs": 300,
+            "phases": [],
+            "pr_url": null,
+            "pr_number": null,
+            "branch_name": null,
+            "work_items": []
+        }).to_string()
     }
-    None
+
+    #[test]
+    fn test_parse_worker_result() {
+        let json = sample_worker_result_json();
+        let logs = format!(
+            "some log line\nanother log line\n{RESULT_MARKER}{json}\nmore logs after\n"
+        );
+
+        let result = parse_result_from_logs(&logs);
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(r.repo, "owner/repo");
+        assert_eq!(r.exit_code, 0);
+        assert!((r.total_cost_usd - 1.25).abs() < f64::EPSILON);
+        assert_eq!(r.total_duration_secs, 300);
+    }
+
+    #[test]
+    fn test_parse_worker_result_missing() {
+        let logs = "some log line\nanother log line\nno result marker here\n";
+        let result = parse_result_from_logs(logs);
+        assert!(result.is_none());
+    }
 }
