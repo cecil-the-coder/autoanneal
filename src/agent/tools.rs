@@ -484,46 +484,58 @@ impl ToolExecutor {
         }
 
         // Execute directly without a shell to prevent injection.
-        let rt = tokio::runtime::Handle::try_current().map_err(|e| {
-            ToolError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
-        })?;
         let working_dir = self.working_dir.clone();
         let subcommand = subcommand.to_string();
         let git_args: Vec<String> = git_args.iter().map(|s| s.to_string()).collect();
         let timeout = self.command_timeout;
 
-        rt.block_on(async move {
-            let output = tokio::time::timeout(
-                timeout,
-                tokio::process::Command::new("git")
-                    .arg(&subcommand)
-                    .args(&git_args)
-                    .current_dir(&working_dir)
-                    .output(),
-            )
-            .await;
+        let run = |rt: tokio::runtime::Handle| {
+            rt.block_on(async move {
+                let output = tokio::time::timeout(
+                    timeout,
+                    tokio::process::Command::new("git")
+                        .arg(&subcommand)
+                        .args(&git_args)
+                        .current_dir(&working_dir)
+                        .output(),
+                )
+                .await;
 
-            match output {
-                Ok(Ok(out)) if out.status.success() => {
-                    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-                    Ok(stdout)
+                match output {
+                    Ok(Ok(out)) if out.status.success() => {
+                        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                        Ok(stdout)
+                    }
+                    Ok(Ok(out)) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+                        Err(ToolError::CommandFailed {
+                            code: out.status.code().unwrap_or(-1),
+                            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                            stderr,
+                        })
+                    }
+                    Ok(Err(e)) => Err(ToolError::IoError(e)),
+                    Err(_) => Err(ToolError::CommandFailed {
+                        code: -1,
+                        stdout: String::new(),
+                        stderr: format!("git {subcommand} timed out after {}s", timeout.as_secs()),
+                    }),
                 }
-                Ok(Ok(out)) => {
-                    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-                    Err(ToolError::CommandFailed {
-                        code: out.status.code().unwrap_or(-1),
-                        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-                        stderr,
-                    })
-                }
-                Ok(Err(e)) => Err(ToolError::IoError(e)),
-                Err(_) => Err(ToolError::CommandFailed {
-                    code: -1,
-                    stdout: String::new(),
-                    stderr: format!("git {subcommand} timed out after {}s", timeout.as_secs()),
-                }),
+            })
+        };
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                // Inside a tokio runtime — use block_in_place to allow block_on.
+                tokio::task::block_in_place(|| run(handle))
             }
-        })
+            Err(_) => {
+                // No runtime active — create a temporary one.
+                let rt = tokio::runtime::Runtime::new()
+                    .map_err(ToolError::IoError)?;
+                run(rt.handle().clone())
+            }
+        }
     }
 
     /// Query GitHub Actions workflow data. Requires `ci_context` to be set.
