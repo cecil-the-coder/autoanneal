@@ -735,7 +735,7 @@ impl ToolExecutor {
     // -- dispatch -----------------------------------------------------------
 
     /// Route a tool call by name to the correct implementation.
-    pub fn execute_tool(&self, name: &str, input: &Value) -> Result<String, ToolError> {
+    pub async fn execute_tool(&self, name: &str, input: &Value) -> Result<String, ToolError> {
         // Check enabled_tools filter.
         if let Some(ref enabled) = self.enabled_tools {
             if !enabled.iter().any(|t| t == name) {
@@ -851,7 +851,7 @@ impl ToolExecutor {
                 // Check if it's a research tool.
                 if let Some(ref research) = self.research {
                     if research.handles_tool(other) {
-                        return research.execute_tool(other, input);
+                        return research.execute_tool(other, input).await;
                     }
                 }
                 Err(ToolError::InvalidInput(format!("unknown tool: {other}")))
@@ -1257,8 +1257,8 @@ mod tests {
 
     // -- execute_tool dispatch ----------------------------------------------
 
-    #[test]
-    fn execute_tool_routes_correctly() {
+    #[tokio::test]
+    async fn execute_tool_routes_correctly() {
         let (exec, tmp) = make_executor();
         fs::write(tmp.path().join("routed.txt"), "content here").unwrap();
 
@@ -1267,15 +1267,17 @@ mod tests {
                 "read_file",
                 &serde_json::json!({ "path": "routed.txt" }),
             )
+            .await
             .unwrap();
         assert!(result.contains("content here"));
     }
 
-    #[test]
-    fn execute_tool_unknown_name() {
+    #[tokio::test]
+    async fn execute_tool_unknown_name() {
         let (exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("does_not_exist", &serde_json::json!({}))
+            .await
             .unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidInput(_)),
@@ -1283,11 +1285,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn execute_tool_missing_required_field() {
+    #[tokio::test]
+    async fn execute_tool_missing_required_field() {
         let (exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("read_file", &serde_json::json!({}))
+            .await
             .unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidInput(_)),
@@ -1669,11 +1672,12 @@ mod tests {
     // execute_tool dispatch edge-case tests
     // ===================================================================
 
-    #[test]
-    fn test_dispatch_wrong_type_for_path() {
+    #[tokio::test]
+    async fn test_dispatch_wrong_type_for_path() {
         let (exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("read_file", &serde_json::json!({ "path": 123 }))
+            .await
             .unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidInput(_)),
@@ -1681,11 +1685,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_dispatch_null_required_field() {
+    #[tokio::test]
+    async fn test_dispatch_null_required_field() {
         let (exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("read_file", &serde_json::json!({ "path": null }))
+            .await
             .unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidInput(_)),
@@ -1693,8 +1698,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_dispatch_extra_unknown_fields() {
+    #[tokio::test]
+    async fn test_dispatch_extra_unknown_fields() {
         let (exec, tmp) = make_executor();
         fs::write(tmp.path().join("extra.txt"), "extra test").unwrap();
 
@@ -1708,12 +1713,13 @@ mod tests {
                     "another": 42
                 }),
             )
+            .await
             .unwrap();
         assert_eq!(result, "extra test");
     }
 
-    #[test]
-    fn test_dispatch_all_tools() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_dispatch_all_tools() {
         let (exec, tmp) = make_executor();
         // Set up a file for tools that need it.
         fs::write(tmp.path().join("dispatch.txt"), "dispatch content").unwrap();
@@ -1722,14 +1728,14 @@ mod tests {
         let r = exec.execute_tool(
             "read_file",
             &serde_json::json!({ "path": "dispatch.txt" }),
-        );
+        ).await;
         assert!(r.is_ok(), "read_file dispatch failed: {:?}", r);
 
         // write_file
         let r = exec.execute_tool(
             "write_file",
             &serde_json::json!({ "path": "new_dispatch.txt", "content": "new" }),
-        );
+        ).await;
         assert!(r.is_ok(), "write_file dispatch failed: {:?}", r);
 
         // edit_file
@@ -1740,36 +1746,37 @@ mod tests {
                 "old_string": "dispatch content",
                 "new_string": "edited"
             }),
-        );
+        ).await;
         assert!(r.is_ok(), "edit_file dispatch failed: {:?}", r);
 
         // search_files
         let r = exec.execute_tool(
             "search_files",
             &serde_json::json!({ "pattern": "*.txt" }),
-        );
+        ).await;
         assert!(r.is_ok(), "search_files dispatch failed: {:?}", r);
 
         // search_content
         let r = exec.execute_tool(
             "search_content",
             &serde_json::json!({ "pattern": "edited" }),
-        );
+        ).await;
         assert!(r.is_ok(), "search_content dispatch failed: {:?}", r);
 
         // run_command
         let r = exec.execute_tool(
             "run_command",
             &serde_json::json!({ "command": "echo hi" }),
-        );
+        ).await;
         assert!(r.is_ok(), "run_command dispatch failed: {:?}", r);
     }
 
-    #[test]
-    fn test_dispatch_boolean_as_path() {
+    #[tokio::test]
+    async fn test_dispatch_boolean_as_path() {
         let (exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("read_file", &serde_json::json!({ "path": true }))
+            .await
             .unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidInput(_)),

@@ -9,8 +9,7 @@
 use crate::agent::tools::{ToolDefinition, ToolError};
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 
 // ---------------------------------------------------------------------------
 // Research tool executor
@@ -20,9 +19,10 @@ use std::sync::Mutex;
 pub struct ResearchToolExecutor {
     exa_api_key: Option<String>,
     exa_searches_remaining: AtomicU32,
-    exa_cost: Mutex<f64>,
+    /// Accumulated Exa search cost in micro-dollars (1 USD = 1_000_000 micro-dollars)
+    exa_cost_micro: AtomicU64,
     repo_slug: Option<String>,
-    http_client: reqwest::blocking::Client,
+    http_client: reqwest::Client,
 }
 
 impl ResearchToolExecutor {
@@ -34,18 +34,18 @@ impl ResearchToolExecutor {
         Self {
             exa_api_key,
             exa_searches_remaining: AtomicU32::new(exa_max_searches),
-            exa_cost: Mutex::new(0.0),
+            exa_cost_micro: AtomicU64::new(0),
             repo_slug,
-            http_client: reqwest::blocking::Client::builder()
+            http_client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new()),
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 
     /// Return accumulated Exa search cost in USD.
     pub fn exa_cost(&self) -> f64 {
-        *self.exa_cost.lock().unwrap_or_else(|e| e.into_inner())
+        self.exa_cost_micro.load(Ordering::Relaxed) as f64 / 1_000_000.0
     }
 
     /// Return tool definitions for research tools, filtered by what is requested
@@ -118,31 +118,31 @@ impl ResearchToolExecutor {
     }
 
     /// Execute a research tool by name.
-    pub fn execute_tool(&self, name: &str, input: &Value) -> Result<String, ToolError> {
+    pub async fn execute_tool(&self, name: &str, input: &Value) -> Result<String, ToolError> {
         match name {
             "web_search" => {
                 let query = input.get("query").and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidInput("missing required field: query".into()))?;
-                self.web_search(query)
+                self.web_search(query).await
             }
             "check_vulnerability" => {
                 let name = input.get("name").and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidInput("missing required field: name".into()))?;
                 let ecosystem = input.get("ecosystem").and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidInput("missing required field: ecosystem".into()))?;
-                self.check_vulnerability(name, ecosystem)
+                self.check_vulnerability(name, ecosystem).await
             }
             "check_package" => {
                 let name = input.get("name").and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidInput("missing required field: name".into()))?;
                 let ecosystem = input.get("ecosystem").and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidInput("missing required field: ecosystem".into()))?;
-                self.check_package(name, ecosystem)
+                self.check_package(name, ecosystem).await
             }
             "search_issues" => {
                 let query = input.get("query").and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidInput("missing required field: query".into()))?;
-                self.search_issues(query)
+                self.search_issues(query).await
             }
             _ => Err(ToolError::InvalidInput(format!("unknown research tool: {name}"))),
         }
@@ -157,7 +157,7 @@ impl ResearchToolExecutor {
     // WebSearch (Exa)
     // -----------------------------------------------------------------------
 
-    fn web_search(&self, query: &str) -> Result<String, ToolError> {
+    async fn web_search(&self, query: &str) -> Result<String, ToolError> {
         let api_key = self.exa_api_key.as_deref().ok_or_else(|| {
             ToolError::InvalidInput("WebSearch unavailable: EXA_API_KEY not set".into())
         })?;
@@ -189,31 +189,31 @@ impl ResearchToolExecutor {
             .header("Authorization", format!("Bearer {api_key}"))
             .header("Content-Type", "application/json")
             .json(&body)
-            .send();
+            .send()
+            .await;
 
         match result {
             Ok(resp) if resp.status().is_success() => {
-                match resp.json::<ExaSearchResponse>() {
+                match resp.json::<ExaSearchResponse>().await {
                     Ok(data) => {
-                        // Track cost
+                        // Track cost (convert dollars to micro-dollars)
                         if let Some(cost) = &data.cost_dollars {
                             if let Some(total) = cost.total {
-                                if let Ok(mut c) = self.exa_cost.lock() {
-                                    *c += total;
-                                }
+                                let micro = (total * 1_000_000.0) as u64;
+                                self.exa_cost_micro.fetch_add(micro, Ordering::Relaxed);
                             }
                         }
                         Ok(format_web_search_results(query, &data))
                     }
-                    Err(e) => Ok(format!("ERROR: Failed to parse Exa response: {e}")),
+                    Err(e) => Err(ToolError::InvalidInput(format!("Failed to parse Exa response: {e}"))),
                 }
             }
             Ok(resp) => {
                 let status = resp.status();
-                let body = resp.text().unwrap_or_default();
-                Ok(format!("ERROR: Exa API returned {status}: {body}"))
+                let body = resp.text().await.unwrap_or_default();
+                Err(ToolError::InvalidInput(format!("Exa API returned {status}: {body}")))
             }
-            Err(e) => Ok(format!("ERROR: Failed to reach Exa API: {e}")),
+            Err(e) => Err(ToolError::InvalidInput(format!("Failed to reach Exa API: {e}"))),
         }
     }
 
@@ -221,7 +221,7 @@ impl ResearchToolExecutor {
     // CheckVulnerability (OSV.dev)
     // -----------------------------------------------------------------------
 
-    fn check_vulnerability(&self, pkg_name: &str, ecosystem: &str) -> Result<String, ToolError> {
+    async fn check_vulnerability(&self, pkg_name: &str, ecosystem: &str) -> Result<String, ToolError> {
         let valid_ecosystems = ["crates.io", "npm", "PyPI", "Go", "Maven"];
         if !valid_ecosystems.contains(&ecosystem) {
             return Err(ToolError::InvalidInput(format!(
@@ -241,21 +241,22 @@ impl ResearchToolExecutor {
             .post("https://api.osv.dev/v1/query")
             .header("Content-Type", "application/json")
             .json(&body)
-            .send();
+            .send()
+            .await;
 
         match result {
             Ok(resp) if resp.status().is_success() => {
-                match resp.json::<OsvResponse>() {
+                match resp.json::<OsvResponse>().await {
                     Ok(data) => Ok(format_vulnerability_results(pkg_name, ecosystem, &data)),
-                    Err(e) => Ok(format!("ERROR: Failed to parse OSV response: {e}")),
+                    Err(e) => Err(ToolError::InvalidInput(format!("Failed to parse OSV response: {e}"))),
                 }
             }
             Ok(resp) => {
                 let status = resp.status();
-                let body = resp.text().unwrap_or_default();
-                Ok(format!("ERROR: OSV API returned {status}: {body}"))
+                let body = resp.text().await.unwrap_or_default();
+                Err(ToolError::InvalidInput(format!("OSV API returned {status}: {body}")))
             }
-            Err(e) => Ok(format!("ERROR: Failed to reach OSV API: {e}")),
+            Err(e) => Err(ToolError::InvalidInput(format!("Failed to reach OSV API: {e}"))),
         }
     }
 
@@ -263,18 +264,18 @@ impl ResearchToolExecutor {
     // CheckPackage (crates.io / npm / PyPI)
     // -----------------------------------------------------------------------
 
-    fn check_package(&self, pkg_name: &str, ecosystem: &str) -> Result<String, ToolError> {
+    async fn check_package(&self, pkg_name: &str, ecosystem: &str) -> Result<String, ToolError> {
         match ecosystem {
-            "crates.io" => self.check_crates_io(pkg_name),
-            "npm" => self.check_npm(pkg_name),
-            "PyPI" => self.check_pypi(pkg_name),
+            "crates.io" => self.check_crates_io(pkg_name).await,
+            "npm" => self.check_npm(pkg_name).await,
+            "PyPI" => self.check_pypi(pkg_name).await,
             other => Err(ToolError::InvalidInput(format!(
                 "Unknown ecosystem '{other}' for CheckPackage. Must be one of: crates.io, npm, PyPI"
             ))),
         }
     }
 
-    fn check_crates_io(
+    async fn check_crates_io(
         &self,
         name: &str,
     ) -> Result<String, ToolError> {
@@ -285,73 +286,74 @@ impl ResearchToolExecutor {
                 "User-Agent",
                 "autoanneal/1.0 (https://github.com/cecil-the-coder/autoanneal)",
             )
-            .send();
+            .send()
+            .await;
 
         match result {
             Ok(resp) if resp.status().as_u16() == 404 => {
                 Ok(format!("NOT FOUND: {name} not found on crates.io"))
             }
             Ok(resp) if resp.status().is_success() => {
-                match resp.json::<CratesIoResponse>() {
+                match resp.json::<CratesIoResponse>().await {
                     Ok(data) => Ok(format_crates_io_result(name, &data)),
-                    Err(e) => Ok(format!("ERROR: Failed to parse crates.io response: {e}")),
+                    Err(e) => Err(ToolError::InvalidInput(format!("Failed to parse crates.io response: {e}"))),
                 }
             }
             Ok(resp) => {
                 let status = resp.status();
-                Ok(format!("ERROR: crates.io returned {status}"))
+                Err(ToolError::InvalidInput(format!("crates.io returned {status}")))
             }
-            Err(e) => Ok(format!("ERROR: Failed to reach crates.io: {e}")),
+            Err(e) => Err(ToolError::InvalidInput(format!("Failed to reach crates.io: {e}"))),
         }
     }
 
-    fn check_npm(
+    async fn check_npm(
         &self,
         name: &str,
     ) -> Result<String, ToolError> {
         let url = format!("https://registry.npmjs.org/{name}");
-        let result = self.http_client.get(&url).send();
+        let result = self.http_client.get(&url).send().await;
 
         match result {
             Ok(resp) if resp.status().as_u16() == 404 => {
                 Ok(format!("NOT FOUND: {name} not found on npm"))
             }
             Ok(resp) if resp.status().is_success() => {
-                match resp.json::<NpmResponse>() {
+                match resp.json::<NpmResponse>().await {
                     Ok(data) => Ok(format_npm_result(name, &data)),
-                    Err(e) => Ok(format!("ERROR: Failed to parse npm response: {e}")),
+                    Err(e) => Err(ToolError::InvalidInput(format!("Failed to parse npm response: {e}"))),
                 }
             }
             Ok(resp) => {
                 let status = resp.status();
-                Ok(format!("ERROR: npm returned {status}"))
+                Err(ToolError::InvalidInput(format!("npm returned {status}")))
             }
-            Err(e) => Ok(format!("ERROR: Failed to reach npm: {e}")),
+            Err(e) => Err(ToolError::InvalidInput(format!("Failed to reach npm: {e}"))),
         }
     }
 
-    fn check_pypi(
+    async fn check_pypi(
         &self,
         name: &str,
     ) -> Result<String, ToolError> {
         let url = format!("https://pypi.org/pypi/{name}/json");
-        let result = self.http_client.get(&url).send();
+        let result = self.http_client.get(&url).send().await;
 
         match result {
             Ok(resp) if resp.status().as_u16() == 404 => {
                 Ok(format!("NOT FOUND: {name} not found on PyPI"))
             }
             Ok(resp) if resp.status().is_success() => {
-                match resp.json::<PyPiResponse>() {
+                match resp.json::<PyPiResponse>().await {
                     Ok(data) => Ok(format_pypi_result(name, &data)),
-                    Err(e) => Ok(format!("ERROR: Failed to parse PyPI response: {e}")),
+                    Err(e) => Err(ToolError::InvalidInput(format!("Failed to parse PyPI response: {e}"))),
                 }
             }
             Ok(resp) => {
                 let status = resp.status();
-                Ok(format!("ERROR: PyPI returned {status}"))
+                Err(ToolError::InvalidInput(format!("PyPI returned {status}")))
             }
-            Err(e) => Ok(format!("ERROR: Failed to reach PyPI: {e}")),
+            Err(e) => Err(ToolError::InvalidInput(format!("Failed to reach PyPI: {e}"))),
         }
     }
 
@@ -359,12 +361,12 @@ impl ResearchToolExecutor {
     // SearchIssues (gh CLI)
     // -----------------------------------------------------------------------
 
-    fn search_issues(&self, query: &str) -> Result<String, ToolError> {
+    async fn search_issues(&self, query: &str) -> Result<String, ToolError> {
         let repo = self.repo_slug.as_deref().ok_or_else(|| {
             ToolError::InvalidInput("SearchIssues unavailable: repository slug not configured".into())
         })?;
 
-        let output = std::process::Command::new("gh")
+        let output = tokio::process::Command::new("gh")
             .args([
                 "issue", "list",
                 "--repo", repo,
@@ -372,21 +374,26 @@ impl ResearchToolExecutor {
                 "--limit", "5",
                 "--json", "number,title,state,labels,createdAt,body",
             ])
-            .output();
+            .output()
+            .await;
 
         match output {
             Ok(out) if out.status.success() => {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 match serde_json::from_str::<Vec<GhIssue>>(&stdout) {
                     Ok(issues) => Ok(format_issues_results(query, &issues)),
-                    Err(e) => Ok(format!("ERROR: Failed to parse gh output: {e}")),
+                    Err(e) => Err(ToolError::InvalidInput(format!("Failed to parse gh output: {e}"))),
                 }
             }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
-                Ok(format!("ERROR: gh issue list failed: {stderr}"))
+                Err(ToolError::CommandFailed {
+                    code: out.status.code().unwrap_or(-1),
+                    stdout: String::new(),
+                    stderr: stderr.to_string(),
+                })
             }
-            Err(e) => Ok(format!("ERROR: Failed to run gh: {e}")),
+            Err(e) => Err(ToolError::IoError(e)),
         }
     }
 }
@@ -723,8 +730,9 @@ pub(crate) fn format_issues_results(query: &str, issues: &[GhIssue]) -> String {
         }
 
         if let Some(body) = &issue.body {
+            let char_count = body.chars().count();
             let truncated: String = body.chars().take(150).collect();
-            let suffix = if body.len() > 150 { "..." } else { "" };
+            let suffix = if char_count > 150 { "..." } else { "" };
             lines.push(format!("   Summary: {truncated}{suffix}"));
         }
     }
@@ -807,14 +815,14 @@ mod tests {
         assert!(result.contains("(no url)"));
     }
 
-    #[test]
-    fn test_web_search_limit_reached() {
+    #[tokio::test]
+    async fn test_web_search_limit_reached() {
         let exec = ResearchToolExecutor::new(
             Some("test-key".into()),
             0, // no searches remaining
             None,
         );
-        let err = exec.web_search("test").unwrap_err();
+        let err = exec.web_search("test").await.unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidInput(_)),
             "expected InvalidInput, got: {err}"
@@ -822,10 +830,10 @@ mod tests {
         assert!(err.to_string().contains("limit reached"));
     }
 
-    #[test]
-    fn test_web_search_no_api_key() {
+    #[tokio::test]
+    async fn test_web_search_no_api_key() {
         let exec = ResearchToolExecutor::new(None, 3, None);
-        let err = exec.web_search("test").unwrap_err();
+        let err = exec.web_search("test").await.unwrap_err();
         assert!(err.to_string().contains("EXA_API_KEY"));
     }
 
@@ -834,8 +842,8 @@ mod tests {
         let exec = ResearchToolExecutor::new(Some("key".into()), 5, None);
         // Can't do a real HTTP call, but we can test the accumulator
         assert_eq!(exec.exa_cost(), 0.0);
-        // Manually add cost via the mutex
-        *exec.exa_cost.lock().unwrap() = 0.05;
+        // Manually add cost via the atomic (50000 micro-dollars = 0.05 USD)
+        exec.exa_cost_micro.store(50000, Ordering::Relaxed);
         assert!((exec.exa_cost() - 0.05).abs() < f64::EPSILON);
     }
 
@@ -931,11 +939,12 @@ mod tests {
         assert!(result.contains("2.0.0..unfixed"));
     }
 
-    #[test]
-    fn test_vulnerability_invalid_ecosystem() {
+    #[tokio::test]
+    async fn test_vulnerability_invalid_ecosystem() {
         let exec = ResearchToolExecutor::new(None, 0, None);
         let err = exec
             .check_vulnerability("pkg", "invalid")
+            .await
             .unwrap_err();
         assert!(err.to_string().contains("Invalid ecosystem"));
     }
@@ -1049,10 +1058,10 @@ mod tests {
         assert_eq!(result, "NOT FOUND: nonexistent not found on crates.io");
     }
 
-    #[test]
-    fn test_format_package_unknown_ecosystem() {
+    #[tokio::test]
+    async fn test_format_package_unknown_ecosystem() {
         let exec = ResearchToolExecutor::new(None, 0, None);
-        let err = exec.check_package("pkg", "rubygems").unwrap_err();
+        let err = exec.check_package("pkg", "rubygems").await.unwrap_err();
         assert!(err.to_string().contains("Unknown ecosystem"));
     }
 

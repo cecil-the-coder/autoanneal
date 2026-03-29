@@ -192,7 +192,7 @@ impl ToolHandler for ToolExecutorAdapter {
         }
 
         let start = Instant::now();
-        let result = self.executor.execute_tool(name, input);
+        let result = self.executor.execute_tool(name, input).await;
         let elapsed = start.elapsed();
 
         if self.debug_stream {
@@ -343,7 +343,7 @@ pub async fn invoke<T: DeserializeOwned>(
         || invocation.tools.contains("SearchIssues")
     {
         let exa_api_key = std::env::var("EXA_API_KEY").ok();
-        let repo_slug = derive_repo_slug(&invocation.working_dir);
+        let repo_slug = derive_repo_slug(&invocation.working_dir).await;
         ToolExecutor::new_with_research(
             invocation.working_dir.clone(),
             Duration::from_secs(120),
@@ -417,11 +417,12 @@ pub async fn invoke<T: DeserializeOwned>(
 // ---------------------------------------------------------------------------
 
 /// Derive an "owner/repo" slug from the git remote in the working directory.
-fn derive_repo_slug(working_dir: &std::path::Path) -> Option<String> {
-    let output = std::process::Command::new("git")
+async fn derive_repo_slug(working_dir: &std::path::Path) -> Option<String> {
+    let output = tokio::process::Command::new("git")
         .args(["remote", "get-url", "origin"])
         .current_dir(working_dir)
         .output()
+        .await
         .ok()?;
 
     if !output.status.success() {
