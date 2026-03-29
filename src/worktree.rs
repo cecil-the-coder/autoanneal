@@ -23,7 +23,7 @@ impl WorktreeManager {
         let wt_path = self
             .repo_dir
             .parent()
-            .unwrap_or(&self.repo_dir)
+            .ok_or_else(|| anyhow::anyhow!("repo_dir has no parent directory: {}", self.repo_dir.display()))?
             .join(format!(".worktree-{name}"));
 
         // Remove stale worktree if it exists.
