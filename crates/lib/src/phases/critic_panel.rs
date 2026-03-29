@@ -217,9 +217,10 @@ pub async fn run(
         }
     };
 
-    // Collect deductions from all critics for transparency.
+    // Collect deductions from real critics only (exclude failed/unavailable).
     let all_deductions: Vec<String> = g2_responses
         .iter()
+        .filter(|(r, _)| !r.reasoning.starts_with("(critic unavailable"))
         .flat_map(|(r, _)| r.deductions.iter().cloned())
         .collect();
     let dedup_deductions: Vec<String> = {
@@ -571,7 +572,7 @@ async fn run_gate2(
                         reasoning: "(critic unavailable — defaulting to needs_fix)".into(),
                         score: 5,
                         summary: "(critic unavailable)".into(),
-                        deductions: vec!["Critic unavailable".into()],
+                        deductions: vec![],
                     },
                     0.0,
                 ));
@@ -585,7 +586,7 @@ async fn run_gate2(
                         reasoning: "(critic unavailable — defaulting to needs_fix)".into(),
                         score: 5,
                         summary: "(critic unavailable)".into(),
-                        deductions: vec!["Critic unavailable".into()],
+                        deductions: vec![],
                     },
                     0.0,
                 ));
