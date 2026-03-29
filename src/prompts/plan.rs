@@ -14,11 +14,6 @@ pub const PR_BODY_PROMPT: &str = r#"Write a pull request title and markdown body
 
 Use a professional, concise tone. Do not use filler language or marketing speak. State what changes and why, nothing more.
 
-Output as a JSON code block:
+Output as a JSON code block with two keys: "title" (string, max 72 chars) and "body" (string, full markdown).
 
-```json
-{
-  "title": "PR title here, max 72 chars",
-  "body": "Full markdown PR body here"
-}
-```"#;
+Do NOT use placeholder text — write the actual title and body for these specific improvements."#;

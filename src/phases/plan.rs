@@ -132,11 +132,29 @@ pub async fn create_pr(
         .await
         .context("failed to generate PR body via Claude")?;
 
-    let pr_body = response
+    let mut pr_body = response
         .structured
         .context("Claude did not return structured PR body output")?;
 
     let cost_usd = response.cost_usd;
+
+    // Guard against models echoing placeholder text from the prompt.
+    let title_lower = pr_body.title.to_lowercase();
+    if title_lower.contains("pr title here") || title_lower.contains("placeholder") || pr_body.title.len() < 10 {
+        warn!(title = %pr_body.title, "PR title looks like a placeholder, generating fallback");
+        pr_body.title = format!(
+            "autoanneal: {}",
+            improvements.iter().map(|i| i.title.as_str()).collect::<Vec<_>>().join(", ")
+        );
+    }
+    if pr_body.body.contains("Full markdown PR body here") || pr_body.body.len() < 20 {
+        warn!(body_len = pr_body.body.len(), "PR body looks like a placeholder, generating fallback");
+        pr_body.body = improvements
+            .iter()
+            .map(|i| format!("- **{}**: {}", i.title, i.description))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
 
     // 2. Append critic review summary to PR body if available.
     let body = if let Some(summary) = critic_summary {
