@@ -330,6 +330,33 @@ impl Scheduler {
                             metrics.run_cost.observe(result.total_cost_usd);
                         }
 
+                        if let Some(ref result) = outcome.result {
+                            let phase_summary: String = result.phases.iter()
+                                .map(|p| format!("{}:{}", p.name, p.status))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let work_summary: String = result.work_items.iter()
+                                .map(|w| format!("{}:{}", w.name, w.status))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            info!(
+                                repo = %repo_name,
+                                exit_code = outcome.exit_code,
+                                duration_secs = duration_secs,
+                                cost_usd = result.total_cost_usd,
+                                pr_url = result.pr_url.as_deref().unwrap_or("none"),
+                                phases = %phase_summary,
+                                work_items = %work_summary,
+                                "worker completed"
+                            );
+                        } else {
+                            info!(
+                                repo = %repo_name,
+                                exit_code = outcome.exit_code,
+                                duration_secs = duration_secs,
+                                "worker completed (no result parsed from logs)"
+                            );
+                        }
                         state.record_completed(RunRecord {
                             run_id,
                             repo_name: repo_name.clone(),
@@ -340,12 +367,6 @@ impl Scheduler {
                             trigger,
                             result: outcome.result,
                         });
-                        info!(
-                            repo = %repo_name,
-                            exit_code = outcome.exit_code,
-                            duration_secs = duration_secs,
-                            "worker completed"
-                        );
                         return;
                     }
                     Ok(None) => {
