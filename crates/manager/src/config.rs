@@ -324,7 +324,7 @@ impl RepoEntry {
         let improve_docs = self.improve_docs.unwrap_or(defaults.improve_docs);
         args.extend_from_slice(&["--improve-docs".into(), improve_docs.to_string()]);
         let dry_run = self.dry_run.unwrap_or(defaults.dry_run);
-        args.extend_from_slice(&["--dry-run".into(), dry_run.to_string()]);
+        if dry_run { args.push("--dry-run".into()); }
         let fix_external_ci = self.fix_external_ci.unwrap_or(defaults.fix_external_ci);
         args.extend_from_slice(&["--fix-external-ci".into(), fix_external_ci.to_string()]);
         let review_prs = self.review_prs.unwrap_or(defaults.review_prs);
@@ -469,7 +469,7 @@ mod tests {
         check("--fix-ci", "true");
         check("--fix-conflicts", "true");
         check("--improve-docs", "true");
-        check("--dry-run", "false");
+        assert!(!args.contains(&"--dry-run".to_string()));
         check("--fix-external-ci", "false");
         check("--review-prs", "false");
     }
@@ -497,7 +497,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing flag {flag}"));
             assert_eq!(args[idx + 1], val, "wrong value for {flag}");
         };
-        check("--dry-run", "true");
+        assert!(args.contains(&"--dry-run".to_string()));
         check("--fix-ci", "false");
     }
 
@@ -576,7 +576,7 @@ mod tests {
         check("--fix-ci", "false");
         check("--fix-conflicts", "false");
         check("--improve-docs", "false");
-        check("--dry-run", "true");
+        assert!(args.contains(&"--dry-run".to_string()));
         check("--fix-external-ci", "true");
         check("--review-prs", "true");
     }
