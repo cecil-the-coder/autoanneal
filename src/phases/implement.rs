@@ -156,6 +156,12 @@ async fn run_batch(
     context_window: u64,
 ) -> Result<BatchOutput> {
     let num_groups = batch_groups.len();
+    if num_groups == 0 {
+        return Ok(BatchOutput {
+            results: vec![],
+            total_cost_usd: 0.0,
+        });
+    }
     let per_group_budget = budget / num_groups as f64;
 
     // Shared atomic cost tracker so groups can see aggregate spending.
