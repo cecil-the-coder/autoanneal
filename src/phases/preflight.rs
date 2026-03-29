@@ -230,13 +230,12 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
             None => continue,
         };
 
-        let number = pr["number"].as_u64().unwrap_or(0);
+        let number = match extract_nonzero_number(pr, "In-flight PR") {
+            Some(n) => n,
+            None => continue,
+        };
         let title = pr["title"].as_str().unwrap_or("").to_string();
         let body = pr["body"].as_str().unwrap_or("").to_string();
-        if number == 0 {
-            warn!("Skipping in-flight PR with invalid number 0 (malformed API response)");
-            continue;
-        }
 
         // Check CI status (per-PR, unavoidable).
         let ci_status = check_ci_status(repo_slug, number).await;
@@ -312,6 +311,31 @@ async fn detect_in_flight_prs(repo_slug: &str) -> Vec<InFlightPr> {
 
     info!(count = result.len(), "found in-flight autoanneal PRs");
     result
+}
+
+/// Extract a non-zero number from a JSON object's "number" field.
+/// Returns `None` and logs a warning if the field is missing, not a valid u64,
+/// or equals zero — all indicating a malformed API response.
+fn extract_nonzero_number(obj: &serde_json::Value, entity_type: &str) -> Option<u64> {
+    match obj.get("number") {
+        None => {
+            warn!(entity_type, "has no 'number' field (malformed API response)");
+            None
+        }
+        Some(v) => {
+            if let Some(n) = v.as_u64() {
+                if n == 0 {
+                    warn!(entity_type, "number is 0 (malformed API response)");
+                    None
+                } else {
+                    Some(n)
+                }
+            } else {
+                warn!(entity_type, value = %v, "number is not a valid integer (malformed API response)");
+                None
+            }
+        }
+    }
 }
 
 /// Check CI status for a PR by inspecting check runs.
@@ -570,12 +594,10 @@ async fn detect_external_prs(repo_slug: &str, filter: &str) -> Vec<ExternalPr> {
             continue;
         }
 
-        let number = pr["number"].as_u64().unwrap_or(0);
-        if number == 0 {
-            warn!("Skipping external PR with invalid number 0 (malformed API response)");
-            continue;
-        }
-
+        let number = match extract_nonzero_number(&pr, "External PR") {
+            Some(n) => n,
+            None => continue,
+        };
         let title = pr["title"].as_str().unwrap_or("").to_string();
         let author = pr["author"]["login"].as_str().unwrap_or("").to_string();
         let updated_at = pr["updatedAt"].as_str().unwrap_or("").to_string();
@@ -680,11 +702,10 @@ async fn fetch_issues(repo_slug: &str, label_filter: &str) -> Vec<GithubIssue> {
             continue;
         }
 
-        let number = issue["number"].as_u64().unwrap_or(0);
-        if number == 0 {
-            warn!("Skipping issue with invalid number 0 (malformed API response)");
-            continue;
-        }
+        let number = match extract_nonzero_number(&issue, "Issue") {
+            Some(n) => n,
+            None => continue,
+        };
 
         result.push(GithubIssue {
             number,

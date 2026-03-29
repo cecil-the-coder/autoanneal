@@ -879,7 +879,9 @@ fn spawn_work_item(
                 match mgr.create_at_branch(&wt_name, &pr.branch).await {
                     Ok(wt) => {
                         let r = phases::ci_fix::run(&pr, &repo_slug, &wt, &model, budget, &default_branch, context_window).await;
-                        mgr.remove(&wt).await.ok();
+                        if let Err(e) = mgr.remove(&wt).await {
+                            warn!(worktree = %wt_name, error = %e, "failed to clean up worktree");
+                        }
                         r.map(|o| (WorkItemResult::CiFix {
                             pr_number: o.pr_number,
                             fixed: o.fixed,
@@ -897,7 +899,9 @@ fn spawn_work_item(
                             critic_models.as_deref(), &default_branch,
                         )
                         .await;
-                        mgr.remove(&wt).await.ok();
+                        if let Err(e) = mgr.remove(&wt).await {
+                            warn!(worktree = %wt_name, error = %e, "failed to clean up worktree");
+                        }
                         r.map(|o| (WorkItemResult::PrReview {
                             pr_number: o.pr_number,
                             score: o.score,
@@ -929,7 +933,9 @@ fn spawn_work_item(
                             context_window,
                         )
                         .await;
-                        mgr.remove(&wt).await.ok();
+                        if let Err(e) = mgr.remove(&wt).await {
+                            warn!(worktree = %wt_name, error = %e, "failed to clean up worktree");
+                        }
                         r.map(|o| (WorkItemResult::IssueInvestigation {
                             issue_number: o.issue_number,
                             fixed: o.fixed,
