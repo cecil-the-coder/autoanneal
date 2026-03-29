@@ -105,6 +105,8 @@ pub async fn run(
             cost_usd: 0.0,
             made_fixes: false,
             score_unverified: false,
+            initial_summary: None,
+            initial_score: None,
         })
     } else {
         // Single critic mode
@@ -140,6 +142,8 @@ pub async fn run(
             cost_usd: critic_response.cost_usd,
             made_fixes: false,
             score_unverified: false,
+            initial_summary: None,
+            initial_score: None,
         }
     };
 

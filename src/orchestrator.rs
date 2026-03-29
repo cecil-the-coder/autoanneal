@@ -1240,6 +1240,8 @@ async fn run_analysis_pipeline(
 
     // ─── Critic Review ─────────────────────────────────────────────────
     let mut critic_summary: Option<String> = None;
+    // (made_fixes, initial_score, initial_summary, final_score, score_unverified)
+    let mut critic_fix_info: Option<(bool, Option<u32>, Option<String>, u32, bool)> = None;
     let threshold = if is_doc_improvements {
         doc_critic_threshold
     } else {
@@ -1282,6 +1284,9 @@ async fn run_analysis_pipeline(
             const MAX_FIX_ROUNDS: u32 = 2;
             let mut panel_result = initial_panel;
             if let Some(ref mut cr) = panel_result {
+                // Capture initial state before fix loop mutates cr.
+                let pre_fix_summary = cr.summary.clone();
+                let pre_fix_score = cr.score;
                 let mut remaining_fix = budget - cr.cost_usd;
                 for fix_round in 1..=MAX_FIX_ROUNDS {
                     if cr.verdict != "needs_work" {
@@ -1444,6 +1449,11 @@ async fn run_analysis_pipeline(
                         }
                     }
                 }
+                // If fixes were made, record the initial state for PR body formatting.
+                if cr.made_fixes {
+                    cr.initial_summary = Some(pre_fix_summary);
+                    cr.initial_score = Some(pre_fix_score);
+                }
             }
             panel_result
         } else {
@@ -1472,6 +1482,11 @@ async fn run_analysis_pipeline(
             }
         };
 
+        // Save fix metadata before consuming critic_result.
+        critic_fix_info = critic_result.as_ref().map(|c| {
+            (c.made_fixes, c.initial_score, c.initial_summary.clone(), c.score, c.score_unverified)
+        });
+
         if let Some(critic_output) = critic_result {
             budget -= critic_output.cost_usd;
             cost_total += critic_output.cost_usd;
@@ -1494,10 +1509,31 @@ async fn run_analysis_pipeline(
                     cost_total,
                 ));
             }
-            critic_summary = Some(format!(
-                "## Review\n\nScore: {}/10\n\n{}",
-                critic_output.score, critic_output.summary
-            ));
+
+            critic_summary = if critic_output.made_fixes {
+                let initial_part = critic_output.initial_summary
+                    .as_deref()
+                    .unwrap_or("(initial review unavailable)");
+                let initial_score = critic_output.initial_score.unwrap_or(0);
+                // Strikethrough each line of the initial issues.
+                let struck = initial_part.lines()
+                    .map(|line| if line.trim().is_empty() { String::new() } else { format!("~~{}~~", line) })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(format!(
+                    "## Review\n\n\
+                     **Initial review: {initial_score}/10**\n\n\
+                     {struck}\n\n\
+                     **After fixes: {}/10**\n\n\
+                     {}",
+                    critic_output.score, critic_output.summary
+                ))
+            } else {
+                Some(format!(
+                    "## Review\n\nScore: {}/10\n\n{}",
+                    critic_output.score, critic_output.summary
+                ))
+            };
         } else {
             critic_summary = Some("## Review\n\nCritic review unavailable.".to_string());
         }
@@ -1537,6 +1573,35 @@ async fn run_analysis_pipeline(
     .context("PR creation failed")?;
 
     cost_total += pr_output.cost_usd;
+
+    // Post a comment if the critic made fixes, so reviewers see the progression.
+    if let Some((true, initial_score, _, final_score, unverified)) = critic_fix_info {
+        let score_note = if unverified {
+            " (score unverified — re-review was skipped)"
+        } else {
+            ""
+        };
+        let comment_body = format!(
+            "The automated reviewer found issues (initial score: {}/10) and applied fixes \
+             during review, improving the score to {}/10{}.\n\n\
+             See the PR description for the full review progression.",
+            initial_score.unwrap_or(0),
+            final_score,
+            score_note,
+        );
+        let repo_slug = format!("{}/{}", repo_info.owner, repo_info.name);
+        if let Err(e) = crate::retry::gh_command(
+            clone_path,
+            &[
+                "pr", "comment",
+                &pr_output.pr_number.to_string(),
+                "--body", &comment_body,
+                "-R", &repo_slug,
+            ],
+        ).await {
+            warn!(error = %e, "failed to post critic-fix comment (non-fatal)");
+        }
+    }
 
     Ok((
         WorkItemResult::AnalysisPipeline {
