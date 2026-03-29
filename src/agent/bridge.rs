@@ -14,7 +14,7 @@ use crate::agent::tools::ToolExecutor;
 use crate::llm::{self, LlmInvocation, LlmResponse};
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
@@ -134,6 +134,38 @@ pub fn parse_provider_model(s: &str) -> (Option<String>, String) {
 }
 
 // ---------------------------------------------------------------------------
+// Tool alias mapping
+// ---------------------------------------------------------------------------
+
+/// Map human-friendly tool names (used in LlmInvocation.tools) to internal tool names.
+fn tool_alias_to_name(alias: &str) -> &str {
+    match alias {
+        "Read" => "read_file",
+        "Write" => "write_file",
+        "Edit" => "edit_file",
+        "Glob" => "search_files",
+        "Grep" => "search_content",
+        "Bash" => "run_command",
+        "Git" => "git",
+        "FetchCiJobLogs" => "fetch_ci_job_logs",
+        other => other,
+    }
+}
+
+/// Parse a comma-separated tools string into resolved tool names.
+fn parse_enabled_tools(tools: &str) -> Option<Vec<String>> {
+    if tools.is_empty() {
+        return None;
+    }
+    Some(
+        tools
+            .split(',')
+            .map(|s| tool_alias_to_name(s.trim()).to_string())
+            .collect(),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Adapter: ToolExecutor -> ToolHandler trait
 // ---------------------------------------------------------------------------
 
@@ -146,6 +178,10 @@ struct ToolExecutorAdapter {
 #[async_trait::async_trait]
 impl ToolHandler for ToolExecutorAdapter {
     async fn execute(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
+        let start = Instant::now();
+        let result = self.executor.execute_tool(name, input);
+        let elapsed = start.elapsed();
+
         if self.debug_stream {
             let input_preview = serde_json::to_string(input)
                 .unwrap_or_else(|_| "?".to_string());
@@ -154,10 +190,10 @@ impl ToolHandler for ToolExecutorAdapter {
             } else {
                 input_preview
             };
-            println!("[bridge] tool: {name} {preview} (rss: {}MB)", rss_mb());
+            println!("[bridge] tool: {name} {preview} ({elapsed:.1?}, rss: {}MB)", rss_mb());
         }
 
-        match self.executor.execute_tool(name, input) {
+        match result {
             Ok(output) => (output, false),
             Err(e) => (format!("Error: {e}"), true),
         }
@@ -165,7 +201,8 @@ impl ToolHandler for ToolExecutorAdapter {
 
     fn definitions(&self) -> Vec<api_types::ToolDefinition> {
         // Convert from tools::ToolDefinition to api_types::ToolDefinition.
-        ToolExecutor::get_tool_definitions()
+        self.executor
+            .get_tool_definitions()
             .into_iter()
             .map(|d| api_types::ToolDefinition {
                 name: d.name,
@@ -293,9 +330,12 @@ pub async fn invoke<T: DeserializeOwned>(
     // Build the pieces.
     let client = ApiClient::new(creds.base_url, creds.api_key, creds.provider, creds.use_bearer);
 
+    let enabled_tools = parse_enabled_tools(invocation.tools);
     let executor = ToolExecutor::new(
         invocation.working_dir.clone(),
         Duration::from_secs(120),
+        invocation.ci_context.clone(),
+        enabled_tools,
     );
     let debug_stream = std::env::var("AUTOANNEAL_DEBUG_STREAM")
         .map_or(false, |v| v == "1" || v == "true");
@@ -448,6 +488,7 @@ mod tests {
             context_window: crate::agent::context::DEFAULT_CONTEXT_WINDOW,
             provider_hint: None,
             max_tokens_per_turn: None,
+            ci_context: None,
         }
     }
 

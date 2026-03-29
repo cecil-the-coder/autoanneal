@@ -264,13 +264,14 @@ Constraints:
 - Fix ONLY the CI failures shown in the logs.
 - Do NOT add new dependencies.
 - Do NOT modify CI/CD configuration files (.github/workflows/*, .gitlab-ci.yml, etc.) unless the CI config itself is the cause of the failure.
+- Use the Git tool for any git operations (e.g., git status, git diff). Do NOT use Bash.
+- If you need more details about a specific CI job, use `fetch_ci_job_logs` with the job ID from the job summary.
 
 Workflow:
-1. Read the CI failure logs carefully and identify root causes.
+1. Read the CI failure logs and job summary carefully. Use `fetch_ci_job_logs` if you need full logs for a specific job.
 2. Read the relevant source files.
 3. Apply minimal fixes using Edit.
-4. Verify with a lightweight check if possible (e.g., cargo check, not cargo build).
-5. CI will run the full verification after push."#;
+4. CI will run the full verification after push."#;
 
 /// System prompt for the critic review phase (read-only tools).
 pub fn critic_system_prompt() -> String {

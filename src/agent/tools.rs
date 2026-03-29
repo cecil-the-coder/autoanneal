@@ -33,6 +33,16 @@ pub struct ToolDefinition {
 }
 
 // ---------------------------------------------------------------------------
+// CI context (passed into ToolExecutor for CI-fix phases)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct CiContext {
+    pub repo_slug: String,
+    pub run_id: u64,
+}
+
+// ---------------------------------------------------------------------------
 // Executor
 // ---------------------------------------------------------------------------
 
@@ -42,13 +52,22 @@ const MAX_OUTPUT_BYTES: usize = 128 * 1024;
 pub struct ToolExecutor {
     working_dir: PathBuf,
     command_timeout: Duration,
+    ci_context: Option<CiContext>,
+    enabled_tools: Option<Vec<String>>,
 }
 
 impl ToolExecutor {
-    pub fn new(working_dir: PathBuf, command_timeout: Duration) -> Self {
+    pub fn new(
+        working_dir: PathBuf,
+        command_timeout: Duration,
+        ci_context: Option<CiContext>,
+        enabled_tools: Option<Vec<String>>,
+    ) -> Self {
         Self {
             working_dir,
             command_timeout,
+            ci_context,
+            enabled_tools,
         }
     }
 
@@ -438,10 +457,70 @@ impl ToolExecutor {
         }
     }
 
+    /// Run a git command inside `working_dir`, blocking destructive operations.
+    pub fn git(&self, command: &str) -> Result<String, ToolError> {
+        let trimmed = command.trim();
+        if !trimmed.starts_with("git") {
+            return Err(ToolError::InvalidInput(
+                "command must start with 'git'".into(),
+            ));
+        }
+        // Block destructive operations.
+        let args: Vec<&str> = trimmed.split_whitespace().collect();
+        if args.len() >= 2 {
+            match args[1] {
+                "push" => {
+                    return Err(ToolError::InvalidInput(
+                        "git push is blocked — the harness handles pushing".into(),
+                    ));
+                }
+                "clean" => {
+                    return Err(ToolError::InvalidInput(
+                        "git clean is blocked — destructive operation".into(),
+                    ));
+                }
+                "reset" => {
+                    // Block --hard and --mixed
+                    if args.iter().any(|a| *a == "--hard" || *a == "--mixed") {
+                        return Err(ToolError::InvalidInput(
+                            "git reset --hard/--mixed is blocked — destructive operation".into(),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.run_command(trimmed, None)
+    }
+
+    /// Fetch CI job logs for a specific job ID. Requires `ci_context` to be set.
+    pub fn fetch_ci_job_logs(&self, job_id: u64) -> Result<String, ToolError> {
+        let ctx = self.ci_context.as_ref().ok_or_else(|| {
+            ToolError::InvalidInput("fetch_ci_job_logs requires CI context (run_id and repo_slug)".into())
+        })?;
+        let cmd = format!(
+            "gh run view {} --log --job {} -R {}",
+            ctx.run_id, job_id, ctx.repo_slug
+        );
+        self.run_command(&cmd, None)
+    }
+
     // -- catalogue ----------------------------------------------------------
 
+    /// Return tool definitions, filtered by `enabled_tools` if set.
+    pub fn get_tool_definitions(&self) -> Vec<ToolDefinition> {
+        let all = Self::all_tool_definitions();
+        match &self.enabled_tools {
+            Some(enabled) => all
+                .into_iter()
+                .filter(|d| enabled.contains(&d.name))
+                .collect(),
+            None => all,
+        }
+    }
+
     /// Return the full set of tool definitions for the Claude API.
-    pub fn get_tool_definitions() -> Vec<ToolDefinition> {
+    fn all_tool_definitions() -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {
                 name: "read_file".into(),
@@ -519,6 +598,28 @@ impl ToolExecutor {
                     "required": ["command"]
                 }),
             },
+            ToolDefinition {
+                name: "git".into(),
+                description: "Run a git command in the working directory. Destructive operations (push, clean, reset --hard/--mixed) are blocked.".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "Full git command (must start with 'git')" }
+                    },
+                    "required": ["command"]
+                }),
+            },
+            ToolDefinition {
+                name: "fetch_ci_job_logs".into(),
+                description: "Fetch CI logs for a specific job ID from the current CI run.".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "job_id": { "type": "integer", "description": "The CI job ID to fetch logs for" }
+                    },
+                    "required": ["job_id"]
+                }),
+            },
         ]
     }
 
@@ -526,6 +627,14 @@ impl ToolExecutor {
 
     /// Route a tool call by name to the correct implementation.
     pub fn execute_tool(&self, name: &str, input: &Value) -> Result<String, ToolError> {
+        // Check enabled_tools filter.
+        if let Some(ref enabled) = self.enabled_tools {
+            if !enabled.iter().any(|t| t == name) {
+                return Err(ToolError::InvalidInput(format!(
+                    "tool '{name}' is not enabled for this invocation"
+                )));
+            }
+        }
         match name {
             "read_file" => {
                 let path = input
@@ -610,6 +719,24 @@ impl ToolExecutor {
                     .map(Duration::from_secs);
                 self.run_command(command, timeout)
             }
+            "git" => {
+                let command = input
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ToolError::InvalidInput("missing required field: command".into())
+                    })?;
+                self.git(command)
+            }
+            "fetch_ci_job_logs" => {
+                let job_id = input
+                    .get("job_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| {
+                        ToolError::InvalidInput("missing required field: job_id".into())
+                    })?;
+                self.fetch_ci_job_logs(job_id)
+            }
             other => Err(ToolError::InvalidInput(format!("unknown tool: {other}"))),
         }
     }
@@ -627,7 +754,7 @@ mod tests {
     /// Create a ToolExecutor rooted in a fresh temp directory and return both.
     fn make_executor() -> (ToolExecutor, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("create temp dir");
-        let exec = ToolExecutor::new(tmp.path().to_path_buf(), Duration::from_secs(30));
+        let exec = ToolExecutor::new(tmp.path().to_path_buf(), Duration::from_secs(30), None, None);
         (exec, tmp)
     }
 
@@ -979,7 +1106,7 @@ mod tests {
 
     #[test]
     fn tool_definitions_complete() {
-        let defs = ToolExecutor::get_tool_definitions();
+        let defs = ToolExecutor::all_tool_definitions();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
@@ -987,11 +1114,13 @@ mod tests {
         assert!(names.contains(&"search_files"));
         assert!(names.contains(&"search_content"));
         assert!(names.contains(&"run_command"));
+        assert!(names.contains(&"git"));
+        assert!(names.contains(&"fetch_ci_job_logs"));
     }
 
     #[test]
     fn tool_definitions_valid_json_schema() {
-        let defs = ToolExecutor::get_tool_definitions();
+        let defs = ToolExecutor::all_tool_definitions();
         for def in &defs {
             // Every schema must be an object type with "properties".
             assert_eq!(
@@ -1115,7 +1244,7 @@ mod tests {
         fs::create_dir(&sibling).unwrap();
         fs::write(sibling.join("secret.txt"), "nope").unwrap();
 
-        let exec = ToolExecutor::new(wd, Duration::from_secs(30));
+        let exec = ToolExecutor::new(wd, Duration::from_secs(30), None, None);
         let sibling_file = sibling.join("secret.txt");
         let err = exec
             .read_file(&sibling_file.to_string_lossy(), None, None)
