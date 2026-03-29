@@ -34,6 +34,7 @@ pub async fn run(
     budget: f64,
     context_window: u64,
     skip_gate1: bool,
+    exa_max_searches: u32,
 ) -> Result<CriticOutput> {
     info!(
         models = models.len(),
@@ -77,7 +78,7 @@ pub async fn run(
 
     if !skip_gate1 {
         let (g1_passed, g1_responses, g1_cost, g1_research) =
-            run_gate1(&diff, &critics, gate1_budget / (critics.len() as f64 * 2.0), context_window, clone_path)
+            run_gate1(&diff, &critics, gate1_budget / (critics.len() as f64 * 2.0), context_window, clone_path, exa_max_searches)
                 .await?;
         total_cost += g1_cost;
         gate1_research = g1_research;
@@ -113,8 +114,9 @@ pub async fn run(
 
     // ── Research agent ───────────────────────────────────────────────
     // If Gate 1 already ran research (during rebuttal), reuse those findings.
-    // Otherwise run research now before Gate 2.
-    let research_findings: Option<(String, f64)> = if let Some(findings) = gate1_research {
+    // Otherwise, research will run inside Gate 2's rebuttal pass after
+    // critics have made claims to verify.
+    let gate1_research_for_gate2: Option<(String, f64)> = if let Some(findings) = gate1_research {
         info!(findings_len = findings.len(), "reusing research from gate 1 rebuttal");
         Some((findings, 0.0)) // cost already counted in gate 1
     } else if !skip_gate1 {
@@ -127,6 +129,7 @@ pub async fn run(
             research_budget,
             context_window,
             clone_path,
+            exa_max_searches,
         )
         .await;
 
@@ -140,6 +143,12 @@ pub async fn run(
     };
 
     // ── Gate 2: REVIEW ──────────────────────────────────────────────
+    // Gate 2 is a two-pass process:
+    //   Pass 1: critics review the diff and produce verdicts/issues.
+    //   Research: verify factual claims from critics.
+    //   Pass 2 (rebuttal): critics re-evaluate with verified facts.
+    // If Gate 1 already ran research, we skip the mid-gate research step
+    // and use Gate 1's findings for the rebuttal.
     let (g2_passed, g2_responses, g2_issues, g2_median_score, g2_summary, g2_cost) =
         run_gate2(
             &diff,
@@ -147,7 +156,9 @@ pub async fn run(
             gate2_budget / (critics.len() as f64 * 2.0),
             context_window,
             clone_path,
-            research_findings.as_ref().map(|(f, _)| f.as_str()),
+            gate1_research_for_gate2.as_ref().map(|(f, _)| f.as_str()),
+            budget * 0.10, // research budget (only used if no gate1 research)
+            exa_max_searches,
         )
         .await?;
     total_cost += g2_cost;
@@ -256,6 +267,7 @@ async fn run_gate1(
     budget_per_critic: f64,
     context_window: u64,
     clone_path: &Path,
+    exa_max_searches: u32,
 ) -> Result<(bool, Vec<(WorthwhileResponse, f64)>, f64, Option<String>)> {
     let user_prompt = format!(
         "## Changes Under Review\n\n```\n{}\n```\n\nEvaluate whether this PR should exist.",
@@ -380,6 +392,7 @@ async fn run_gate1(
         research_budget,
         context_window,
         clone_path,
+        exa_max_searches,
     )
     .await;
 
@@ -480,25 +493,29 @@ async fn run_gate1(
 
 // ── Gate 2: REVIEW ─────────────────────────────────────────────────────
 
+/// Runs a two-pass Gate 2: Pass 1 collects critic reviews, then a research
+/// agent verifies factual claims, and Pass 2 (rebuttal) lets critics
+/// re-evaluate with verified facts.
+///
+/// If `gate1_research` is provided (from a Gate 1 rebuttal), the mid-gate
+/// research step is skipped and those findings are used for the rebuttal.
 async fn run_gate2(
     diff: &str,
     critics: &[String],
     budget_per_critic: f64,
     context_window: u64,
     clone_path: &Path,
-    research_findings: Option<&str>,
+    gate1_research: Option<&str>,
+    research_budget: f64,
+    exa_max_searches: u32,
 ) -> Result<(bool, Vec<(ReadyResponse, f64)>, Vec<CriticIssue>, u32, String, f64)> {
-    let user_prompt = if let Some(findings) = research_findings {
-        format!(
-            "## Changes Under Review\n\n```\n{}\n```\n\n## Research Findings\n\nA research agent investigated the codebase and found:\n\n{}\n\nReview the implementation quality and provide your score.",
-            diff, findings
-        )
-    } else {
-        format!(
-            "## Changes Under Review\n\n```\n{}\n```\n\nReview the implementation quality and provide your score.",
-            diff
-        )
-    };
+    let mut total_cost = 0.0;
+
+    // ── Pass 1: Initial review ──────────────────────────────────────
+    let user_prompt = format!(
+        "## Changes Under Review\n\n```\n{}\n```\n\nReview the implementation quality and provide your score.",
+        diff
+    );
 
     let mut set: JoinSet<(String, Result<(ReadyResponse, f64)>)> = JoinSet::new();
     for i in 0..critics.len() {
@@ -520,8 +537,7 @@ async fn run_gate2(
         });
     }
 
-    let mut responses: Vec<(ReadyResponse, f64)> = Vec::with_capacity(critics.len());
-    let mut total_cost = 0.0;
+    let mut pass1_responses: Vec<(ReadyResponse, f64)> = Vec::with_capacity(critics.len());
 
     while let Some(result) = set.join_next().await {
         match result {
@@ -533,7 +549,7 @@ async fn run_gate2(
                     resp.deductions.join("; ")
                 };
                 info!(
-                    gate = "review",
+                    gate = "review_pass1",
                     model = %model_name,
                     verdict = %resp.verdict,
                     score = resp.score,
@@ -541,14 +557,14 @@ async fn run_gate2(
                     deductions = %deductions_preview,
                     cost_usd = cost,
                     reasoning = %preview,
-                    "gate2 critic responded"
+                    "gate2 pass1 critic responded"
                 );
                 total_cost += cost;
-                responses.push((resp, cost));
+                pass1_responses.push((resp, cost));
             }
             Ok((model_name, Err(e))) => {
-                warn!(error = %e, model = %model_name, "gate2 critic failed");
-                responses.push((
+                warn!(error = %e, model = %model_name, "gate2 pass1 critic failed");
+                pass1_responses.push((
                     ReadyResponse {
                         verdict: "needs_fix".to_string(),
                         issues: vec![],
@@ -561,8 +577,8 @@ async fn run_gate2(
                 ));
             }
             Err(e) => {
-                warn!(error = %e, "gate2 critic task panicked");
-                responses.push((
+                warn!(error = %e, "gate2 pass1 critic task panicked");
+                pass1_responses.push((
                     ReadyResponse {
                         verdict: "needs_fix".to_string(),
                         issues: vec![],
@@ -576,6 +592,99 @@ async fn run_gate2(
             }
         }
     }
+
+    // ── Research: verify factual claims from Pass 1 ─────────────────
+    let research_text = if let Some(findings) = gate1_research {
+        // Reuse Gate 1 research findings
+        info!("gate2: reusing gate 1 research findings for rebuttal");
+        format!("## Research Findings\n\n{findings}")
+    } else {
+        // Run research on Pass 1 claims
+        let claims_text = format_gate2_responses_for_research(&pass1_responses);
+        let research_result = run_research(
+            &claims_text,
+            diff,
+            &critics[0],
+            research_budget,
+            context_window,
+            clone_path,
+            exa_max_searches,
+        )
+        .await;
+
+        if let Some((ref findings, cost)) = research_result {
+            total_cost += cost;
+            info!(cost, findings_len = findings.len(), "gate2 research agent completed");
+            format!("## Research Findings\n\n{findings}")
+        } else {
+            info!("gate2: no research findings available for rebuttal");
+            String::new()
+        }
+    };
+
+    // ── Pass 2: Rebuttal with verified facts ────────────────────────
+    let peer_text = format_gate2_responses_for_rebuttal(&pass1_responses);
+    let rebuttal_user = prompts::GATE2_REBUTTAL
+        .replace("{peer_responses}", &peer_text)
+        .replace("{research_findings}", &research_text);
+
+    let mut rebuttal_set: JoinSet<(String, Result<(ReadyResponse, f64)>)> = JoinSet::new();
+    for i in 0..critics.len() {
+        let system = prompts::GATE2_SYSTEM.to_string();
+        let prompt = rebuttal_user.clone();
+        let model = critics[i].clone();
+        let wd = clone_path.to_path_buf();
+        rebuttal_set.spawn(async move {
+            let result = invoke_critic::<ReadyResponse>(
+                system,
+                prompt,
+                model.clone(),
+                budget_per_critic,
+                context_window,
+                &wd,
+            )
+            .await;
+            (model, result)
+        });
+    }
+
+    let mut responses: Vec<(ReadyResponse, f64)> = Vec::with_capacity(critics.len());
+
+    while let Some(result) = rebuttal_set.join_next().await {
+        match result {
+            Ok((model_name, Ok((resp, cost)))) => {
+                let preview: String = resp.reasoning.chars().take(120).collect();
+                info!(
+                    gate = "review_rebuttal",
+                    model = %model_name,
+                    verdict = %resp.verdict,
+                    score = resp.score,
+                    issues = resp.issues.len(),
+                    cost_usd = cost,
+                    reasoning = %preview,
+                    "gate2 rebuttal critic responded"
+                );
+                total_cost += cost;
+                responses.push((resp, cost));
+            }
+            Ok((model_name, Err(e))) => {
+                warn!(error = %e, model = %model_name, "gate2 rebuttal critic failed, keeping pass1 response");
+            }
+            Err(e) => {
+                warn!(error = %e, "gate2 rebuttal task panicked, keeping pass1 response");
+            }
+        }
+    }
+
+    // Use rebuttal responses where available, fall back to pass 1 for the rest.
+    let responses = if responses.len() >= pass1_responses.len() {
+        responses
+    } else {
+        let mut merged = responses;
+        let needed = pass1_responses.len() - merged.len();
+        merged.extend(pass1_responses.iter().rev().take(needed).cloned());
+        merged
+    };
 
     // Merge and dedup issues
     let mut all_issues: Vec<CriticIssue> = Vec::new();
@@ -683,6 +792,8 @@ async fn invoke_critic<T: serde::de::DeserializeOwned + Send + 'static>(
         context_window,
         provider_hint,
         max_tokens_per_turn: Some(4096), // critics output small JSON, no need for 16K
+        ci_context: None,
+        exa_max_searches: 0,
     };
 
     let response = llm::invoke::<T>(&invocation, Duration::from_secs(300))
@@ -825,6 +936,66 @@ fn format_all_responses_for_research(responses: &[(WorthwhileResponse, f64)]) ->
         .join("\n\n")
 }
 
+/// Format Gate 2 responses for the rebuttal prompt.
+fn format_gate2_responses_for_rebuttal(responses: &[(ReadyResponse, f64)]) -> String {
+    responses
+        .iter()
+        .enumerate()
+        .map(|(i, (resp, _))| {
+            let issues_text = if resp.issues.is_empty() {
+                "none".to_string()
+            } else {
+                resp.issues
+                    .iter()
+                    .map(|iss| format!("- {} ({}): {}", iss.file, iss.severity, iss.description))
+                    .collect::<Vec<_>>()
+                    .join("\n  ")
+            };
+            let deductions_text = if resp.deductions.is_empty() {
+                "none".to_string()
+            } else {
+                resp.deductions.join("; ")
+            };
+            format!(
+                "Critic {}: verdict={}, score={}, deductions=[{}]\nIssues:\n  {}\nReasoning: {}",
+                i + 1,
+                resp.verdict,
+                resp.score,
+                deductions_text,
+                issues_text,
+                resp.reasoning
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Format Gate 2 responses for the research agent (claims to verify).
+fn format_gate2_responses_for_research(responses: &[(ReadyResponse, f64)]) -> String {
+    responses
+        .iter()
+        .enumerate()
+        .map(|(i, (resp, _))| {
+            let claims = resp
+                .issues
+                .iter()
+                .map(|iss| format!("- {} in {}: {}", iss.severity, iss.file, iss.description))
+                .chain(resp.deductions.iter().cloned())
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "Critic {} (verdict: {}, score: {}):\n{}\n\nFull reasoning: {}",
+                i + 1,
+                resp.verdict,
+                resp.score,
+                claims,
+                resp.reasoning
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 /// Run the research agent to investigate critic claims.
 /// Returns findings as a string and cost, or None if no investigation needed.
 async fn run_research(
@@ -834,6 +1005,7 @@ async fn run_research(
     budget: f64,
     context_window: u64,
     clone_path: &Path,
+    exa_max_searches: u32,
 ) -> Option<(String, f64)> {
     let (provider_hint, model_name) = parse_provider_model(model);
 
@@ -848,12 +1020,14 @@ async fn run_research(
         max_budget_usd: budget,
         max_turns: 15,
         effort: "high",
-        tools: "Read,Glob,Grep,Bash",
+        tools: "Read,Glob,Grep,Bash,WebSearch,CheckVulnerability,CheckPackage,SearchIssues",
         json_schema: None,
         working_dir: clone_path.to_path_buf(),
         context_window,
         provider_hint,
         max_tokens_per_turn: None,
+        ci_context: None,
+        exa_max_searches,
     };
 
     match llm::invoke::<serde_json::Value>(&invocation, Duration::from_secs(120)).await {

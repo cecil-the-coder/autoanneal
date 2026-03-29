@@ -210,6 +210,13 @@ pub struct ExternalPr {
     pub labels: Vec<String>,
     #[serde(default)]
     pub ci_status: CiStatus,
+    /// Whether this PR has the `autoanneal:reviewed` label.
+    #[serde(default)]
+    pub reviewed: bool,
+    /// Number of commits on this PR whose message starts with "autoanneal:".
+    #[serde(default)]
+    pub autoanneal_commit_count: u64,
+    pub has_merge_conflicts: bool,
 }
 
 /// A GitHub issue fetched for investigation.

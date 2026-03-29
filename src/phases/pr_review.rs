@@ -96,6 +96,7 @@ pub async fn run(
             critic_budget,
             context_window,
             true, // skip_gate1 — human PRs are assumed worthwhile
+            0,    // no web searches for PR reviews
         )
         .await
         .unwrap_or(CriticOutput {
@@ -124,6 +125,8 @@ pub async fn run(
             context_window,
             provider_hint: None,
             max_tokens_per_turn: None,
+            ci_context: None,
+            exa_max_searches: 0,
         };
 
         let critic_response =
@@ -156,14 +159,19 @@ pub async fn run(
         "PR review critic complete"
     );
 
-    // 5. If score >= fix_threshold, the PR looks fine. Just label and move on.
+    // 5. If score >= fix_threshold, the PR looks fine. Comment and label.
     if critic_output.score >= fix_threshold {
+        let comment = format!(
+            "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}",
+            critic_output.score, critic_output.verdict, critic_output.summary
+        );
+        leave_comment(repo_slug, pr.number, &comment).await;
         add_reviewed_label(repo_slug, pr.number).await;
         return Ok(PrReviewOutput {
             pr_number: pr.number,
             score: critic_output.score,
             fixed: false,
-            commented: false,
+            commented: true,
             cost_usd: total_cost,
         });
     }
@@ -208,6 +216,8 @@ pub async fn run(
         context_window,
         provider_hint: None,
         max_tokens_per_turn: None,
+        ci_context: None,
+        exa_max_searches: 0,
     };
 
     let fix_response: llm::LlmResponse<serde_json::Value> =

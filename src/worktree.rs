@@ -49,10 +49,7 @@ impl WorktreeManager {
             anyhow::bail!("git worktree add failed: {stderr}");
         }
 
-        // Configure git identity in the worktree.
-        configure_git_identity(&wt_path)
-            .await
-            .context("failed to configure git identity in worktree")?;
+        // Git identity is inherited from the parent repo config (set in recon).
 
         info!(path = %wt_path.display(), "created git worktree");
         Ok(wt_path)
@@ -120,30 +117,4 @@ impl WorktreeManager {
         info!(path = %worktree_path.display(), "removed git worktree");
         Ok(())
     }
-}
-
-/// Configure git identity in a directory.
-async fn configure_git_identity(dir: &Path) -> Result<()> {
-    for (key, val) in [
-        ("user.name", "autoanneal[bot]"),
-        ("user.email", "autoanneal[bot]@users.noreply.github.com"),
-    ] {
-        let output = tokio::process::Command::new("git")
-            .args(["config", key, val])
-            .current_dir(dir)
-            .output()
-            .await
-            .with_context(|| format!("failed to run git config {key}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!(
-                "git config {} failed: {}",
-                key,
-                stderr
-            );
-            anyhow::bail!("git config {} failed: {}", key, stderr);
-        }
-    }
-    Ok(())
 }

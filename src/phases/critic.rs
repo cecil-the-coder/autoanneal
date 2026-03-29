@@ -79,6 +79,8 @@ pub async fn run(
         context_window,
         provider_hint: None,
         max_tokens_per_turn: None,
+        ci_context: None,
+        exa_max_searches: 0,
     };
 
     let response = llm::invoke::<CriticResult>(&invocation, Duration::from_secs(600)).await?;
@@ -139,6 +141,8 @@ pub async fn run(
         context_window,
         provider_hint: None,
         max_tokens_per_turn: None,
+        ci_context: None,
+        exa_max_searches: 0,
     };
 
     let fix_response = llm::invoke::<serde_json::Value>(&fix_invocation, Duration::from_secs(600)).await;
@@ -210,6 +214,8 @@ pub async fn run(
                         context_window,
                         provider_hint: None,
                         max_tokens_per_turn: None,
+                        ci_context: None,
+        exa_max_searches: 0,
                     };
 
                     if let Ok(re_response) = llm::invoke::<CriticResult>(

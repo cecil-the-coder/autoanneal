@@ -68,6 +68,7 @@ struct WorkItem {
     kind: WorkItemKind,
     budget_cap: f64,
     context_window: u64,
+    exa_searches: u32,
 }
 
 enum WorkItemKind {
@@ -299,11 +300,14 @@ async fn run_pipeline(
 
     // ─── Early exit checks (before recon to save money) ────────────────
     let has_external_ci_failures = config.fix_external_ci
-        && preflight_output.external_prs.iter().any(|pr| pr.ci_status == CiStatus::Failing);
+        && preflight_output.external_prs.iter().any(|pr| {
+            pr.ci_status == CiStatus::Failing
+                && pr.autoanneal_commit_count < config.max_pr_fix_attempts as u64
+        });
     let has_maintenance = !preflight_output.prs_needing_ci_fix().is_empty()
         || !preflight_output.prs_needing_rebase().is_empty()
         || has_external_ci_failures;
-    let has_reviews = !preflight_output.external_prs.is_empty();
+    let has_reviews = preflight_output.external_prs.iter().any(|pr| !pr.reviewed);
     let has_issues = !preflight_output.issues.is_empty();
     let at_pr_limit = config.max_open_prs > 0
         && preflight_output.in_flight_prs.len() >= config.max_open_prs;
@@ -589,18 +593,33 @@ fn collect_work_items(
 ) -> Vec<WorkItem> {
     let mut items = Vec::new();
 
-    // External PR CI fix items.
-    if config.fix_external_ci {
-        for ext_pr in external_prs.iter().filter(|pr| pr.ci_status == CiStatus::Failing) {
+    // External PR CI fix and merge conflict items.
+    if config.fix_external_ci || config.fix_conflicts {
+        for ext_pr in external_prs.iter() {
+            let needs_ci_fix = config.fix_external_ci && ext_pr.ci_status == CiStatus::Failing;
+            let needs_conflict_fix = config.fix_conflicts && ext_pr.has_merge_conflicts;
+            if !needs_ci_fix && !needs_conflict_fix {
+                continue;
+            }
+            // Skip PRs that have hit the CI fix attempt limit.
+            if needs_ci_fix && ext_pr.autoanneal_commit_count >= config.max_pr_fix_attempts as u64 {
+                info!(
+                    pr_number = ext_pr.number,
+                    attempts = ext_pr.autoanneal_commit_count,
+                    max = config.max_pr_fix_attempts,
+                    "skipping external CI fix — attempt limit reached"
+                );
+                continue;
+            }
             // Convert ExternalPr to InFlightPr for the CI fix phase.
             let as_inflight = InFlightPr {
                 number: ext_pr.number,
                 title: ext_pr.title.clone(),
                 body: String::new(),
                 branch: ext_pr.branch.clone(),
-                ci_status: CiStatus::Failing,
+                ci_status: ext_pr.ci_status,
                 has_fixing_label: false,
-                has_merge_conflicts: false,
+                has_merge_conflicts: ext_pr.has_merge_conflicts,
                 files: Vec::new(),
             };
             items.push(WorkItem {
@@ -610,6 +629,7 @@ fn collect_work_items(
                 },
                 budget_cap: budget_remaining,
                 context_window,
+                exa_searches: config.exa_searches,
             });
         }
     }
@@ -641,13 +661,14 @@ fn collect_work_items(
                 },
                 budget_cap: budget_remaining,
                 context_window,
+                exa_searches: config.exa_searches,
             });
         }
     }
 
-    // PR review items.
+    // PR review items — skip PRs already reviewed by autoanneal.
     if config.review_prs {
-        for pr in external_prs.iter().take(3) {
+        for pr in external_prs.iter().filter(|pr| !pr.reviewed).take(3) {
             items.push(WorkItem {
                 kind: WorkItemKind::PrReview {
                     pr: pr.clone(),
@@ -657,6 +678,7 @@ fn collect_work_items(
                 },
                 budget_cap: budget_remaining,
                 context_window,
+                exa_searches: config.exa_searches,
             });
         }
     }
@@ -672,6 +694,7 @@ fn collect_work_items(
             },
             budget_cap: budget_remaining,
             context_window,
+            exa_searches: config.exa_searches,
         });
     }
 
@@ -724,6 +747,7 @@ fn collect_work_items(
             },
             budget_cap: budget_remaining,
             context_window,
+            exa_searches: config.exa_searches,
         });
     }
 
@@ -868,6 +892,7 @@ fn spawn_work_item(
     let item_name = item.name();
     let budget = item.budget_cap;
     let context_window = item.context_window;
+    let exa_searches = item.exa_searches;
 
     join_set.spawn(async move {
         let start = Instant::now();
@@ -983,6 +1008,7 @@ fn spawn_work_item(
                     budget,
                     &repo_slug,
                     context_window,
+                    exa_searches,
                 )
                 .await
                 .map(|(r, c)| (r, c))
@@ -1028,6 +1054,7 @@ async fn run_analysis_pipeline(
     mut budget: f64,
     _repo_slug: &str,
     context_window: u64,
+    exa_searches: u32,
 ) -> Result<(WorkItemResult, f64)> {
     let mut cost_total = 0.0;
 
@@ -1250,6 +1277,7 @@ async fn run_analysis_pipeline(
                     critic_budget,
                     context_window,
                     false, // skip_gate1
+                    exa_searches,
                 ),
             )
             .await
@@ -1316,6 +1344,8 @@ async fn run_analysis_pipeline(
                         context_window,
                         provider_hint: None,
                         max_tokens_per_turn: None,
+                        ci_context: None,
+                        exa_max_searches: 0,
                     };
 
                     let fix_response = llm::invoke::<serde_json::Value>(
@@ -1385,6 +1415,7 @@ async fn run_analysis_pipeline(
                                     re_review_budget,
                                     context_window,
                                     true, // skip_gate1
+                                    exa_searches,
                                 ),
                             )
                             .await

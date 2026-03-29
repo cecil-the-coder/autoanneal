@@ -386,6 +386,35 @@ async fn check_ci_status(repo_slug: &str, pr_number: u64) -> CiStatus {
     }
 }
 
+/// Count commits on a PR whose message starts with "autoanneal:".
+async fn count_autoanneal_commits(repo_slug: &str, pr_number: u64) -> u64 {
+    let dot = Path::new(".");
+    match gh_command(
+        dot,
+        &[
+            "api",
+            &format!("repos/{repo_slug}/pulls/{pr_number}/commits"),
+            "--paginate",
+            "--jq",
+            r#"[.[] | select(.commit.message | startswith("autoanneal:"))] | length"#,
+        ],
+    )
+    .await
+    {
+        Ok(raw) => {
+            // With --paginate and --jq, each page emits a number on its own
+            // line.  Sum them to get the total across all pages.
+            raw.lines()
+                .filter_map(|line| line.trim().parse::<u64>().ok())
+                .sum()
+        }
+        Err(e) => {
+            warn!(pr_number, error = %e, "failed to count autoanneal commits (non-fatal)");
+            0
+        }
+    }
+}
+
 /// Check if a PR has the autoanneal:fixing label.
 #[allow(dead_code)]
 async fn check_fixing_label(repo_slug: &str, pr_number: u64) -> bool {
@@ -547,7 +576,7 @@ async fn detect_external_prs(repo_slug: &str, filter: &str, include_reviewed: bo
             "--state",
             "open",
             "--json",
-            "number,title,headRefName,author,updatedAt,labels",
+            "number,title,headRefName,author,updatedAt,labels,mergeable",
             "--limit",
             "50",
             "-R",
@@ -591,8 +620,10 @@ async fn detect_external_prs(repo_slug: &str, filter: &str, include_reviewed: bo
             })
             .unwrap_or_default();
 
+        let reviewed = labels.iter().any(|l| l == "autoanneal:reviewed");
+
         // Filter OUT PRs already reviewed by autoanneal (only for review mode, not CI fix).
-        if !include_reviewed && labels.iter().any(|l| l == "autoanneal:reviewed") {
+        if !include_reviewed && reviewed {
             continue;
         }
 
@@ -606,6 +637,19 @@ async fn detect_external_prs(repo_slug: &str, filter: &str, include_reviewed: bo
 
         let ci_status = check_ci_status(repo_slug, number).await;
 
+        let has_merge_conflicts = pr["mergeable"]
+            .as_str()
+            .map(|m| m == "CONFLICTING")
+            .unwrap_or(false);
+
+        // For PRs with failing CI, count autoanneal commits so the
+        // orchestrator can enforce the attempt limit.
+        let autoanneal_commit_count = if ci_status == CiStatus::Failing {
+            count_autoanneal_commits(repo_slug, number).await
+        } else {
+            0
+        };
+
         let external = ExternalPr {
             number,
             title,
@@ -614,30 +658,36 @@ async fn detect_external_prs(repo_slug: &str, filter: &str, include_reviewed: bo
             updated_at,
             labels,
             ci_status,
+            reviewed,
+            autoanneal_commit_count,
+            has_merge_conflicts,
         };
 
         // 4. Apply configured filter.
-        match filter {
-            "all" => result.push(external),
+        // Always include reviewed PRs with failing CI — the review filter only
+        // gates *review* eligibility; CI fix eligibility is separate.
+        let force_include = external.reviewed && external.ci_status == CiStatus::Failing;
+        let passes_filter = match filter {
+            "all" => true,
             "recent" => {
-                // Only keep PRs updated in the last 24 hours.
                 if let Ok(updated) = chrono::DateTime::parse_from_rfc3339(&external.updated_at) {
                     let age = chrono::Utc::now().signed_duration_since(updated);
-                    if age.num_hours() <= 24 {
-                        result.push(external);
-                    }
+                    age.num_hours() <= 24
+                } else {
+                    false
                 }
             }
             f if f.starts_with("labeled:") => {
                 let target_label = &f["labeled:".len()..];
-                if external.labels.iter().any(|l| l == target_label) {
-                    result.push(external);
-                }
+                external.labels.iter().any(|l| l == target_label)
             }
             _ => {
                 warn!(filter = %filter, "unknown review filter, treating as 'all'");
-                result.push(external);
+                true
             }
+        };
+        if passes_filter || force_include {
+            result.push(external);
         }
     }
 

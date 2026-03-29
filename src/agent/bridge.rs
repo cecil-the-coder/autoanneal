@@ -14,7 +14,7 @@ use crate::agent::tools::ToolExecutor;
 use crate::llm::{self, LlmInvocation, LlmResponse};
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
@@ -134,6 +134,40 @@ pub fn parse_provider_model(s: &str) -> (Option<String>, String) {
 }
 
 // ---------------------------------------------------------------------------
+// Tool alias mapping
+// ---------------------------------------------------------------------------
+
+/// Map human-friendly tool names (used in LlmInvocation.tools) to internal tool names.
+fn tool_alias_to_name(alias: &str) -> &str {
+    match alias {
+        "Read" => "read_file",
+        "Write" => "write_file",
+        "Edit" => "edit_file",
+        "Glob" => "search_files",
+        "Grep" => "search_content",
+        "Bash" => "run_command",
+        "Git" => "git",
+        "GhWorkflowLogs" => "gh_workflow_logs",
+        other => other,
+    }
+}
+
+/// Parse a comma-separated tools string into resolved tool names.
+fn parse_enabled_tools(tools: &str) -> Option<Vec<String>> {
+    if tools.is_empty() {
+        return None;
+    }
+    Some(
+        tools
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| tool_alias_to_name(s).to_string())
+            .collect(),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Adapter: ToolExecutor -> ToolHandler trait
 // ---------------------------------------------------------------------------
 
@@ -157,7 +191,15 @@ impl ToolHandler for ToolExecutorAdapter {
             println!("[bridge] tool: {name} {preview} (rss: {}MB)", rss_mb());
         }
 
-        match self.executor.execute_tool(name, input) {
+        let start = Instant::now();
+        let result = self.executor.execute_tool(name, input).await;
+        let elapsed = start.elapsed();
+
+        if self.debug_stream {
+            println!("[bridge] tool: {name} done ({elapsed:?})");
+        }
+
+        match result {
             Ok(output) => (output, false),
             Err(e) => (format!("Error: {e}"), true),
         }
@@ -165,7 +207,8 @@ impl ToolHandler for ToolExecutorAdapter {
 
     fn definitions(&self) -> Vec<api_types::ToolDefinition> {
         // Convert from tools::ToolDefinition to api_types::ToolDefinition.
-        ToolExecutor::get_tool_definitions()
+        self.executor
+            .get_tool_definitions()
             .into_iter()
             .map(|d| api_types::ToolDefinition {
                 name: d.name,
@@ -293,10 +336,32 @@ pub async fn invoke<T: DeserializeOwned>(
     // Build the pieces.
     let client = ApiClient::new(creds.base_url, creds.api_key, creds.provider, creds.use_bearer);
 
-    let executor = ToolExecutor::new(
-        invocation.working_dir.clone(),
-        Duration::from_secs(120),
-    );
+    let enabled_tools = parse_enabled_tools(invocation.tools);
+    let executor = if invocation.exa_max_searches > 0
+        || invocation.tools.contains("CheckVulnerability")
+        || invocation.tools.contains("CheckPackage")
+        || invocation.tools.contains("SearchIssues")
+    {
+        let exa_api_key = std::env::var("EXA_API_KEY").ok();
+        let repo_slug = derive_repo_slug(&invocation.working_dir).await;
+        ToolExecutor::new_with_research(
+            invocation.working_dir.clone(),
+            Duration::from_secs(120),
+            invocation.ci_context.clone(),
+            enabled_tools,
+            exa_api_key,
+            invocation.exa_max_searches,
+            repo_slug,
+            invocation.tools.to_string(),
+        )
+    } else {
+        ToolExecutor::new(
+            invocation.working_dir.clone(),
+            Duration::from_secs(120),
+            invocation.ci_context.clone(),
+            enabled_tools,
+        )
+    };
     let debug_stream = std::env::var("AUTOANNEAL_DEBUG_STREAM")
         .map_or(false, |v| v == "1" || v == "true");
     let tool_handler = ToolExecutorAdapter {
@@ -328,6 +393,8 @@ pub async fn invoke<T: DeserializeOwned>(
     let duration_ms = start.elapsed().as_millis() as u64;
     let rss_after = rss_mb();
 
+    let exa_cost = tool_handler.executor.exa_cost();
+
     info!(
         turns = result.turns,
         input_tokens = result.total_input_tokens,
@@ -336,10 +403,61 @@ pub async fn invoke<T: DeserializeOwned>(
         duration_ms = duration_ms,
         rss_before_mb = rss_before,
         rss_after_mb = rss_after,
+        exa_cost_usd = exa_cost,
         "bridge: conversation complete"
     );
 
-    map_result(result, duration_ms)
+    let mut response = map_result(result, duration_ms)?;
+    response.cost_usd += exa_cost;
+    Ok(response)
+}
+
+// ---------------------------------------------------------------------------
+// Repo slug derivation
+// ---------------------------------------------------------------------------
+
+/// Derive an "owner/repo" slug from the git remote in the working directory.
+async fn derive_repo_slug(working_dir: &std::path::Path) -> Option<String> {
+    let output = tokio::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(working_dir)
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    // Parse common formats:
+    // https://github.com/owner/repo.git
+    // git@github.com:owner/repo.git
+    let slug = if let Some(rest) = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+    {
+        rest.to_string()
+    } else if let Some(at_pos) = url.find('@') {
+        let after_at = &url[at_pos + 1..];
+        if let Some(colon_pos) = after_at.find(':') {
+            after_at[colon_pos + 1..].to_string()
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+
+    let slug = slug.strip_suffix(".git").unwrap_or(&slug);
+    let slug = slug.trim_end_matches('/');
+
+    if slug.contains('/') {
+        Some(slug.to_string())
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +566,8 @@ mod tests {
             context_window: crate::agent::context::DEFAULT_CONTEXT_WINDOW,
             provider_hint: None,
             max_tokens_per_turn: None,
+            ci_context: None,
+            exa_max_searches: 0,
         }
     }
 
