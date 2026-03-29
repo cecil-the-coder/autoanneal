@@ -1,5 +1,6 @@
 use crate::agent::api_types::*;
 use crate::agent::context::{self, ContextManager};
+use crate::agent::output_filter;
 use std::time::Duration;
 use tracing::trace;
 
@@ -236,6 +237,25 @@ pub async fn run(
                         } else {
                             executor.execute(name, input).await
                         };
+
+                    // Filter large command output and store full version for recall.
+                    // Only filter run_command results that are large enough to benefit.
+                    const FILTER_THRESHOLD: usize = 2000; // ~500 tokens
+                    if name == "run_command" && !is_error && result_content.len() > FILTER_THRESHOLD {
+                        let command = input.get("command")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let filtered = output_filter::filter(command, &result_content);
+
+                        // Only use filtered version if it's actually shorter
+                        if filtered.len() < result_content.len() * 3 / 4 {  // at least 25% reduction
+                            let store_id = format!("cmd_{}", id);
+                            ctx_mgr.store_raw(&store_id, result_content);
+                            result_content = format!(
+                                "{filtered}\n[full output available via recall_result(id: \"{store_id}\")]"
+                            );
+                        }
+                    }
 
                     // Truncate very large tool results (safe at char boundary)
                     if result_content.len() > MAX_TOOL_RESULT_BYTES {
