@@ -11,15 +11,19 @@ use std::sync::OnceLock;
 /// Filter command output to reduce tokens. Returns the filtered output.
 /// The caller stores the full original if needed.
 pub fn filter(command: &str, output: &str) -> String {
+    // Extract the effective command from shell wrappers like
+    // "cd /tmp/foo && CARGO_BUILD_JOBS=1 cargo check ..."
+    let effective = extract_effective_command(command);
+
     // Check cargo first (structural parser)
-    if let Some(filtered) = try_filter_cargo(command, output) {
+    if let Some(filtered) = try_filter_cargo(&effective, output) {
         return filtered;
     }
 
     // Try static filters
     for (idx, f) in FILTERS.iter().enumerate() {
         if let Ok(re) = Regex::new(f.command_pattern) {
-            if re.is_match(command) {
+            if re.is_match(&effective) {
                 return apply_filter(f, idx, output);
             }
         }
@@ -27,6 +31,37 @@ pub fn filter(command: &str, output: &str) -> String {
 
     // Fallback: generic line dedup + truncation
     generic_filter(output)
+}
+
+/// Extract the effective command from shell wrappers.
+///
+/// Handles patterns like:
+/// - `cd /tmp/foo && cargo check`
+/// - `cd /tmp/foo && ENV_VAR=val cargo build`
+/// - `ENV_VAR=val cargo test`
+/// - `timeout 120 cargo clippy`
+fn extract_effective_command(command: &str) -> String {
+    // Take the last command in a `&&` chain.
+    let last = command.rsplit("&&").next().unwrap_or(command).trim();
+
+    // Strip leading env var assignments (KEY=val) and `timeout N`.
+    let words: Vec<&str> = last.split_whitespace().collect();
+    let mut skip = 0;
+    while skip < words.len() {
+        let word = words[skip];
+        if word.contains('=') {
+            skip += 1;
+        } else if word == "timeout" {
+            skip += 1;
+            // `timeout` also consumes its numeric argument
+            if skip < words.len() && words[skip].parse::<u64>().is_ok() {
+                skip += 1;
+            }
+        } else {
+            break;
+        }
+    }
+    words[skip..].join(" ")
 }
 
 // ---------------------------------------------------------------------------
@@ -1283,5 +1318,51 @@ mod tests {
         assert!(result.contains("uptime: 12:00"));
         assert!(!result.contains("Permanently added"));
         assert!(!result.contains("Connection to"));
+    }
+
+    // -- extract_effective_command -------------------------------------------
+
+    #[test]
+    fn test_extract_plain_command() {
+        assert_eq!(extract_effective_command("cargo check"), "cargo check");
+    }
+
+    #[test]
+    fn test_extract_cd_and_cargo() {
+        assert_eq!(
+            extract_effective_command("cd /tmp/foo && cargo check -p mylib"),
+            "cargo check -p mylib"
+        );
+    }
+
+    #[test]
+    fn test_extract_cd_env_cargo() {
+        assert_eq!(
+            extract_effective_command("cd /tmp/foo && CARGO_BUILD_JOBS=1 cargo check -p mylib"),
+            "cargo check -p mylib"
+        );
+    }
+
+    #[test]
+    fn test_extract_timeout_cargo() {
+        assert_eq!(
+            extract_effective_command("timeout 120 cargo clippy"),
+            "cargo clippy"
+        );
+    }
+
+    #[test]
+    fn test_extract_cd_env_timeout_cargo() {
+        assert_eq!(
+            extract_effective_command("cd /tmp && JOBS=1 timeout 60 cargo build --release"),
+            "cargo build --release"
+        );
+    }
+
+    #[test]
+    fn test_cargo_filter_via_cd_wrapper() {
+        let output = "   Compiling foo v0.1.0\n   Compiling bar v0.2.0\n    Finished dev [unoptimized] target(s)\n";
+        let result = filter("cd /tmp/workdir && CARGO_BUILD_JOBS=1 cargo check -p mylib", output);
+        assert_eq!(result, "cargo check: ok");
     }
 }
