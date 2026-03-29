@@ -49,11 +49,17 @@ impl ApiClient {
         match status {
             401 => ApiError::AuthFailure(body.to_string()),
             429 => {
-                let retry_after = headers
-                    .retry_after
-                    .as_deref()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(30);
+                let retry_after = match headers.retry_after.as_deref() {
+                    Some(v) => v.parse::<u64>().unwrap_or_else(|_| {
+                        tracing::warn!(
+                            "retry-after header present but unparseable as u64, \
+                             falling back to 30s: {:?}",
+                            v
+                        );
+                        30
+                    }),
+                    None => 30,
+                };
                 ApiError::RateLimited {
                     retry_after_secs: retry_after,
                 }
