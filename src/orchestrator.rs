@@ -18,6 +18,27 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
 use tracing::{error, info, warn};
 
+/// Global counter used as a fallback when the system clock is unreliable
+/// (e.g. returns a time before `UNIX_EPOCH`). Each invocation produces a
+/// unique, monotonically-increasing value so that work directory names never
+/// collide.
+static TIMESTAMP_FALLBACK_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Return a monotonically-increasing timestamp suitable for use in directory
+/// names.
+///
+/// Uses the wall-clock time (seconds since UNIX epoch) when available. If the
+/// system clock is behind the epoch — which causes
+/// `duration_since(UNIX_EPOCH)` to fail — the function falls back to an
+/// atomic counter that is guaranteed to produce a unique value on every call,
+/// preventing silent directory-name collisions.
+fn unique_timestamp_secs() -> u64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs(),
+        Err(_) => TIMESTAMP_FALLBACK_COUNTER.fetch_add(1, Ordering::Relaxed),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Budget helpers
 // ---------------------------------------------------------------------------
@@ -145,10 +166,7 @@ pub async fn run(config: &Config) -> Result<i32> {
     let mut total_cost: f64 = 0.0;
 
     // Create work directory.
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let timestamp = unique_timestamp_secs();
     let work_dir = PathBuf::from(format!("/tmp/autoanneal-{timestamp}-{}", std::process::id()));
     std::fs::create_dir_all(&work_dir)
         .with_context(|| format!("failed to create work directory: {}", work_dir.display()))?;

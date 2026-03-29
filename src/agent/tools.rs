@@ -92,14 +92,19 @@ impl ToolExecutor {
                     None => break,
                 }
             }
-            let mut base = ancestor.canonicalize().unwrap_or(ancestor);
+            let mut base = ancestor
+                .canonicalize()
+                .map_err(|e| ToolError::InvalidInput(format!("cannot canonicalize path: {e}")))?;
             for part in tail_parts.into_iter().rev() {
                 base = base.join(part);
             }
             base
         };
 
-        let wd_canon = self.working_dir.canonicalize().unwrap_or_else(|_| self.working_dir.clone());
+        let wd_canon = self
+            .working_dir
+            .canonicalize()
+            .map_err(|e| ToolError::InvalidInput(format!("cannot canonicalize working directory: {e}")))?;
         if !resolved.starts_with(&wd_canon) {
             return Err(ToolError::InvalidInput(format!(
                 "path escapes working directory: {raw}"
