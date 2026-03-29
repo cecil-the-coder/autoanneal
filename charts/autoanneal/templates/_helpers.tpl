@@ -42,6 +42,49 @@ Secret name: either existingSecret or the chart-created one.
 {{- end }}
 
 {{/*
+Resolve the image tag. When Flux uses reconcileStrategy: Revision, the chart
+version becomes "0.6.1+<12-char-sha>". CI tags images with the first 7 chars
+of the SHA. Extract that for a pinned deploy; fall back to image.tag otherwise.
+*/}}
+{{- define "autoanneal.imageTag" -}}
+{{- $ver := .Chart.Version -}}
+{{- if contains "+" $ver -}}
+{{- $sha := (split "+" $ver)._1 -}}
+{{- $sha | trunc 7 -}}
+{{- else -}}
+{{- .Values.image.tag -}}
+{{- end -}}
+{{- end }}
+
+{{- define "autoanneal.managerImageTag" -}}
+{{- $ver := .Chart.Version -}}
+{{- if contains "+" $ver -}}
+{{- $sha := (split "+" $ver)._1 -}}
+{{- $sha | trunc 7 -}}
+{{- else -}}
+{{- .Values.manager.image.tag -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Manager ServiceAccount name.
+*/}}
+{{- define "autoanneal.managerServiceAccountName" -}}
+{{- if .Values.manager.serviceAccount.name -}}
+{{ .Values.manager.serviceAccount.name }}
+{{- else -}}
+{{ include "autoanneal.fullname" . }}-manager
+{{- end -}}
+{{- end }}
+
+{{/*
+Manager ConfigMap name.
+*/}}
+{{- define "autoanneal.managerConfigmapName" -}}
+{{ include "autoanneal.fullname" . }}-manager-config
+{{- end }}
+
+{{/*
 Build CLI args for a repo entry.
 Expects a dict with keys: repo (the repo entry), root (top-level context).
 */}}
@@ -142,7 +185,7 @@ Expects a dict with keys: repo (the repo entry), root (top-level context).
 {{- define "autoanneal.container" -}}
 {{- $root := .root -}}
 name: autoanneal
-image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag }}"
+image: "{{ $root.Values.image.repository }}:{{ include "autoanneal.imageTag" $root }}"
 imagePullPolicy: {{ $root.Values.image.pullPolicy }}
 args:
   {{- include "autoanneal.args" . | nindent 2 }}

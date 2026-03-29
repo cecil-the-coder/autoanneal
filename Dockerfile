@@ -1,8 +1,8 @@
 FROM rust:1.94-bookworm AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
-COPY src/ src/
-RUN cargo build --release
+COPY crates/ crates/
+RUN cargo build --release -p autoanneal
 
 FROM debian:bookworm-slim
 
