@@ -224,9 +224,16 @@ pub async fn run(
                     // Intercept recall_result — handled by context manager, not executor.
                     let (mut result_content, is_error) =
                         if name == context::RECALL_TOOL_NAME {
-                            let recall_id = input["id"].as_str().unwrap_or("");
                             recall_ids.push(id.clone());
-                            (ctx_mgr.recall(recall_id), false)
+                            match input.get("id").and_then(|v| v.as_str()) {
+                                Some(recall_id) if !recall_id.is_empty() => {
+                                    (ctx_mgr.recall(recall_id), false)
+                                }
+                                _ => {
+                                    let msg = "recall_result tool call is missing required 'id' field or it is empty";
+                                    (msg.to_string(), true)
+                                }
+                            }
                         } else {
                             executor.execute(name, input).await
                         };
