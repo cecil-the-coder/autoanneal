@@ -286,7 +286,7 @@ async fn fetch_ci_logs(repo_slug: &str, branch: &str) -> (String, u64) {
 }
 
 /// Parse the `gh run view --json jobs` output and format a summary of which
-/// jobs/steps failed, including their job IDs (for use with fetch_ci_job_logs).
+/// jobs/steps failed, including their job IDs (for use with `gh_workflow_logs`).
 fn format_job_summary(json_str: &str) -> String {
     let parsed: serde_json::Value = match serde_json::from_str(json_str) {
         Ok(v) => v,
@@ -301,7 +301,6 @@ fn format_job_summary(json_str: &str) -> String {
     let mut lines = Vec::new();
     for job in jobs {
         let name = job.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-        let _status = job.get("status").and_then(|v| v.as_str()).unwrap_or("?");
         let conclusion = job.get("conclusion").and_then(|v| v.as_str()).unwrap_or("?");
         let job_id = job.get("databaseId").and_then(|v| v.as_u64()).unwrap_or(0);
 
