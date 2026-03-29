@@ -1,5 +1,7 @@
 //! Bridge module: drop-in replacement for `llm::invoke` that uses the agent
 //! module's conversation loop instead of shelling out to the `claude` CLI.
+//!
+//! Also provides `memory_stats()` for tracking RSS usage.
 
 use crate::agent::api_types;
 use crate::agent::client::ApiClient;
@@ -152,7 +154,7 @@ impl ToolHandler for ToolExecutorAdapter {
             } else {
                 input_preview
             };
-            println!("[bridge] tool: {name} {preview}");
+            println!("[bridge] tool: {name} {preview} (rss: {}MB)", rss_mb());
         }
 
         match self.executor.execute_tool(name, input) {
@@ -321,8 +323,10 @@ pub async fn invoke<T: DeserializeOwned>(
 
     // Run the conversation loop.
     let start = std::time::Instant::now();
+    let rss_before = rss_mb();
     let result = conversation::run(&client, &tool_handler, &config, &augmented_prompt).await;
     let duration_ms = start.elapsed().as_millis() as u64;
+    let rss_after = rss_mb();
 
     info!(
         turns = result.turns,
@@ -330,10 +334,39 @@ pub async fn invoke<T: DeserializeOwned>(
         output_tokens = result.total_output_tokens,
         stop_reason = ?result.stop_reason,
         duration_ms = duration_ms,
+        rss_before_mb = rss_before,
+        rss_after_mb = rss_after,
         "bridge: conversation complete"
     );
 
     map_result(result, duration_ms)
+}
+
+// ---------------------------------------------------------------------------
+// Memory stats
+// ---------------------------------------------------------------------------
+
+/// Read the current process RSS (resident set size) in MB from /proc/self/status.
+/// Returns 0 on non-Linux or if the file can't be read.
+pub fn rss_mb() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            for line in status.lines() {
+                if let Some(val) = line.strip_prefix("VmRSS:") {
+                    let val = val.trim().trim_end_matches(" kB").trim();
+                    if let Ok(kb) = val.parse::<u64>() {
+                        return kb / 1024;
+                    }
+                }
+            }
+        }
+        0
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------

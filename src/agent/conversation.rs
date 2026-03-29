@@ -188,7 +188,13 @@ pub async fn run(
         };
 
         // --- accumulate tokens ---
-        trace!(msg_id = %response.id, turn = turns, "received API response");
+        trace!(
+            msg_id = %response.id,
+            turn = turns,
+            rss_mb = crate::agent::bridge::rss_mb(),
+            messages = messages.len(),
+            "received API response"
+        );
         let last_input_tokens = response.usage.input_tokens
             + response.usage.cache_creation_input_tokens
             + response.usage.cache_read_input_tokens;
