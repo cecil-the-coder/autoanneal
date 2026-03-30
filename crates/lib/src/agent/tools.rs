@@ -200,6 +200,56 @@ impl ToolExecutor {
             }
         };
 
+        // In the non-canonical case, the tail may contain symlinks created
+        // during the walk. If the path now exists (created concurrently),
+        // re-canonicalize and verify; if not, we can only validate the
+        // ancestor bound.
+        if canonical_result.is_err() {
+            // Path didn't exist when we started; if it exists now, re-verify.
+            if let Ok(canonical_now) = resolved.canonicalize() {
+                if !canonical_now.starts_with(&wd_canonical) {
+                    return Err(ToolError::InvalidInput(format!(
+                        "path escapes working directory: {raw}"
+                    )));
+                }
+            }
+            // For non-existent paths, verify each reconstructed component stays within bounds.
+            let mut check_path = wd_canonical.clone();
+            for component in candidate.components() {
+                use std::path::Component;
+                match component {
+                    Component::Normal(name) => {
+                        check_path = check_path.join(name);
+                        // Check if this is a symlink that points outside.
+                        if let Ok(link_target) = std::fs::read_link(&check_path) {
+                            let combined = if link_target.is_absolute() {
+                                link_target
+                            } else {
+                                check_path.parent().unwrap_or(&wd_canonical).join(link_target)
+                            };
+                            if let Ok(canonical_target) = combined.canonicalize() {
+                                if !canonical_target.starts_with(&wd_canonical) {
+                                    return Err(ToolError::InvalidInput(format!(
+                                        "path escapes working directory: {raw}"
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                    Component::ParentDir => {
+                        // Reject paths that would escape via .. components.
+                        if !check_path.starts_with(&wd_canonical) {
+                            return Err(ToolError::InvalidInput(format!(
+                                "path escapes working directory: {raw}"
+                            )));
+                        }
+                        check_path = check_path.parent().unwrap_or(&wd_canonical).to_path_buf();
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         if !resolved.starts_with(&wd_canonical) {
             return Err(ToolError::InvalidInput(format!(
                 "path escapes working directory: {raw}"
