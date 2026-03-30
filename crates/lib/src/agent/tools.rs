@@ -140,6 +140,12 @@ impl ToolExecutor {
         // across the check, which would prevent calling `working_dir_canonicalize()`.
         let canonical_result = candidate.canonicalize();
         let resolved = if let Ok(canonical) = canonical_result {
+            // Verify the canonical path is within working directory before accepting it.
+            if !canonical.starts_with(&self.working_dir_canonicalize()?) {
+                return Err(ToolError::InvalidInput(format!(
+                    "path escapes working directory: {raw}"
+                )));
+            }
             canonical
         } else {
             let mut ancestor = candidate.clone();
