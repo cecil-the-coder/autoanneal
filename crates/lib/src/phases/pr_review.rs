@@ -135,12 +135,26 @@ pub async fn run(
         let critic_response =
             llm::invoke::<CriticResult>(&critic_invocation, Duration::from_secs(300)).await?;
 
-        let critic = critic_response.structured.unwrap_or(CriticResult {
-            score: 5,
-            verdict: "needs_work".to_string(),
-            summary: "Critic did not return structured output.".to_string(),
-            deductions: vec![],
-        });
+        let critic = if let Some(structured) = critic_response.structured {
+            structured
+        } else {
+            let text_preview: String = critic_response.text.chars().take(500).collect();
+            warn!(
+                pr_number = pr.number,
+                text_len = critic_response.text.len(),
+                text_preview = %text_preview,
+                "critic did not return parseable JSON, using fallback score"
+            );
+            CriticResult {
+                score: 5,
+                verdict: "needs_work".to_string(),
+                summary: format!(
+                    "Critic did not return structured output. Raw response: {}",
+                    text_preview
+                ),
+                deductions: vec![],
+            }
+        };
 
         // Append deductions to summary so the fix agent knows exactly what to address.
         let summary = if critic.deductions.is_empty() {
@@ -575,12 +589,26 @@ async fn run_critic_review(
     let response = llm::invoke::<CriticResult>(&invocation, Duration::from_secs(120)).await?;
     let cost = response.cost_usd;
 
-    let critic = response.structured.unwrap_or(CriticResult {
-        score: 5,
-        verdict: "needs_work".to_string(),
-        summary: "Re-review did not return structured output.".to_string(),
-        deductions: vec![],
-    });
+    let critic = if let Some(structured) = response.structured {
+        structured
+    } else {
+        let text_preview: String = response.text.chars().take(500).collect();
+        warn!(
+            pr_number = pr.number,
+            text_len = response.text.len(),
+            text_preview = %text_preview,
+            "re-review did not return parseable JSON, using fallback score"
+        );
+        CriticResult {
+            score: 5,
+            verdict: "needs_work".to_string(),
+            summary: format!(
+                "Re-review did not return structured output. Raw response: {}",
+                text_preview
+            ),
+            deductions: vec![],
+        }
+    };
 
     Ok((CriticOutput {
         score: critic.score,
