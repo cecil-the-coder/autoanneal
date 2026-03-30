@@ -2,7 +2,8 @@ FROM rust:1.94-bookworm AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-RUN cargo build --release -p autoanneal
+# Build with limited parallelism to prevent OOM on ARM64 runners
+RUN CARGO_BUILD_JOBS=1 cargo build --release -p autoanneal
 
 FROM debian:bookworm-slim
 
