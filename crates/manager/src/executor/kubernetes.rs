@@ -392,11 +392,15 @@ mod tests {
 
     #[test]
     fn test_parse_timeout_default_values() {
-        // Invalid minutes defaults to 30 minutes
+        // Bare invalid value (no suffix) defaults to 1800 seconds (30 minutes)
         assert_eq!(parse_timeout("abc"), 1800);
         assert_eq!(parse_timeout("10x"), 1800);
-        // Invalid hours defaults to 1 hour
+        // Invalid hours defaults to 1 hour (3600 seconds)
         assert_eq!(parse_timeout("xh"), 3600);
+        // Invalid minutes defaults to 30 minutes (1800 seconds)
+        assert_eq!(parse_timeout("xm"), 30 * 60);
+        // Invalid seconds defaults to 1800 seconds
+        assert_eq!(parse_timeout("xs"), 1800);
     }
 
     #[test]
