@@ -100,6 +100,7 @@ fn default_true() -> bool { true }
 fn default_namespace() -> String { "default".into() }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkerDefaults {
     #[serde(default = "default_max_budget")]
     pub max_budget: String,
@@ -223,6 +224,7 @@ fn default_issue_budget() -> String { "3.00".into() }
 fn default_context_window() -> u64 { 128000 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct RepoEntry {
     pub name: String,
     pub repo: String,
