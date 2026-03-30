@@ -191,9 +191,13 @@ impl CleanupGuard {
 
 /// Validates that the PR's head branch matches the expected branch name.
 ///
-/// Returns `true` if the branches match or if the branch name cannot be determined
-/// (in which case we log a warning but still allow the close to proceed only if
-/// `expected_branch` is `None`). Returns `false` if there is a definitive mismatch.
+/// Returns `true` if the branches match. Returns `false` if:
+/// - The PR cannot be queried (command fails)
+/// - The head branch cannot be parsed from the output
+/// - There is a definitive mismatch between the expected and actual branch
+///
+/// This conservative approach (fail closed) ensures we don't accidentally close
+/// the wrong PR if state becomes inconsistent.
 fn validate_pr_branch(pr_number: &u64, repo_slug: &str, expected_branch: &str) -> bool {
     let output = match std::process::Command::new("gh")
         .args([
