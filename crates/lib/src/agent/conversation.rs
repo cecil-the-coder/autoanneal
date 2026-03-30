@@ -1854,7 +1854,7 @@ mod tests {
 
         #[async_trait::async_trait]
         impl ToolHandler for EmptyDefsHandler {
-            async fn execute(&self, _name: &str, _input: &serde_json::Value) -> (String, bool) {
+            async fn execute(&mut self, _name: &str, _input: &serde_json::Value) -> (String, bool) {
                 ("should not be called".to_string(), true)
             }
             fn definitions(&self) -> Vec<ToolDefinition> {
