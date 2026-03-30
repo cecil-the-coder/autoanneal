@@ -137,4 +137,26 @@ mod tests {
             assert!(output.contains(name), "missing metric: {name}");
         }
     }
+
+    #[test]
+    fn test_metrics_error_display() {
+        let encode_err = MetricsError::Encode("test error".to_string());
+        assert_eq!(encode_err.to_string(), "test error");
+
+        let utf8_bytes = vec![0x80, 0x81, 0x82];
+        let utf8_result = String::from_utf8(utf8_bytes);
+        let utf8_err = MetricsError::Utf8(utf8_result.unwrap_err());
+        assert!(utf8_err.to_string().contains("prometheus encoder produced invalid UTF-8"));
+    }
+
+    #[test]
+    fn test_metrics_error_from_utf8() {
+        let bytes = vec![0xff, 0xfe];
+        let result = String::from_utf8(bytes);
+        let err: MetricsError = result.unwrap_err().into();
+        match err {
+            MetricsError::Utf8(_) => (), // expected
+            _ => panic!("expected Utf8 variant"),
+        }
+    }
 }

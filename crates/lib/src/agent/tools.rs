@@ -369,8 +369,13 @@ impl ToolExecutor {
                 #[cfg(target_os = "linux")]
                 unsafe {
                     cmd.pre_exec(|| {
+                        use std::sync::Once;
+                        static OOM_WARN_ONCE: Once = Once::new();
+
                         if let Err(e) = std::fs::write("/proc/self/oom_score_adj", "1000") {
-                            tracing::warn!(error = %e, "failed to write oom_score_adj; OOM protection not applied");
+                            OOM_WARN_ONCE.call_once(|| {
+                                tracing::warn!(error = %e, "failed to write oom_score_adj; OOM protection not applied (suppressing further warnings)");
+                            });
                         }
 
                         // Cap virtual memory at 3 GiB — child gets allocation

@@ -61,7 +61,7 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
             )
                 .into_response(),
             Err(e) => {
-                let body = crate::server::TriggerResponse {
+                let body = ErrorResponse {
                     status: "error".into(),
                     message: format!("metrics encoding failed: {}", e),
                 };
@@ -77,12 +77,6 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-async fn list_runs(
-    State(state): State<AppState>,
-) -> Json<Vec<RunRecord>> {
-    Json(state.state_store.recent_runs())
-}
-
 #[derive(Deserialize)]
 struct TriggerRequest {
     repo: String,
@@ -91,8 +85,20 @@ struct TriggerRequest {
     overrides: Option<crate::scheduler::TriggerOverrides>,
 }
 
+async fn list_runs(
+    State(state): State<AppState>,
+) -> Json<Vec<RunRecord>> {
+    Json(state.state_store.recent_runs())
+}
+
 #[derive(Serialize)]
 struct TriggerResponse {
+    status: String,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
     status: String,
     message: String,
 }
