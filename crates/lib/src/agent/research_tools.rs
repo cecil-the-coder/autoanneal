@@ -12,6 +12,66 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 
 // ---------------------------------------------------------------------------
+// Response size limit
+// ---------------------------------------------------------------------------
+
+/// Maximum allowed API response body size in bytes (10 MB).
+const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
+
+/// Read a response body as text, enforcing a maximum size limit.
+/// Returns a descriptive error if the body exceeds `MAX_RESPONSE_SIZE`.
+async fn read_response_text(resp: reqwest::Response) -> Result<String, ToolError> {
+    if let Some(len) = resp.content_length() {
+        if len as usize > MAX_RESPONSE_SIZE {
+            return Err(ToolError::InvalidInput(format!(
+                "Response body too large: {len} bytes exceeds the {}-byte limit",
+                MAX_RESPONSE_SIZE
+            )));
+        }
+    }
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| ToolError::InvalidInput(format!("Failed to read response body: {e}")))?;
+    if body.len() > MAX_RESPONSE_SIZE {
+        return Err(ToolError::InvalidInput(format!(
+            "Response body too large: {} bytes exceeds the {}-byte limit",
+            body.len(),
+            MAX_RESPONSE_SIZE
+        )));
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// Read a response body and deserialize as JSON, enforcing a maximum size limit.
+/// Returns a descriptive error if the body exceeds `MAX_RESPONSE_SIZE`.
+async fn read_response_json<T: serde::de::DeserializeOwned>(
+    resp: reqwest::Response,
+) -> Result<T, ToolError> {
+    if let Some(len) = resp.content_length() {
+        if len as usize > MAX_RESPONSE_SIZE {
+            return Err(ToolError::InvalidInput(format!(
+                "Response body too large: {len} bytes exceeds the {}-byte limit",
+                MAX_RESPONSE_SIZE
+            )));
+        }
+    }
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| ToolError::InvalidInput(format!("Failed to read response body: {e}")))?;
+    if body.len() > MAX_RESPONSE_SIZE {
+        return Err(ToolError::InvalidInput(format!(
+            "Response body too large: {} bytes exceeds the {}-byte limit",
+            body.len(),
+            MAX_RESPONSE_SIZE
+        )));
+    }
+    serde_json::from_slice(&body)
+        .map_err(|e| ToolError::InvalidInput(format!("Failed to parse JSON response: {e}")))
+}
+
+// ---------------------------------------------------------------------------
 // Research tool executor
 // ---------------------------------------------------------------------------
 
@@ -194,7 +254,7 @@ impl ResearchToolExecutor {
 
         match result {
             Ok(resp) if resp.status().is_success() => {
-                match resp.json::<ExaSearchResponse>().await {
+                match read_response_json::<ExaSearchResponse>(resp).await {
                     Ok(data) => {
                         // Track cost (convert dollars to micro-dollars)
                         if let Some(cost) = &data.cost_dollars {
@@ -205,12 +265,12 @@ impl ResearchToolExecutor {
                         }
                         Ok(format_web_search_results(query, &data))
                     }
-                    Err(e) => Err(ToolError::InvalidInput(format!("Failed to parse Exa response: {e}"))),
+                    Err(e) => Err(e),
                 }
             }
             Ok(resp) => {
                 let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
+                let body = read_response_text(resp).await.unwrap_or_default();
                 Err(ToolError::InvalidInput(format!("Exa API returned {status}: {body}")))
             }
             Err(e) => Err(ToolError::InvalidInput(format!("Failed to reach Exa API: {e}"))),
@@ -246,14 +306,14 @@ impl ResearchToolExecutor {
 
         match result {
             Ok(resp) if resp.status().is_success() => {
-                match resp.json::<OsvResponse>().await {
+                match read_response_json::<OsvResponse>(resp).await {
                     Ok(data) => Ok(format_vulnerability_results(pkg_name, ecosystem, &data)),
-                    Err(e) => Err(ToolError::InvalidInput(format!("Failed to parse OSV response: {e}"))),
+                    Err(e) => Err(e),
                 }
             }
             Ok(resp) => {
                 let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
+                let body = read_response_text(resp).await.unwrap_or_default();
                 Err(ToolError::InvalidInput(format!("OSV API returned {status}: {body}")))
             }
             Err(e) => Err(ToolError::InvalidInput(format!("Failed to reach OSV API: {e}"))),
@@ -294,9 +354,9 @@ impl ResearchToolExecutor {
                 Ok(format!("NOT FOUND: {name} not found on crates.io"))
             }
             Ok(resp) if resp.status().is_success() => {
-                match resp.json::<CratesIoResponse>().await {
+                match read_response_json::<CratesIoResponse>(resp).await {
                     Ok(data) => Ok(format_crates_io_result(name, &data)),
-                    Err(e) => Err(ToolError::InvalidInput(format!("Failed to parse crates.io response: {e}"))),
+                    Err(e) => Err(e),
                 }
             }
             Ok(resp) => {
@@ -319,9 +379,9 @@ impl ResearchToolExecutor {
                 Ok(format!("NOT FOUND: {name} not found on npm"))
             }
             Ok(resp) if resp.status().is_success() => {
-                match resp.json::<NpmResponse>().await {
+                match read_response_json::<NpmResponse>(resp).await {
                     Ok(data) => Ok(format_npm_result(name, &data)),
-                    Err(e) => Err(ToolError::InvalidInput(format!("Failed to parse npm response: {e}"))),
+                    Err(e) => Err(e),
                 }
             }
             Ok(resp) => {
@@ -344,9 +404,9 @@ impl ResearchToolExecutor {
                 Ok(format!("NOT FOUND: {name} not found on PyPI"))
             }
             Ok(resp) if resp.status().is_success() => {
-                match resp.json::<PyPiResponse>().await {
+                match read_response_json::<PyPiResponse>(resp).await {
                     Ok(data) => Ok(format_pypi_result(name, &data)),
-                    Err(e) => Err(ToolError::InvalidInput(format!("Failed to parse PyPI response: {e}"))),
+                    Err(e) => Err(e),
                 }
             }
             Ok(resp) => {
