@@ -457,7 +457,7 @@ fn apply_overrides(entry: &RepoEntry, overrides: Option<&TriggerOverrides>) -> R
 }
 
 /// Parse a duration string like "30m", "1h", "1h30m", "90s" into a `Duration`.
-/// Falls back to `DEFAULT_TIMEOUT_SECS` on failure.
+/// Falls back to `DEFAULT_TIMEOUT_SECS` on failure or overflow.
 fn parse_timeout_str(s: &str) -> Duration {
     let s = s.trim();
     if s.is_empty() {
@@ -478,19 +478,30 @@ fn parse_timeout_str(s: &str) -> Duration {
             current_num.clear();
 
             let secs = match c {
-                'h' | 'H' => n * 3600,
-                'm' | 'M' => n * 60,
-                's' | 'S' => n,
+                'h' | 'H' => n.checked_mul(3600),
+                'm' | 'M' => n.checked_mul(60),
+                's' | 'S' => Some(n),
                 _ => return Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             };
-            total_secs += secs;
+
+            let Some(secs) = secs else {
+                return Duration::from_secs(DEFAULT_TIMEOUT_SECS);
+            };
+
+            total_secs = match total_secs.checked_add(secs) {
+                Some(v) => v,
+                None => return Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            };
         }
     }
 
     // Bare number with no suffix: treat as seconds.
     if !current_num.is_empty() {
         if let Ok(n) = current_num.parse::<u64>() {
-            total_secs += n;
+            total_secs = match total_secs.checked_add(n) {
+                Some(v) => v,
+                None => return Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            };
         }
     }
 
