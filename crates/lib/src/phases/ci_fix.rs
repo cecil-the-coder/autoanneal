@@ -23,21 +23,28 @@ struct FixingLabelGuard {
 
 impl Drop for FixingLabelGuard {
     fn drop(&mut self) {
+        let pr_number = self.pr_number;
+        let repo_slug = self.repo_slug.clone();
         info!(
-            pr_number = self.pr_number,
+            pr_number = pr_number,
             "removing autoanneal:fixing label"
         );
-        let _ = std::process::Command::new("gh")
-            .args([
-                "pr",
-                "edit",
-                &self.pr_number.to_string(),
-                "--remove-label",
-                "autoanneal:fixing",
-                "-R",
-                &self.repo_slug,
-            ])
-            .output();
+        // Offload blocking std::process::Command to tokio's blocking thread pool
+        // so we don't stall the async runtime. Fire-and-forget is acceptable
+        // here since the original code also silently discarded errors.
+        let _ = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("gh")
+                .args([
+                    "pr",
+                    "edit",
+                    &pr_number.to_string(),
+                    "--remove-label",
+                    "autoanneal:fixing",
+                    "-R",
+                    &repo_slug,
+                ])
+                .output()
+        });
     }
 }
 
