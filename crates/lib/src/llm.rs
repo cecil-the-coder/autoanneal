@@ -43,29 +43,90 @@ pub struct LlmResponse<T> {
 /// Uses `find` with depth limit, excludes common noise directories,
 /// and truncates to avoid wasting tokens.
 pub(crate) async fn get_dir_context(working_dir: &Path) -> String {
-    let output = tokio::time::timeout(
-        Duration::from_secs(30),
-        tokio::process::Command::new("find")
-            .args([
-                ".",
-                "-maxdepth", "3",
-                "-not", "-path", "./.git/*",
-                "-not", "-path", "./node_modules/*",
-                "-not", "-path", "./target/*",
-                "-not", "-path", "./.venv/*",
-                "-not", "-path", "./vendor/*",
-                "-not", "-path", "./__pycache__/*",
-            ])
-            .current_dir(working_dir)
-            .output(),
-    )
+    use tokio::io::AsyncReadExt;
+    use tracing::warn;
+
+    // Spawn the child process separately so we can kill it on timeout.
+    let mut child = match tokio::process::Command::new("find")
+        .args([
+            ".",
+            "-maxdepth", "3",
+            "-not", "-path", "./.git/*",
+            "-not", "-path", "./node_modules/*",
+            "-not", "-path", "./target/*",
+            "-not", "-path", "./.venv/*",
+            "-not", "-path", "./vendor/*",
+            "-not", "-path", "./__pycache__/*",
+        ])
+        .current_dir(working_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "failed to spawn find command");
+            return String::new();
+        }
+    };
+
+    // Take stdout/stderr handles and spawn readers.
+    let stdout_handle = child.stdout.take();
+    let stderr_handle = child.stderr.take();
+
+    let stdout_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        if let Some(mut out) = stdout_handle {
+            let _ = out.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        if let Some(mut err) = stderr_handle {
+            let _ = err.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+
+    // Wait with timeout and kill the process if it exceeds.
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let status = child.wait().await;
+        let stdout_buf = stdout_task.await.unwrap_or_default();
+        let stderr_buf = stderr_task.await.unwrap_or_default();
+        (status, stdout_buf, stderr_buf)
+    })
     .await;
 
-    let tree = match output {
-        Ok(Ok(out)) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).to_string()
+    let (status, stdout, stderr) = match result {
+        Ok((status, stdout, stderr)) => (status, stdout, stderr),
+        Err(_) => {
+            // Timeout: kill the child process.
+            warn!("find command timed out after 30 seconds, killing process");
+            let _ = child.kill().await;
+            // Abort the reader tasks and await them to ensure cleanup.
+            stdout_task.abort();
+            stderr_task.abort();
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            return String::new();
         }
-        _ => return String::new(),
+    };
+
+    let tree = match status {
+        Ok(exit) if exit.success() => {
+            String::from_utf8_lossy(&stdout).to_string()
+        }
+        Ok(exit) => {
+            let code = exit.code().unwrap_or(-1);
+            let stderr_str = String::from_utf8_lossy(&stderr);
+            warn!(exit_code = code, stderr = %stderr_str, "find command failed");
+            return String::new();
+        }
+        Err(e) => {
+            warn!(error = %e, "find command execution failed");
+            return String::new();
+        }
     };
 
     // Truncate to ~200 lines to keep it compact.

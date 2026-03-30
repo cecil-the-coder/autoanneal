@@ -199,11 +199,14 @@ impl ToolExecutor {
         } else {
             let parent = path.parent().filter(|p| p.exists());
             match (parent, path.file_name()) {
-                (Some(p), Some(name)) => p.canonicalize().map_err(ToolError::IoError)?.join(name),
+                (Some(p), Some(name)) => p.canonicalize()
+                .map_err(|e| ToolError::InvalidInput(format!("cannot canonicalize parent: {e}")))?
+                .join(name),
                 _ => {
-                    // Cannot canonicalize further — fall back to the path
-                    // as-is so the prefix check still applies.
-                    path.to_path_buf()
+                    // Cannot canonicalize further — return error to maintain TOCTOU protection.
+                    return Err(ToolError::InvalidInput(
+                        "cannot canonicalize path: no existing parent directory".into(),
+                    ));
                 }
             }
         };
