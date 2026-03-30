@@ -185,6 +185,9 @@ async fn run_batch(
             let worktree_path =
                 create_worktree(&clone_path, &format!("batch-group-{group_idx}")).await?;
 
+            // Record the base commit before any tasks modify the worktree.
+            let base_commit = get_head_sha(&worktree_path).await?;
+
             let output = run_group_in_worktree(
                 &worktree_path,
                 &tasks,
@@ -201,7 +204,7 @@ async fn run_batch(
             let patch = if output.as_ref().map_or(false, |o| {
                 o.results.iter().any(|r| matches!(r.status, TaskStatus::Success))
             }) {
-                generate_patch(&worktree_path).await.ok()
+                generate_patch(&worktree_path, &base_commit).await.ok()
             } else {
                 None
             };
@@ -640,8 +643,8 @@ async fn remove_worktree(repo_dir: &Path, worktree_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Generate a unified diff of all staged changes in the worktree relative to HEAD.
-async fn generate_patch(worktree_path: &Path) -> Result<String> {
+/// Generate a multi-commit patch of all task commits since the base commit.
+async fn generate_patch(worktree_path: &Path, base_commit: &str) -> Result<String> {
     // Stage any remaining unstaged changes (shouldn't be any if each task committed).
     stage_all(worktree_path).await?;
 
@@ -653,7 +656,6 @@ async fn generate_patch(worktree_path: &Path) -> Result<String> {
         .await
         .context("failed to check staged changes")?;
     if !status.success() {
-        // There are uncommitted staged changes — commit them.
         let _ = tokio::process::Command::new("git")
             .args(["commit", "-m", "autoanneal: uncommitted task changes"])
             .current_dir(worktree_path)
@@ -661,10 +663,10 @@ async fn generate_patch(worktree_path: &Path) -> Result<String> {
             .await;
     }
 
-    // Generate a multi-commit patch using format-patch.
-    // This produces one patch per commit since the worktree branched from HEAD.
+    // Generate one patch per commit since the base (pre-task) commit.
+    let range = format!("{base_commit}..HEAD");
     let output = tokio::process::Command::new("git")
-        .args(["format-patch", "HEAD", "--stdout"])
+        .args(["format-patch", &range, "--stdout"])
         .current_dir(worktree_path)
         .output()
         .await
@@ -677,6 +679,17 @@ async fn generate_patch(worktree_path: &Path) -> Result<String> {
 
     let patch = String::from_utf8_lossy(&output.stdout).to_string();
     Ok(patch)
+}
+
+/// Get the current HEAD SHA.
+async fn get_head_sha(dir: &Path) -> Result<String> {
+    let output = tokio::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .await
+        .context("failed to get HEAD SHA")?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 // ---------------------------------------------------------------------------
