@@ -30,9 +30,12 @@ Output a JSON code block:
 {
   "score": 7,
   "verdict": "approve|needs_work|reject",
-  "summary": "Brief review summary"
+  "summary": "Brief review summary",
+  "deductions": ["Specific reason for each point deducted from 10"]
 }
 ```
+
+IMPORTANT: If your score is below 10, you MUST list specific, concrete deductions explaining what prevents a higher score. Each deduction should name the exact issue, not a vague concern. If there are no deductions, the score must be 10.
 
 - Score 8-10 + "approve": Valuable changes, ready for human review
 - Score 5-7 + "needs_work": Valuable changes but have fixable issues

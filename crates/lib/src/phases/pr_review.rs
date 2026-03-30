@@ -139,12 +139,24 @@ pub async fn run(
             score: 5,
             verdict: "needs_work".to_string(),
             summary: "Critic did not return structured output.".to_string(),
+            deductions: vec![],
         });
+
+        // Append deductions to summary so the fix agent knows exactly what to address.
+        let summary = if critic.deductions.is_empty() {
+            critic.summary
+        } else {
+            format!(
+                "{}\n\nDeductions:\n{}",
+                critic.summary,
+                critic.deductions.iter().map(|d| format!("- {d}")).collect::<Vec<_>>().join("\n")
+            )
+        };
 
         CriticOutput {
             score: critic.score,
             verdict: critic.verdict,
-            summary: critic.summary,
+            summary,
             cost_usd: critic_response.cost_usd,
             made_fixes: false,
             score_unverified: false,
@@ -183,9 +195,8 @@ pub async fn run(
     }
 
     // 6. Score < fix_threshold -- the PR needs work. Try to fix it.
-    // Don't attempt fixes on rejected PRs (shouldn't exist) or approved PRs
-    // (fixing an approved PR invents problems and degrades quality).
-    if critic_output.verdict == "reject" || critic_output.verdict == "approve" {
+    // Don't attempt fixes on rejected PRs -- they shouldn't exist at all.
+    if critic_output.verdict == "reject" {
         let comment = format!(
             "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}",
             critic_output.score, critic_output.verdict, critic_output.summary
@@ -568,6 +579,7 @@ async fn run_critic_review(
         score: 5,
         verdict: "needs_work".to_string(),
         summary: "Re-review did not return structured output.".to_string(),
+        deductions: vec![],
     });
 
     Ok((CriticOutput {

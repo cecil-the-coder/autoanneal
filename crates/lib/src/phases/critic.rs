@@ -90,6 +90,7 @@ pub async fn run(
         score: 5,
         verdict: "needs_work".to_string(),
         summary: "Critic did not return structured output.".to_string(),
+        deductions: vec![],
     });
 
     info!(

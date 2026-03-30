@@ -197,6 +197,8 @@ pub struct CriticResult {
     pub score: u32,
     pub verdict: String,
     pub summary: String,
+    #[serde(default)]
+    pub deductions: Vec<String>,
 }
 
 /// An external (non-autoanneal) PR detected during preflight.
