@@ -165,7 +165,19 @@ impl Scheduler {
                     match msg {
                         Some(msg) => {
                             if let Some(entry) = self.config.repos.iter().find(|r| r.name == msg.repo_name) {
+                                let has_overrides = msg.overrides.is_some();
                                 let entry = apply_overrides(entry, msg.overrides.as_ref());
+                                if has_overrides {
+                                    info!(
+                                        repo = %entry.name,
+                                        force_review = ?entry.force_review,
+                                        review_prs = ?entry.review_prs,
+                                        skip_after = ?entry.skip_after,
+                                        max_open_prs = ?entry.max_open_prs,
+                                        review_fix_threshold = ?entry.review_fix_threshold,
+                                        "trigger with overrides applied"
+                                    );
+                                }
                                 self.launch_run(&entry, msg.reason).await;
                             } else {
                                 warn!(repo = %msg.repo_name, "trigger for unknown repo");

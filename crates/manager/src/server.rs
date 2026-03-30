@@ -77,7 +77,7 @@ async fn list_runs(
 struct TriggerRequest {
     repo: String,
     /// Optional overrides for this run only.
-    #[serde(flatten)]
+    #[serde(default)]
     overrides: Option<crate::scheduler::TriggerOverrides>,
 }
 
