@@ -18,27 +18,45 @@ use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 /// Maximum allowed API response body size in bytes (10 MB).
 const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
 
+/// Check if content length exceeds MAX_RESPONSE_SIZE.
+/// Returns an error message if too large, None if acceptable.
+fn check_content_length(len: u64) -> Option<ToolError> {
+    // Safely handle conversion from u64 to usize for 32-bit targets
+    let len_usize = match len.try_into() {
+        Ok(n) => n,
+        Err(_) => return Some(ToolError::InvalidInput(format!(
+            "Response body too large: {len} bytes exceeds the {}-byte limit",
+            MAX_RESPONSE_SIZE
+        ))),
+    };
+    
+    if len_usize > MAX_RESPONSE_SIZE {
+        Some(ToolError::InvalidInput(format!(
+            "Response body too large: {len} bytes exceeds the {}-byte limit",
+            MAX_RESPONSE_SIZE
+        )))
+    } else {
+        None
+    }
+}
+
 /// Read a response body as text, enforcing a maximum size limit.
 /// Returns a descriptive error if the body exceeds `MAX_RESPONSE_SIZE`.
-async fn read_response_text(resp: reqwest::Response) -> Result<String, ToolError> {
+async fn read_response_text(
+    resp: reqwest::Response,
+    api_name: &str,
+) -> Result<String, ToolError> {
     if let Some(len) = resp.content_length() {
-        if len as usize > MAX_RESPONSE_SIZE {
-            return Err(ToolError::InvalidInput(format!(
-                "Response body too large: {len} bytes exceeds the {}-byte limit",
-                MAX_RESPONSE_SIZE
-            )));
+        if let Some(err) = check_content_length(len) {
+            return Err(err);
         }
     }
     let body = resp
         .bytes()
         .await
-        .map_err(|e| ToolError::InvalidInput(format!("Failed to read response body: {e}")))?;
-    if body.len() > MAX_RESPONSE_SIZE {
-        return Err(ToolError::InvalidInput(format!(
-            "Response body too large: {} bytes exceeds the {}-byte limit",
-            body.len(),
-            MAX_RESPONSE_SIZE
-        )));
+        .map_err(|e| ToolError::InvalidInput(format!("Failed to read {api_name} response body: {e}")))?;
+    if let Some(err) = check_content_length(body.len() as u64) {
+        return Err(err);
     }
     Ok(String::from_utf8_lossy(&body).into_owned())
 }
@@ -47,28 +65,11 @@ async fn read_response_text(resp: reqwest::Response) -> Result<String, ToolError
 /// Returns a descriptive error if the body exceeds `MAX_RESPONSE_SIZE`.
 async fn read_response_json<T: serde::de::DeserializeOwned>(
     resp: reqwest::Response,
+    api_name: &str,
 ) -> Result<T, ToolError> {
-    if let Some(len) = resp.content_length() {
-        if len as usize > MAX_RESPONSE_SIZE {
-            return Err(ToolError::InvalidInput(format!(
-                "Response body too large: {len} bytes exceeds the {}-byte limit",
-                MAX_RESPONSE_SIZE
-            )));
-        }
-    }
-    let body = resp
-        .bytes()
-        .await
-        .map_err(|e| ToolError::InvalidInput(format!("Failed to read response body: {e}")))?;
-    if body.len() > MAX_RESPONSE_SIZE {
-        return Err(ToolError::InvalidInput(format!(
-            "Response body too large: {} bytes exceeds the {}-byte limit",
-            body.len(),
-            MAX_RESPONSE_SIZE
-        )));
-    }
-    serde_json::from_slice(&body)
-        .map_err(|e| ToolError::InvalidInput(format!("Failed to parse JSON response: {e}")))
+    let body = read_response_text(resp, api_name).await?;
+    serde_json::from_str(&body)
+        .map_err(|e| ToolError::InvalidInput(format!("Failed to parse {api_name} response: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +255,7 @@ impl ResearchToolExecutor {
 
         match result {
             Ok(resp) if resp.status().is_success() => {
-                match read_response_json::<ExaSearchResponse>(resp).await {
+                match read_response_json::<ExaSearchResponse>(resp, "Exa").await {
                     Ok(data) => {
                         // Track cost (convert dollars to micro-dollars)
                         if let Some(cost) = &data.cost_dollars {
@@ -270,7 +271,7 @@ impl ResearchToolExecutor {
             }
             Ok(resp) => {
                 let status = resp.status();
-                let body = read_response_text(resp).await.unwrap_or_default();
+                let body = read_response_text(resp, "Exa").await?;
                 Err(ToolError::InvalidInput(format!("Exa API returned {status}: {body}")))
             }
             Err(e) => Err(ToolError::InvalidInput(format!("Failed to reach Exa API: {e}"))),
@@ -306,14 +307,14 @@ impl ResearchToolExecutor {
 
         match result {
             Ok(resp) if resp.status().is_success() => {
-                match read_response_json::<OsvResponse>(resp).await {
+                match read_response_json::<OsvResponse>(resp, "OSV").await {
                     Ok(data) => Ok(format_vulnerability_results(pkg_name, ecosystem, &data)),
                     Err(e) => Err(e),
                 }
             }
             Ok(resp) => {
                 let status = resp.status();
-                let body = read_response_text(resp).await.unwrap_or_default();
+                let body = read_response_text(resp, "OSV").await?;
                 Err(ToolError::InvalidInput(format!("OSV API returned {status}: {body}")))
             }
             Err(e) => Err(ToolError::InvalidInput(format!("Failed to reach OSV API: {e}"))),
@@ -354,7 +355,7 @@ impl ResearchToolExecutor {
                 Ok(format!("NOT FOUND: {name} not found on crates.io"))
             }
             Ok(resp) if resp.status().is_success() => {
-                match read_response_json::<CratesIoResponse>(resp).await {
+                match read_response_json::<CratesIoResponse>(resp, "crates.io").await {
                     Ok(data) => Ok(format_crates_io_result(name, &data)),
                     Err(e) => Err(e),
                 }
@@ -379,7 +380,7 @@ impl ResearchToolExecutor {
                 Ok(format!("NOT FOUND: {name} not found on npm"))
             }
             Ok(resp) if resp.status().is_success() => {
-                match read_response_json::<NpmResponse>(resp).await {
+                match read_response_json::<NpmResponse>(resp, "npm").await {
                     Ok(data) => Ok(format_npm_result(name, &data)),
                     Err(e) => Err(e),
                 }
@@ -404,7 +405,7 @@ impl ResearchToolExecutor {
                 Ok(format!("NOT FOUND: {name} not found on PyPI"))
             }
             Ok(resp) if resp.status().is_success() => {
-                match read_response_json::<PyPiResponse>(resp).await {
+                match read_response_json::<PyPiResponse>(resp, "PyPI").await {
                     Ok(data) => Ok(format_pypi_result(name, &data)),
                     Err(e) => Err(e),
                 }
