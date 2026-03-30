@@ -330,14 +330,6 @@ pub async fn run(
                 let push_ok = push_changes(&clone_dir, &pr.branch).await.is_ok();
 
                 if push_ok {
-                    // Capture what the fix agent said it did.
-                    let fix_description = if fix_response.text.is_empty() {
-                        "Changes applied.".to_string()
-                    } else {
-                        // Take first ~500 chars of the fix response as a summary.
-                        fix_response.text.chars().take(500).collect::<String>()
-                    };
-
                     // Re-review the fixed diff to get an updated score.
                     let re_review_budget = (budget - total_cost).max(0.0).min(0.50);
                     let (final_score, final_verdict, final_summary) = if re_review_budget >= 0.05 {
@@ -365,10 +357,10 @@ pub async fn run(
                     };
 
                     let comment = format!(
-                        "## Autoanneal Review & Fix\n\n**Score:** {}/10 → {}/10\n**Verdict:** {} → {}\n\n### Issues Found\n{}\n\n### Fixes Applied\n{}\n\n_Automated fixes have been pushed to this branch._",
+                        "## Autoanneal Review & Fix\n\n**Score:** {}/10 → {}/10\n**Verdict:** {} → {}\n\n### Issues Found\n{}\n\n### After Fix\n{}\n\n_Automated fixes have been pushed to this branch._",
                         critic_output.score, final_score,
                         critic_output.verdict, final_verdict,
-                        critic_output.summary, fix_description,
+                        critic_output.summary, final_summary,
                     );
                     leave_comment(repo_slug, pr.number, &comment).await;
                     add_reviewed_label(repo_slug, pr.number).await;
