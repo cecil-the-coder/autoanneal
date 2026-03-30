@@ -967,7 +967,7 @@ mod tests {
 
     #[test]
     fn test_review_filter_recent() {
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let now = chrono::Utc::now().to_rfc3339();
         let recent = mock_pr(1, "feat/a", &[], "MERGEABLE", &now, "alice");
         let old = mock_pr(2, "feat/b", &[], "MERGEABLE", "2025-01-01T00:00:00Z", "bob");
         let prs: Vec<&serde_json::Value> = vec![&recent, &old];

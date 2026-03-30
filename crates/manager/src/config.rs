@@ -100,6 +100,7 @@ fn default_true() -> bool { true }
 fn default_namespace() -> String { "default".into() }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkerDefaults {
     #[serde(default = "default_timeout")]
     pub timeout: String,
@@ -215,6 +216,7 @@ fn default_max_issues() -> usize { 2 }
 fn default_context_window() -> u64 { 128000 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct RepoEntry {
     pub name: String,
     pub repo: String,
