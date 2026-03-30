@@ -540,7 +540,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ToolHandler for MockToolHandler {
-        async fn execute(&self, _name: &str, _input: &serde_json::Value) -> (String, bool) {
+        async fn execute(&mut self, _name: &str, _input: &serde_json::Value) -> (String, bool) {
             ("mock result".to_string(), false)
         }
 

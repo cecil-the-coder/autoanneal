@@ -1776,7 +1776,7 @@ mod tests {
 
         #[async_trait::async_trait]
         impl ToolHandler for SlowToolHandler {
-            async fn execute(&self, _name: &str, _input: &serde_json::Value) -> (String, bool) {
+            async fn execute(&mut self, _name: &str, _input: &serde_json::Value) -> (String, bool) {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 ("slow result".to_string(), false)
             }
