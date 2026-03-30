@@ -145,6 +145,7 @@ impl ToolExecutor {
         // NOTE: We canonicalize first and store the result to avoid borrowing `self`
         // across the check, which would prevent calling `working_dir_canonicalize()`.
         let canonical_result = candidate.canonicalize();
+        let path_existed = canonical_result.is_ok();
         let resolved = if let Ok(canonical) = canonical_result {
             // Verify the canonical path is within working directory before accepting it.
             if !canonical.starts_with(&wd_canonical) {
@@ -204,7 +205,7 @@ impl ToolExecutor {
         // during the walk. If the path now exists (created concurrently),
         // re-canonicalize and verify; if not, we can only validate the
         // ancestor bound.
-        if canonical_result.is_err() {
+        if !path_existed {
             // Path didn't exist when we started; if it exists now, re-verify.
             if let Ok(canonical_now) = resolved.canonicalize() {
                 if !canonical_now.starts_with(&wd_canonical) {
