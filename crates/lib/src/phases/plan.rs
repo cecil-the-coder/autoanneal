@@ -142,7 +142,7 @@ pub async fn create_pr(
 
     // Guard against models echoing placeholder text from the prompt.
     let title_lower = pr_body.title.to_lowercase();
-    if title_lower.contains("pr title here") || pr_body.title.len() < 10 {
+    if title_lower.contains("pr title here, max 72 chars") || pr_body.title.len() < 10 {
         warn!(title = %pr_body.title, "PR title looks like a placeholder, generating fallback");
         pr_body.title = if improvements.is_empty() {
             "autoanneal: automated improvements".to_string()
