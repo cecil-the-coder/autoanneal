@@ -33,7 +33,6 @@ pub async fn run(
     stack_info: &StackInfo,
     branch_name: &str,
     model: &str,
-    budget: f64,
     context_window: u64,
 ) -> Result<ImplementOutput> {
     if improvements.is_empty() {
@@ -58,7 +57,6 @@ pub async fn run(
         let batch_end = (batch_start + MAX_PARALLEL_GROUPS).min(groups.len());
         let batch_groups = &groups[batch_start..batch_end];
 
-        let remaining_budget = budget - total_cost_usd;
         let batch_output = run_batch(
             clone_path,
             improvements,
@@ -66,7 +64,6 @@ pub async fn run(
             stack_info,
             branch_name,
             model,
-            remaining_budget,
             context_window,
         )
         .await?;
@@ -152,7 +149,6 @@ async fn run_batch(
     stack_info: &StackInfo,
     branch_name: &str,
     model: &str,
-    budget: f64,
     context_window: u64,
 ) -> Result<BatchOutput> {
     let num_groups = batch_groups.len();
@@ -162,7 +158,6 @@ async fn run_batch(
             total_cost_usd: 0.0,
         });
     }
-    let per_group_budget = budget / num_groups as f64;
 
     // Shared atomic cost tracker so groups can see aggregate spending.
     let shared_cost = Arc::new(AtomicU64::new(0));
@@ -194,7 +189,6 @@ async fn run_batch(
                 &task_indices,
                 &stack_info,
                 &model,
-                per_group_budget,
                 &shared_cost,
                 context_window,
             )
@@ -271,7 +265,6 @@ async fn run_group_in_worktree(
     _task_indices: &[usize],
     stack_info: &StackInfo,
     model: &str,
-    group_budget: f64,
     shared_cost: &Arc<AtomicU64>,
     context_window: u64,
 ) -> Result<GroupOutput> {
@@ -281,26 +274,10 @@ async fn run_group_in_worktree(
     let total_tasks = tasks.len();
 
     for (idx, improvement) in tasks.iter().enumerate() {
-        let remaining_tasks = total_tasks - idx;
-        let remaining_budget = group_budget - group_cost;
-        let per_task_budget = (remaining_budget / remaining_tasks as f64).min(group_budget * 0.30);
-
-        if per_task_budget <= 0.0 {
-            warn!(task = %improvement.title, "budget exhausted, skipping remaining tasks");
-            results.push(TaskResult {
-                title: improvement.title.clone(),
-                status: TaskStatus::Skipped("budget exhausted".to_string()),
-                cost_usd: 0.0,
-                files_changed: vec![],
-            });
-            continue;
-        }
-
         info!(
             task = %improvement.title,
             index = idx + 1,
             total = total_tasks,
-            budget = per_task_budget,
             "starting implementation task in worktree"
         );
 
@@ -309,7 +286,6 @@ async fn run_group_in_worktree(
             improvement,
             stack_info,
             model,
-            per_task_budget,
             context_window,
         )
         .await;
@@ -360,7 +336,6 @@ async fn run_single_task(
     improvement: &Improvement,
     stack_info: &StackInfo,
     model: &str,
-    per_task_budget: f64,
     context_window: u64,
 ) -> Result<TaskResult> {
     // Step 1: Verify clean state.
@@ -414,7 +389,6 @@ async fn run_single_task(
         prompt,
         system_prompt: Some(implement_system_prompt()),
         model: model.to_string(),
-        max_budget_usd: per_task_budget,
         max_turns: 100,
         effort: "high",
         tools: "Read,Glob,Grep,Bash,Edit,Write",

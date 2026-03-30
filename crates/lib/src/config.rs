@@ -7,10 +7,6 @@ pub struct Config {
     /// GitHub repository (owner/repo or full URL)
     pub repo: String,
 
-    /// Total LLM spend cap in USD
-    #[arg(long, default_value = "5.00")]
-    pub max_budget: f64,
-
     /// Total wall-clock timeout (e.g., "30m", "1h")
     #[arg(long, default_value = "30m")]
     pub timeout: String,
@@ -140,10 +136,6 @@ pub struct Config {
     /// Maximum issues to investigate per run.
     #[arg(long, default_value = "2")]
     pub max_issues: usize,
-
-    /// Budget per issue investigation (USD).
-    #[arg(long, default_value = "3.00")]
-    pub issue_budget: f64,
 
     /// Context window size in tokens. Old tool results are evicted when the
     /// conversation approaches this limit, and a recall tool lets the model
@@ -324,7 +316,6 @@ mod tests {
     fn test_repo_slug_owner_repo() {
         let config = Config {
             repo: "owner/repo".to_string(),
-            max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
             model_recon: None,
@@ -355,7 +346,7 @@ mod tests {
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,
-            issue_budget: 3.0,
+
             max_open_prs: 5,
             context_window: 128_000,
             max_pr_fix_attempts: 3,
@@ -368,7 +359,6 @@ mod tests {
     fn test_repo_slug_full_url() {
         let config = Config {
             repo: "https://github.com/owner/repo".to_string(),
-            max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
             model_recon: None,
@@ -399,7 +389,7 @@ mod tests {
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,
-            issue_budget: 3.0,
+
             max_open_prs: 5,
             context_window: 128_000,
             max_pr_fix_attempts: 3,
@@ -412,7 +402,6 @@ mod tests {
     fn test_repo_slug_with_git_suffix() {
         let config = Config {
             repo: "https://github.com/owner/repo.git".to_string(),
-            max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
             model_recon: None,
@@ -443,7 +432,7 @@ mod tests {
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,
-            issue_budget: 3.0,
+
             max_open_prs: 5,
             context_window: 128_000,
             max_pr_fix_attempts: 3,
@@ -456,7 +445,6 @@ mod tests {
     fn test_repo_slug_ssh_url() {
         let config = Config {
             repo: "git@github.com:owner/repo.git".to_string(),
-            max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
             model_recon: None,
@@ -487,7 +475,7 @@ mod tests {
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,
-            issue_budget: 3.0,
+
             max_open_prs: 5,
             context_window: 128_000,
             max_pr_fix_attempts: 3,
@@ -500,7 +488,6 @@ mod tests {
     fn test_min_severity_parsing() {
         let config = Config {
             repo: "owner/repo".to_string(),
-            max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
             model_recon: None,
@@ -531,7 +518,7 @@ mod tests {
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,
-            issue_budget: 3.0,
+
             max_open_prs: 5,
             context_window: 128_000,
             max_pr_fix_attempts: 3,
@@ -544,7 +531,6 @@ mod tests {
     fn test_min_severity_unknown_defaults_to_minor() {
         let config = Config {
             repo: "owner/repo".to_string(),
-            max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
             model_recon: None,
@@ -575,7 +561,7 @@ mod tests {
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,
-            issue_budget: 3.0,
+
             max_open_prs: 5,
             context_window: 128_000,
             max_pr_fix_attempts: 3,

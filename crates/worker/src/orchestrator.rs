@@ -45,28 +45,12 @@ fn unique_timestamp_secs() -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Budget helpers
-// ---------------------------------------------------------------------------
-
-/// Return the remaining budget to pass to a phase. If `max_budget` is zero
-/// (unlimited), return `f64::MAX` so that phases are never artificially
-/// constrained. Otherwise return `max_budget - spent`.
-fn remaining_or_unlimited(max_budget: f64, spent: f64) -> f64 {
-    if max_budget <= 0.0 {
-        f64::MAX
-    } else {
-        (max_budget - spent).max(0.0)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Work-queue types
 // ---------------------------------------------------------------------------
 
 /// A single unit of concurrent work.
 struct WorkItem {
     kind: WorkItemKind,
-    budget_cap: f64,
     context_window: u64,
     exa_searches: u32,
 }
@@ -152,7 +136,7 @@ enum WorkItemResult {
         pr_number: Option<u64>,
         has_successful_tasks: bool,
     },
-    /// Work item was skipped before execution (e.g., budget exhausted).
+    /// Work item was skipped before execution.
     Skipped {
         reason: String,
     },
@@ -422,14 +406,8 @@ async fn run_pipeline(
     let in_flight_prs = preflight_output.in_flight_prs;
 
     // ─── Phase 2: Recon ─────────────────────────────────────────────────
-    if config.max_budget > 0.0 && *total_cost >= config.max_budget {
-        warn!("budget exhausted before Recon phase");
-        return Ok(PipelineOutput::early_exit(2));
-    }
-
     info!("starting phase: Recon");
     let phase_start = Instant::now();
-    let recon_budget = remaining_or_unlimited(config.max_budget, *total_cost);
 
     let recon_output = match tokio::time::timeout(
         Duration::from_secs(300),
@@ -437,7 +415,6 @@ async fn run_pipeline(
             &repo_info,
             work_dir,
             config.model_for("recon"),
-            recon_budget,
             config.setup_command.as_deref(),
             config.context_window,
         ),
@@ -489,7 +466,6 @@ async fn run_pipeline(
     let worktree_mgr = Arc::new(WorktreeManager::new(clone_path.clone()));
 
     // ─── Build work queue ────────────────────────────────────────────────
-    let effective_budget = remaining_or_unlimited(config.max_budget, *total_cost);
     let work_items = collect_work_items(
         config,
         &preflight_output.external_prs,
@@ -501,7 +477,6 @@ async fn run_pipeline(
         &stack_info,
         &recon_output.open_prs,
         min_severity,
-        effective_budget,
         config.context_window,
     );
 
@@ -531,7 +506,6 @@ async fn run_pipeline(
             worktree_mgr.clone(),
             repo_slug,
             &config.model,
-            effective_budget,
         )
         .await;
         all_outcomes.extend(ci_outcomes);
@@ -544,7 +518,6 @@ async fn run_pipeline(
             worktree_mgr,
             repo_slug,
             &config.model,
-            effective_budget,
         )
         .await;
         all_outcomes.extend(other_outcomes);
@@ -689,7 +662,6 @@ fn collect_work_items(
     stack_info: &StackInfo,
     open_prs: &[OpenPr],
     min_severity: &autoanneal_lib::models::Severity,
-    budget_remaining: f64,
     context_window: u64,
 ) -> Vec<WorkItem> {
     let mut items = Vec::new();
@@ -728,7 +700,6 @@ fn collect_work_items(
                     pr: as_inflight,
                     default_branch: repo_info.default_branch.clone(),
                 },
-                budget_cap: budget_remaining,
                 context_window,
                 exa_searches: config.exa_searches,
             });
@@ -760,7 +731,6 @@ fn collect_work_items(
                     pr: pr.clone(),
                     default_branch: repo_info.default_branch.clone(),
                 },
-                budget_cap: budget_remaining,
                 context_window,
                 exa_searches: config.exa_searches,
             });
@@ -777,7 +747,6 @@ fn collect_work_items(
                     default_branch: repo_info.default_branch.clone(),
                     critic_models: config.critic_model_list(),
                 },
-                budget_cap: budget_remaining,
                 context_window,
                 exa_searches: config.exa_searches,
             });
@@ -804,7 +773,6 @@ fn collect_work_items(
                         default_branch: repo_info.default_branch.clone(),
                         critic_models: config.critic_model_list(),
                     },
-                    budget_cap: budget_remaining,
                     context_window,
                     exa_searches: config.exa_searches,
                 });
@@ -821,7 +789,6 @@ fn collect_work_items(
                 arch_summary: arch_summary.to_string(),
                 stack_info: stack_info.clone(),
             },
-            budget_cap: budget_remaining,
             context_window,
             exa_searches: config.exa_searches,
         });
@@ -854,11 +821,9 @@ fn collect_work_items(
             "skipping analysis — too many open autoanneal PRs"
         );
     }
-    // Run analysis when there is budget and either we're not skipping (normal
-    // mode) or we're in dry-run mode (dry-run doesn't create PRs, so the
-    // open-PR cap doesn't apply).
+    // Run analysis when either we're not skipping (normal mode) or we're in
+    // dry-run mode (dry-run doesn't create PRs, so the open-PR cap doesn't apply).
     if !skip_analysis || config.dry_run {
-        // Budget caps are enforced at the shared level in run_work_queue.
         items.push(WorkItem {
             kind: WorkItemKind::Analysis {
                 clone_path: clone_path.clone(),
@@ -878,7 +843,6 @@ fn collect_work_items(
                 doc_critic_threshold: config.doc_critic_threshold,
                 critic_models: config.critic_model_list(),
             },
-            budget_cap: budget_remaining,
             context_window,
             exa_searches: config.exa_searches,
         });
@@ -891,78 +855,24 @@ fn collect_work_items(
 // Work queue execution
 // ---------------------------------------------------------------------------
 
-/// Cost values in the shared tracker are stored as microdollars (cost_usd × 1_000_000).
-const MICRODOLLAR: f64 = 1_000_000.0;
-
-/// Maximum representable microdollar value that fits in a `u64`.
-const MAX_MICRODOLLAR: f64 = u64::MAX as f64;
-
-/// Convert a USD cost to microdollars, clamping to the valid `u64` range.
-///
-/// This prevents overflow when `cost_usd` is unexpectedly large (e.g. due to a
-/// malformed API response) and returns `u64::MAX` instead of wrapping.
-fn cost_to_microdollars(cost_usd: f64) -> u64 {
-    let microdollars = (cost_usd * MICRODOLLAR).round();
-    microdollars.clamp(0.0, MAX_MICRODOLLAR) as u64
-}
-
 async fn run_work_queue(
     concurrency: usize,
     items: Vec<WorkItem>,
     worktree_mgr: Arc<WorktreeManager>,
     repo_slug: &str,
     model: &str,
-    total_budget: f64,
 ) -> Vec<WorkItemOutcome> {
     let concurrency = concurrency.max(1);
     let mut pending: VecDeque<WorkItem> = items.into();
     let mut join_set: JoinSet<WorkItemOutcome> = JoinSet::new();
     let mut outcomes: Vec<WorkItemOutcome> = Vec::new();
 
-    // Shared atomic cost tracker so concurrent items can see aggregate spending.
-    let shared_cost = Arc::new(AtomicU64::new(0));
-    let total_budget_microdollars = cost_to_microdollars(total_budget);
-
-    /// Helper: check aggregate spend. When total_budget is zero (unlimited),
-    /// always returns true. Otherwise returns false when budget is exhausted
-    /// and updates the item's budget_cap to the remaining amount.
-    fn check_budget(
-        item: &mut WorkItem,
-        shared_cost: &AtomicU64,
-        total_budget_microdollars: u64,
-    ) -> bool {
-        // Unlimited budget — always proceed.
-        if total_budget_microdollars == 0 {
-            item.budget_cap = f64::MAX;
-            return true;
-        }
-        let spent = shared_cost.load(Ordering::Relaxed);
-        if spent >= total_budget_microdollars {
-            return false; // budget exhausted, skip
-        }
-        let remaining = (total_budget_microdollars - spent) as f64 / MICRODOLLAR;
-        item.budget_cap = remaining;
-        true
-    }
-
     // Fill initial slots.
     while join_set.len() < concurrency {
-        let mut item = match pending.pop_front() {
+        let item = match pending.pop_front() {
             Some(item) => item,
             None => break,
         };
-        if !check_budget(&mut item, &shared_cost, total_budget_microdollars) {
-            info!(item = %item.name(), "skipping work item: shared budget exhausted");
-            outcomes.push(WorkItemOutcome {
-                item_name: item.name(),
-                result: Ok(WorkItemResult::Skipped {
-                    reason: "budget exhausted".to_string(),
-                }),
-                cost_usd: 0.0,
-                duration: Duration::ZERO,
-            });
-            continue;
-        }
         spawn_work_item(
             &mut join_set,
             item,
@@ -981,26 +891,10 @@ async fn run_work_queue(
             duration: Duration::ZERO,
         });
 
-        // Update the shared cost tracker with actual spend.
-        let cost_microdollars = cost_to_microdollars(outcome.cost_usd);
-        shared_cost.fetch_add(cost_microdollars, Ordering::Relaxed);
-
         outcomes.push(outcome);
 
         // Fill the freed slot.
-        while let Some(mut item) = pending.pop_front() {
-            if !check_budget(&mut item, &shared_cost, total_budget_microdollars) {
-                info!(item = %item.name(), "skipping work item: shared budget exhausted");
-                outcomes.push(WorkItemOutcome {
-                    item_name: item.name(),
-                    result: Ok(WorkItemResult::Skipped {
-                        reason: "budget exhausted".to_string(),
-                    }),
-                    cost_usd: 0.0,
-                    duration: Duration::ZERO,
-                });
-                continue;
-            }
+        if let Some(item) = pending.pop_front() {
             spawn_work_item(
                 &mut join_set,
                 item,
@@ -1008,7 +902,6 @@ async fn run_work_queue(
                 repo_slug.to_string(),
                 model.to_string(),
             );
-            break; // only fill one slot per completion
         }
     }
 
@@ -1023,7 +916,6 @@ fn spawn_work_item(
     model: String,
 ) {
     let item_name = item.name();
-    let budget = item.budget_cap;
     let context_window = item.context_window;
     let exa_searches = item.exa_searches;
 
@@ -1036,7 +928,7 @@ fn spawn_work_item(
                 let wt_name = format!("ci-fix-{}", pr.number);
                 match mgr.create_at_branch(&wt_name, &pr.branch).await {
                     Ok(wt) => {
-                        let r = phases::ci_fix::run(&pr, &repo_slug, &wt, &model, budget, &default_branch, context_window).await;
+                        let r = phases::ci_fix::run(&pr, &repo_slug, &wt, &model, &default_branch, context_window).await;
                         if let Err(e) = mgr.remove(&wt).await {
                             warn!(worktree = %wt_name, error = %e, "failed to clean up worktree");
                         }
@@ -1053,7 +945,7 @@ fn spawn_work_item(
                 match mgr.create_at_branch(&wt_name, &pr.branch).await {
                     Ok(wt) => {
                         let r = phases::pr_review::run(
-                            &pr, &repo_slug, &wt, &model, budget, fix_threshold, context_window,
+                            &pr, &repo_slug, &wt, &model, fix_threshold, context_window,
                             critic_models.as_deref(), &default_branch,
                         )
                         .await;
@@ -1087,7 +979,6 @@ fn spawn_work_item(
                             &arch_summary,
                             &stack_info,
                             &model,
-                            budget,
                             context_window,
                         )
                         .await;
@@ -1138,7 +1029,6 @@ fn spawn_work_item(
                     critic_threshold,
                     doc_critic_threshold,
                     &critic_models,
-                    budget,
                     &repo_slug,
                     context_window,
                     exa_searches,
@@ -1184,7 +1074,6 @@ async fn run_analysis_pipeline(
     critic_threshold: u32,
     doc_critic_threshold: u32,
     critic_models: &Option<Vec<String>>,
-    mut budget: f64,
     _repo_slug: &str,
     context_window: u64,
     exa_searches: u32,
@@ -1193,7 +1082,6 @@ async fn run_analysis_pipeline(
 
     // ─── Analysis ──────────────────────────────────────────────────────
     info!("starting analysis phase");
-    let analysis_budget = budget;
 
     let analysis_output = tokio::time::timeout(
         Duration::from_secs(900),
@@ -1203,7 +1091,6 @@ async fn run_analysis_pipeline(
             stack_info,
             open_prs,
             model_analysis,
-            analysis_budget,
             max_tasks,
             min_severity,
             context_window,
@@ -1213,7 +1100,6 @@ async fn run_analysis_pipeline(
     .map_err(|_| anyhow::anyhow!("analysis timed out"))?
     .context("analysis failed")?;
 
-    budget -= analysis_output.cost_usd;
     cost_total += analysis_output.cost_usd;
 
     let improvements = analysis_output.improvements;
@@ -1222,7 +1108,6 @@ async fn run_analysis_pipeline(
     // Doc fallback.
     let improvements = if improvements.is_empty() && improve_docs {
         info!("no code improvements found, falling back to documentation analysis");
-        let doc_budget = budget;
         let doc_output = tokio::time::timeout(
             Duration::from_secs(900),
             phases::analysis::run_doc_analysis(
@@ -1230,7 +1115,6 @@ async fn run_analysis_pipeline(
                 arch_summary,
                 stack_info,
                 model_analysis,
-                doc_budget,
                 max_tasks,
                 min_severity,
                 context_window,
@@ -1240,7 +1124,6 @@ async fn run_analysis_pipeline(
         .map_err(|_| anyhow::anyhow!("doc analysis timed out"))?
         .context("doc analysis failed")?;
 
-        budget -= doc_output.cost_usd;
         cost_total += doc_output.cost_usd;
 
         if doc_output.improvements.is_empty() {
@@ -1348,7 +1231,6 @@ async fn run_analysis_pipeline(
     let branch_name = branch_output.branch_name;
 
     // ─── Implement ─────────────────────────────────────────────────────
-    let implement_budget = budget;
     let implement_output = tokio::time::timeout(
         Duration::from_secs(1800),
         phases::implement::run(
@@ -1357,7 +1239,6 @@ async fn run_analysis_pipeline(
             stack_info,
             &branch_name,
             model_implement,
-            implement_budget,
             context_window,
         ),
     )
@@ -1365,7 +1246,6 @@ async fn run_analysis_pipeline(
     .map_err(|_| anyhow::anyhow!("implement phase timed out"))?
     .context("implement phase failed")?;
 
-    budget -= implement_output.total_cost_usd;
     cost_total += implement_output.total_cost_usd;
 
     let has_successful = implement_output
@@ -1396,8 +1276,6 @@ async fn run_analysis_pipeline(
     };
 
     if threshold > 0 {
-        let critic_budget = budget;
-
         let critic_result = if let Some(models) = critic_models {
             // Panel mode: 2-gate deliberation
             info!("using critic panel with {} model(s)", models.len());
@@ -1407,7 +1285,6 @@ async fn run_analysis_pipeline(
                     clone_path,
                     &repo_info.default_branch,
                     models,
-                    critic_budget,
                     context_window,
                     false, // skip_gate1
                     exa_searches,
@@ -1435,27 +1312,16 @@ async fn run_analysis_pipeline(
                 // Capture initial state before fix loop mutates cr.
                 let pre_fix_summary = cr.summary.clone();
                 let pre_fix_score = cr.score;
-                let mut remaining_fix = budget - cr.cost_usd;
                 for fix_round in 1..=MAX_FIX_ROUNDS {
                     if cr.verdict != "needs_work" {
-                        break;
-                    }
-                    if remaining_fix < 0.20 {
-                        info!(
-                            remaining = remaining_fix,
-                            "panel fix loop: insufficient budget, stopping"
-                        );
                         break;
                     }
 
                     info!(
                         fix_round,
                         score = cr.score,
-                        remaining = remaining_fix,
                         "panel fix loop: attempting fix"
                     );
-
-                    let fix_budget = remaining_fix;
                     let fix_prompt = format!(
                         "A code review panel found issues with the implementation.\n\n\
                          ## Review Summary\n\n{summary}\n\n\
@@ -1468,7 +1334,6 @@ async fn run_analysis_pipeline(
                         prompt: fix_prompt,
                         system_prompt: Some(critic_fix_system_prompt()),
                         model: model_critic.to_string(),
-                        max_budget_usd: fix_budget,
                         max_turns: 50,
                         effort: "high",
                         tools: "Read,Glob,Grep,Bash,Edit,Write",
@@ -1489,7 +1354,6 @@ async fn run_analysis_pipeline(
 
                     match fix_response {
                         Ok(resp) => {
-                            remaining_fix -= resp.cost_usd;
                             cr.cost_usd += resp.cost_usd;
 
                             // Check for changes
@@ -1538,14 +1402,12 @@ async fn run_analysis_pipeline(
                             info!(fix_round, "panel fix: committed changes, re-reviewing");
 
                             // Re-run panel with skip_gate1=true
-                            let re_review_budget = remaining_fix;
                             match tokio::time::timeout(
                                 Duration::from_secs(900),
                                 phases::critic_panel::run(
                                     clone_path,
                                     &repo_info.default_branch,
                                     models,
-                                    re_review_budget,
                                     context_window,
                                     true, // skip_gate1
                                     exa_searches,
@@ -1554,7 +1416,6 @@ async fn run_analysis_pipeline(
                             .await
                             {
                                 Ok(Ok(re_result)) => {
-                                    remaining_fix -= re_result.cost_usd;
                                     info!(
                                         fix_round,
                                         old_score = cr.score,
@@ -1615,7 +1476,6 @@ async fn run_analysis_pipeline(
                     clone_path,
                     &repo_info.default_branch,
                     model_critic,
-                    critic_budget,
                     context_window,
                 ),
             )
@@ -1639,7 +1499,6 @@ async fn run_analysis_pipeline(
         });
 
         if let Some(critic_output) = critic_result {
-            budget -= critic_output.cost_usd;
             cost_total += critic_output.cost_usd;
 
             if critic_output.score < threshold {
@@ -1705,7 +1564,6 @@ async fn run_analysis_pipeline(
     info!(branch = %branch_name, "pushed changes to origin");
 
     // ─── PR Creation ───────────────────────────────────────────────────
-    let plan_budget = budget;
     let pr_output = tokio::time::timeout(
         Duration::from_secs(120),
         phases::plan::create_pr(
@@ -1714,7 +1572,6 @@ async fn run_analysis_pipeline(
             &branch_name,
             &improvements,
             model_plan,
-            plan_budget,
             critic_summary.as_deref(),
             context_window,
         ),

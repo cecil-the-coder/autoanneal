@@ -9,7 +9,6 @@ pub struct LlmInvocation {
     pub prompt: String,
     pub system_prompt: Option<String>,
     pub model: String,
-    pub max_budget_usd: f64,
     pub max_turns: u32,
     pub effort: &'static str,
     pub tools: &'static str,

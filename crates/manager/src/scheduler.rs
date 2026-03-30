@@ -52,7 +52,6 @@ pub struct TriggerOverrides {
     pub skip_after: Option<usize>,
     /// Set to 0 for unlimited open PRs.
     pub max_open_prs: Option<usize>,
-    pub max_budget: Option<String>,
     pub max_tasks: Option<usize>,
     pub model: Option<String>,
     pub critic_threshold: Option<u32>,
@@ -444,7 +443,6 @@ fn apply_overrides(entry: &RepoEntry, overrides: Option<&TriggerOverrides>) -> R
     if let Some(v) = o.fix_external_ci { entry.fix_external_ci = Some(v); }
     if let Some(v) = o.skip_after { entry.skip_after = Some(v); }
     if let Some(v) = o.max_open_prs { entry.max_open_prs = Some(v); }
-    if let Some(ref v) = o.max_budget { entry.max_budget = Some(v.clone()); }
     if let Some(v) = o.max_tasks { entry.max_tasks = Some(v); }
     if let Some(ref v) = o.model { entry.model = Some(v.clone()); }
     if let Some(v) = o.critic_threshold { entry.critic_threshold = Some(v); }

@@ -89,7 +89,6 @@ pub async fn create_pr(
     branch_name: &str,
     improvements: &[Improvement],
     model: &str,
-    budget: f64,
     critic_summary: Option<&str>,
     context_window: u64,
 ) -> Result<PrOutput> {
@@ -117,7 +116,6 @@ pub async fn create_pr(
         prompt,
         system_prompt: Some(plan_system_prompt()),
         model: model.to_string(),
-        max_budget_usd: budget,
         max_turns: 10,
         effort: "low",
         tools: "",
