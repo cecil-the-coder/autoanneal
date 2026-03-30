@@ -329,17 +329,123 @@ impl Executor for KubernetesExecutor {
 }
 
 /// Parse a timeout string like "30m" or "1h" into seconds.
+/// Uses checked arithmetic to prevent overflow and caps at 24 hours (86400 seconds).
 fn parse_timeout(timeout: &str) -> i64 {
+    const MAX_TIMEOUT_SECS: i64 = 24 * 3600; // 24 hours
+    const DEFAULT_MINUTES: i64 = 30 * 60;
+    const DEFAULT_HOURS: i64 = 1 * 3600;
+    const DEFAULT_SECS: i64 = 1800;
+
     let timeout = timeout.trim();
-    if let Some(mins) = timeout.strip_suffix('m') {
-        mins.parse::<i64>().unwrap_or(30) * 60
+
+    // Track which suffix was detected for default value selection
+    let (secs, detected_suffix) = if let Some(mins) = timeout.strip_suffix('m') {
+        (mins.parse::<i64>().ok().and_then(|m| m.checked_mul(60)), Some('m'))
     } else if let Some(hours) = timeout.strip_suffix('h') {
-        hours.parse::<i64>().unwrap_or(1) * 3600
+        (hours.parse::<i64>().ok().and_then(|h| h.checked_mul(3600)), Some('h'))
     } else if let Some(secs) = timeout.strip_suffix('s') {
-        secs.parse::<i64>().unwrap_or(1800)
+        (secs.parse::<i64>().ok(), Some('s'))
     } else {
-        // Assume seconds
-        timeout.parse::<i64>().unwrap_or(1800)
+        (timeout.parse::<i64>().ok(), None)
+    };
+
+    // Use the parsed value if valid, otherwise use defaults based on detected suffix
+    let secs = match secs {
+        Some(s) => s,
+        None => {
+            warn!(timeout = %timeout, "overflow or parse error, using suffix-specific default");
+            match detected_suffix {
+                Some('m') => DEFAULT_MINUTES,
+                Some('h') => DEFAULT_HOURS,
+                _ => DEFAULT_SECS,
+            }
+        }
+    };
+
+    // Cap at the maximum to prevent excessive timeouts
+    if secs > MAX_TIMEOUT_SECS {
+        warn!(timeout = %timeout, value = %secs, max = %MAX_TIMEOUT_SECS, "timeout exceeds maximum, capping");
+        MAX_TIMEOUT_SECS
+    } else {
+        secs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_timeout_minutes() {
+        assert_eq!(parse_timeout("30m"), 30 * 60);
+        assert_eq!(parse_timeout("1m"), 60);
+        assert_eq!(parse_timeout("0m"), 0);
+    }
+
+    #[test]
+    fn test_parse_timeout_hours() {
+        assert_eq!(parse_timeout("1h"), 3600);
+        assert_eq!(parse_timeout("2h"), 7200);
+        assert_eq!(parse_timeout("0h"), 0);
+    }
+
+    #[test]
+    fn test_parse_timeout_seconds() {
+        assert_eq!(parse_timeout("90s"), 90);
+        assert_eq!(parse_timeout("1s"), 1);
+        assert_eq!(parse_timeout("0s"), 0);
+    }
+
+    #[test]
+    fn test_parse_timeout_bare_number() {
+        assert_eq!(parse_timeout("1800"), 1800);
+        assert_eq!(parse_timeout("0"), 0);
+    }
+
+    #[test]
+    fn test_parse_timeout_default_values() {
+        // Bare invalid value (no suffix) defaults to 1800 seconds (30 minutes)
+        assert_eq!(parse_timeout("abc"), 1800);
+        assert_eq!(parse_timeout("10x"), 1800);
+        // Invalid hours defaults to 1 hour (3600 seconds)
+        assert_eq!(parse_timeout("xh"), 3600);
+        // Invalid minutes defaults to 30 minutes (1800 seconds)
+        assert_eq!(parse_timeout("xm"), 30 * 60);
+        // Invalid seconds defaults to 1800 seconds
+        assert_eq!(parse_timeout("xs"), 1800);
+    }
+
+    #[test]
+    fn test_parse_timeout_overflow() {
+        // Very large values should not overflow - use defaults or get capped
+        // Minutes value fits in i64 but exceeds 24h, so gets capped
+        assert_eq!(parse_timeout("99999999999999999m"), 24 * 3600);
+        // Hours multiplier overflows, so uses default (1 hour)
+        assert_eq!(parse_timeout("99999999999999999h"), 3600);
+        // Seconds value fits in i64 but exceeds 24h, so gets capped  
+        assert_eq!(parse_timeout("99999999999999999s"), 24 * 3600);
+    }
+
+    #[test]
+    fn test_parse_timeout_24h_cap() {
+        // Values exceeding 24 hours should be capped
+        assert_eq!(parse_timeout("25h"), 24 * 3600);
+        assert_eq!(parse_timeout("48h"), 24 * 3600);
+        assert_eq!(parse_timeout("1500m"), 24 * 3600);
+        assert_eq!(parse_timeout("100000s"), 24 * 3600);
+    }
+
+    #[test]
+    fn test_parse_timeout_exactly_24h() {
+        assert_eq!(parse_timeout("24h"), 24 * 3600);
+        assert_eq!(parse_timeout("1440m"), 24 * 3600);
+        assert_eq!(parse_timeout("86400s"), 24 * 3600);
+    }
+
+    #[test]
+    fn test_parse_timeout_whitespace() {
+        assert_eq!(parse_timeout("  30m  "), 30 * 60);
+        assert_eq!(parse_timeout("  1h  "), 3600);
     }
 }
 
