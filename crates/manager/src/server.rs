@@ -60,7 +60,13 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
                 metrics,
             )
                 .into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => {
+                let body = crate::server::TriggerResponse {
+                    status: "error".into(),
+                    message: format!("metrics encoding failed: {}", e),
+                };
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+            }
         }
     } else {
         (

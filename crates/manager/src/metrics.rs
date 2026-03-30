@@ -11,7 +11,7 @@ impl fmt::Display for MetricsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MetricsError::Encode(msg) => write!(f, "{}", msg),
-            MetricsError::Utf8(e) => write!(f, "invalid UTF-8 in metrics: {}", e),
+            MetricsError::Utf8(e) => write!(f, "prometheus encoder produced invalid UTF-8: {}", e),
         }
     }
 }
