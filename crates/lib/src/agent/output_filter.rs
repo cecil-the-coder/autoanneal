@@ -892,7 +892,7 @@ fn apply_filter(filter: &CommandFilter, filter_idx: usize, output: &str) -> Stri
             .iter()
             .map(|line| {
                 if line.len() > filter.max_line_len {
-                    format!("{}...", &line[..filter.max_line_len])
+                    format!("{}...", line.chars().take(filter.max_line_len).collect::<String>())
                 } else {
                     line.to_string()
                 }
