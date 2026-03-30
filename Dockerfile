@@ -29,7 +29,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 
 # Go
 RUN ARCH=$(dpkg --print-architecture) \
-    && curl -fsSL "https://go.dev/dl/go1.26.1.linux-${ARCH}.tar.gz" \
+    && curl -fsSL "https://go.dev/dl/go1.24.2.linux-${ARCH}.tar.gz" \
       | tar -C /usr/local -xzf - \
     && ln -s /usr/local/go/bin/go /usr/local/bin/go \
     && ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt
