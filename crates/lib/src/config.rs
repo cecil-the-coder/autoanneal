@@ -1,5 +1,6 @@
 use crate::models::Severity;
 use clap::Parser;
+use tracing::warn;
 
 #[derive(Parser, Debug)]
 #[command(name = "autoanneal", about = "Autonomous code improvement agent")]
@@ -168,6 +169,17 @@ impl Config {
 
     /// Parse the repo string into "owner/repo" format.
     /// Handles both "owner/repo" and "https://github.com/owner/repo" formats.
+    ///
+    /// SSH URL parsing note: URLs of the form `git@host:owner/repo.git` are
+    /// parsed by splitting on the first colon after the `@`. This is correct for
+    /// standard GitHub/GitLab SSH URLs, but may produce incorrect results if the
+    /// hostname itself contains a colon (e.g., IPv6 literals like `git@[::1]:repo`).
+    /// Such edge cases are not expected in normal usage.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resulting slug contains path-traversal sequences (`..`),
+    /// which would be a security risk when used to construct file paths.
     pub fn repo_slug(&self) -> String {
         let s = &self.repo;
 
@@ -177,6 +189,8 @@ impl Config {
             .or_else(|| s.strip_prefix("github.com/"))
             .or_else(|| {
                 // Handle SSH URL format: git@github.com:owner/repo.git
+                // We find the first '@', then the first ':' after it, which
+                // separates the hostname from the path in standard SSH URLs.
                 if let Some(at_pos) = s.find('@') {
                     let after_at = &s[at_pos + 1..];
                     after_at.find(':').map(|colon_pos| &after_at[colon_pos + 1..])
@@ -193,13 +207,29 @@ impl Config {
         let slug = slug.strip_suffix(".git").unwrap_or(&slug).to_string();
 
         // Trim trailing slash
-        slug.trim_end_matches('/').to_string()
+        let slug = slug.trim_end_matches('/').to_string();
+
+        // Reject slugs containing path-traversal sequences to prevent directory
+        // traversal attacks when the slug is used to construct file paths.
+        validate_slug(&slug);
+
+        slug
     }
 
     /// Parse the timeout string into a Duration.
     /// Supports strings like "30m", "1h", "1h30m", "90s".
+    ///
+    /// If the timeout string is unparseable or overflows, a warning is logged
+    /// and the default 30-minute timeout is used instead.
     pub fn timeout_duration(&self) -> std::time::Duration {
-        parse_duration(&self.timeout).unwrap_or(std::time::Duration::from_secs(30 * 60))
+        parse_duration(&self.timeout).unwrap_or_else(|| {
+            warn!(
+                "Failed to parse timeout '{}' (possibly due to overflow); \
+                 falling back to default 30m timeout",
+                self.timeout
+            );
+            std::time::Duration::from_secs(30 * 60)
+        })
     }
 
     /// Parse critic_models into a list of model names.
@@ -271,6 +301,19 @@ fn parse_duration(s: &str) -> Option<std::time::Duration> {
     }
 
     Some(std::time::Duration::from_secs(total_secs))
+}
+
+/// Validate that a repo slug does not contain path-traversal sequences.
+/// Panics if the slug contains `..` as a path component segment, which could
+/// be exploited for directory traversal when the slug is used in file paths.
+fn validate_slug(slug: &str) {
+    if slug.split('/').any(|segment| segment == "..") {
+        panic!(
+            "repo slug contains path-traversal sequence ('..'): \"{}\" — \
+             this is a security risk and is not allowed",
+            slug
+        );
+    }
 }
 
 #[cfg(test)]
@@ -568,5 +611,125 @@ mod tests {
             exa_searches: 3,
         };
         assert_eq!(config.min_severity(), Severity::Minor);
+    }
+
+    // --- Helper for building a minimal Config in tests ---
+    fn minimal_config(repo: &str) -> Config {
+        Config {
+            repo: repo.to_string(),
+            max_budget: 5.0,
+            timeout: "30m".to_string(),
+            model: "sonnet".to_string(),
+            model_recon: None,
+            model_analysis: None,
+            model_implement: None,
+            model_critic: None,
+            model_plan: None,
+            max_tasks: 5,
+            dry_run: false,
+            keep_on_failure: false,
+            setup_command: None,
+            min_severity: "minor".to_string(),
+            log_level: "info".to_string(),
+            output: "text".to_string(),
+            skip_after: 3,
+            cron_interval: 10,
+            fix_ci: true,
+            fix_conflicts: true,
+            critic_threshold: 6,
+            critic_models: None,
+            improve_docs: true,
+            doc_critic_threshold: 7,
+            review_prs: false,
+            fix_external_ci: false,
+            review_filter: "all".to_string(),
+            review_fix_threshold: 7,
+            concurrency: 3,
+            investigate_issues: "".to_string(),
+            max_issues: 2,
+            issue_budget: 3.0,
+            max_open_prs: 5,
+            context_window: 128_000,
+            max_pr_fix_attempts: 3,
+            exa_searches: 3,
+        }
+    }
+
+    #[test]
+    fn test_repo_slug_ssh_url_without_git_suffix() {
+        let config = minimal_config("git@github.com:owner/repo");
+        assert_eq!(config.repo_slug(), "owner/repo");
+    }
+
+    #[test]
+    fn test_repo_slug_ssh_url_gitlab() {
+        let config = minimal_config("git@gitlab.com:myorg/myrepo.git");
+        assert_eq!(config.repo_slug(), "myorg/myrepo");
+    }
+
+    #[test]
+    fn test_repo_slug_github_dot_com_prefix() {
+        let config = minimal_config("github.com/owner/repo");
+        assert_eq!(config.repo_slug(), "owner/repo");
+    }
+
+    #[test]
+    fn test_repo_slug_trailing_slash() {
+        let config = minimal_config("owner/repo/");
+        assert_eq!(config.repo_slug(), "owner/repo");
+    }
+
+    #[test]
+    fn test_repo_slug_http_url() {
+        let config = minimal_config("http://github.com/owner/repo");
+        assert_eq!(config.repo_slug(), "owner/repo");
+    }
+
+    #[test]
+    fn test_repo_slug_ssh_url_with_nested_org() {
+        // GitLab supports nested groups like org/subgroup/repo
+        let config = minimal_config("git@gitlab.com:org/subgroup/repo.git");
+        assert_eq!(config.repo_slug(), "org/subgroup/repo");
+    }
+
+    #[test]
+    #[should_panic(expected = "path-traversal sequence")]
+    fn test_repo_slug_rejects_path_traversal() {
+        let config = minimal_config("https://github.com/../etc/passwd");
+        config.repo_slug();
+    }
+
+    #[test]
+    #[should_panic(expected = "path-traversal sequence")]
+    fn test_repo_slug_rejects_path_traversal_ssh() {
+        let config = minimal_config("git@github.com:../etc/passwd.git");
+        config.repo_slug();
+    }
+
+    #[test]
+    #[should_panic(expected = "path-traversal sequence")]
+    fn test_repo_slug_rejects_path_traversal_mid_segment() {
+        let config = minimal_config("https://github.com/owner/../other/repo");
+        config.repo_slug();
+    }
+
+    #[test]
+    fn test_validate_slug_accepts_valid() {
+        // Should not panic
+        validate_slug("owner/repo");
+        validate_slug("my-org/my-repo");
+        validate_slug("a/b/c");
+    }
+
+    #[test]
+    #[should_panic(expected = "path-traversal sequence")]
+    fn test_validate_slug_rejects_dotdot() {
+        validate_slug("..");
+    }
+
+    #[test]
+    #[should_panic(expected = "path-traversal sequence")]
+    fn test_validate_slug_rejects_dotdot_in_path() {
+        validate_slug("foo/../bar");
     }
 }
