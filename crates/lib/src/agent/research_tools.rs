@@ -47,16 +47,23 @@ async fn read_response_text(
     api_name: &str,
 ) -> Result<String, ToolError> {
     if let Some(len) = resp.content_length() {
-        if let Some(err) = check_content_length(len) {
-            return Err(err);
+        if len > MAX_RESPONSE_SIZE as u64 {
+            return Err(ToolError::InvalidInput(format!(
+                "Response body too large: {len} bytes exceeds the {}-byte limit",
+                MAX_RESPONSE_SIZE
+            )));
         }
     }
     let body = resp
         .bytes()
         .await
         .map_err(|e| ToolError::InvalidInput(format!("Failed to read {api_name} response body: {e}")))?;
-    if let Some(err) = check_content_length(body.len() as u64) {
-        return Err(err);
+    if body.len() > MAX_RESPONSE_SIZE {
+        return Err(ToolError::InvalidInput(format!(
+            "Response body too large: {} bytes exceeds the {}-byte limit",
+            body.len(),
+            MAX_RESPONSE_SIZE
+        )));
     }
     Ok(String::from_utf8_lossy(&body).into_owned())
 }
