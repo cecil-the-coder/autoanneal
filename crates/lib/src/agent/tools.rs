@@ -127,11 +127,17 @@ impl ToolExecutor {
         if raw.is_empty() {
             return Err(ToolError::InvalidInput("path must not be empty".into()));
         }
+        
+        // Cache working directory canonical path upfront to avoid race conditions
+        // and multiple mutable borrows during path resolution.
+        let wd_canonical = self.working_dir_canonicalize()?;
+        
         let candidate = if Path::new(raw).is_absolute() {
             PathBuf::from(raw)
         } else {
             self.working_dir.join(raw)
         };
+        
         // Canonicalise as far as existing components allow.  For new files the
         // parent must already exist.
         // Walk up to find the deepest existing ancestor so we can
@@ -141,7 +147,7 @@ impl ToolExecutor {
         let canonical_result = candidate.canonicalize();
         let resolved = if let Ok(canonical) = canonical_result {
             // Verify the canonical path is within working directory before accepting it.
-            if !canonical.starts_with(&self.working_dir_canonicalize()?) {
+            if !canonical.starts_with(&wd_canonical) {
                 return Err(ToolError::InvalidInput(format!(
                     "path escapes working directory: {raw}"
                 )));
@@ -158,7 +164,7 @@ impl ToolExecutor {
                     Ok(canonical_ancestor) => {
                         // Re-verify the ancestor is still the same path component
                         // by checking it hasn't been swapped with a symlink.
-                        if !canonical_ancestor.starts_with(&self.working_dir_canonicalize()?) {
+                        if !canonical_ancestor.starts_with(&wd_canonical) {
                             return Err(ToolError::InvalidInput(format!(
                                 "path escapes working directory: {raw}"
                             )));
@@ -194,7 +200,7 @@ impl ToolExecutor {
             }
         };
 
-        if !resolved.starts_with(&self.working_dir_canonicalize()?) {
+        if !resolved.starts_with(&wd_canonical) {
             return Err(ToolError::InvalidInput(format!(
                 "path escapes working directory: {raw}"
             )));
