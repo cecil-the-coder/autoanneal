@@ -166,16 +166,55 @@ impl ToolExecutor {
             base
         };
 
-        let wd_canon = self
-            .working_dir
-            .canonicalize()
-            .map_err(|e| ToolError::InvalidInput(format!("cannot canonicalize working directory: {e}")))?;
-        if !resolved.starts_with(&wd_canon) {
+        if !resolved.starts_with(&self.working_dir_canonicalize()?) {
             return Err(ToolError::InvalidInput(format!(
                 "path escapes working directory: {raw}"
             )));
         }
         Ok(resolved)
+    }
+
+    /// Canonicalize the working directory.
+    fn working_dir_canonicalize(&self) -> Result<PathBuf, ToolError> {
+        self.working_dir
+            .canonicalize()
+            .map_err(|e| ToolError::InvalidInput(format!("cannot canonicalize working directory: {e}")))
+    }
+
+    /// Re-validate that a path is still inside the working directory after
+    /// directory creation, guarding against symlink-based TOCTOU races.
+    ///
+    /// After `safe_path` resolves a non-existent path, an attacker could
+    /// create a symlink in the non-existent portion of the path between the
+    /// initial check and a subsequent file write.  Calling this method after
+    /// `create_dir_all` re-canonicalizes the (now-existing) parent directory
+    /// and verifies the full resolved path still lies within the working
+    /// directory.
+    fn validate_path_after_dir_creation(&self, path: &Path) -> Result<(), ToolError> {
+        // Try to fully canonicalize; if the final component doesn't exist yet
+        // (e.g. the target file), canonicalize the parent and re-append.
+        let resolved = if path.exists() {
+            path.canonicalize()
+                .map_err(ToolError::IoError)?
+        } else {
+            let parent = path.parent().filter(|p| p.exists());
+            match (parent, path.file_name()) {
+                (Some(p), Some(name)) => p.canonicalize().map_err(ToolError::IoError)?.join(name),
+                _ => {
+                    // Cannot canonicalize further — fall back to the path
+                    // as-is so the prefix check still applies.
+                    path.to_path_buf()
+                }
+            }
+        };
+
+        let wd_canon = self.working_dir_canonicalize()?;
+        if !resolved.starts_with(&wd_canon) {
+            return Err(ToolError::InvalidInput(
+                "path escapes working directory after directory creation".into(),
+            ));
+        }
+        Ok(())
     }
 
     // -- individual tools ---------------------------------------------------
@@ -217,6 +256,9 @@ impl ToolExecutor {
         if let Some(parent) = resolved.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // Re-validate after directory creation to catch symlink-based TOCTOU
+        // races where an attacker places a symlink in the newly created path.
+        self.validate_path_after_dir_creation(&resolved)?;
         std::fs::write(&resolved, content)?;
         Ok(())
     }
@@ -1020,6 +1062,41 @@ mod tests {
         assert!(
             matches!(err, ToolError::InvalidInput(_)),
             "expected rejection, got: {err}"
+        );
+    }
+
+    /// Verify that `write_file` re-validates the path after creating parent
+    /// directories, catching a symlink planted in the non-existent tail of
+    /// the path (TOCTOU race condition).
+    #[test]
+    #[cfg(unix)]
+    fn write_file_symlink_in_new_path_rejected_after_dir_creation() {
+        let (exec, tmp) = make_executor();
+        // Create an "outside" directory that is NOT inside the working dir.
+        let outside = tempfile::tempdir().expect("create outside dir");
+
+        // Create the parent directory inside working_dir so safe_path succeeds.
+        let subdir = tmp.path().join("subdir");
+        fs::create_dir_all(&subdir).unwrap();
+
+        // Now plant a symlink: subdir/escape -> outside dir
+        let link = subdir.join("escape");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        // Attempt to write to subdir/escape/target.txt — the path resolves
+        // through the symlink to outside the working directory.
+        let err = exec
+            .write_file("subdir/escape/target.txt", "pwned")
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidInput(_)),
+            "write through symlink escaping working_dir should be rejected, got: {err}"
+        );
+
+        // Verify the file was NOT created outside.
+        assert!(
+            !outside.path().join("target.txt").exists(),
+            "file must not have been written outside working_dir"
         );
     }
 
