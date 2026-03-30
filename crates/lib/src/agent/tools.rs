@@ -215,8 +215,25 @@ impl ToolExecutor {
                 }
             }
             // For non-existent paths, verify each reconstructed component stays within bounds.
+            // For absolute paths, we need to skip components that are part of wd_canonical
+            // and only check the relative portion.
+            let relative_path = if candidate.is_absolute() {
+                // Get the path relative to working directory
+                match candidate.strip_prefix(&self.working_dir) {
+                    Ok(rel) => rel,
+                    Err(_) => {
+                        // Absolute path that doesn't start with working_dir - reject it
+                        return Err(ToolError::InvalidInput(format!(
+                            "path escapes working directory: {raw}"
+                        )));
+                    }
+                }
+            } else {
+                &candidate
+            };
+            
             let mut check_path = wd_canonical.clone();
-            for component in candidate.components() {
+            for component in relative_path.components() {
                 use std::path::Component;
                 match component {
                     Component::Normal(name) => {
@@ -246,7 +263,12 @@ impl ToolExecutor {
                         }
                         check_path = check_path.parent().unwrap_or(&wd_canonical).to_path_buf();
                     }
-                    _ => {}
+                    Component::CurDir => {
+                        // . is harmless, skip
+                    }
+                    Component::RootDir | Component::Prefix(_) => {
+                        // These shouldn't appear in relative paths, skip
+                    }
                 }
             }
         }
