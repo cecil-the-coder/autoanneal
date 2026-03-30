@@ -28,7 +28,6 @@ pub async fn run(
     repo_slug: &str,
     worktree_path: &Path,
     model: &str,
-    budget: f64,
     fix_threshold: u32,
     context_window: u64,
     critic_models: Option<&[String]>,
@@ -84,8 +83,6 @@ pub async fn run(
     }
 
     // 4. Run critic review — panel if configured, single critic otherwise.
-    let critic_budget = budget * 0.30;
-
     let critic_output: CriticOutput = if let Some(models) = critic_models {
         // Panel mode: skip Gate 1 (human PR, worthwhileness is assumed)
         // Pass the gh pr diff so the panel reviews the correct PR changes,
@@ -95,7 +92,6 @@ pub async fn run(
             &clone_dir,
             default_branch,
             models,
-            critic_budget,
             context_window,
             true, // skip_gate1 — human PRs are assumed worthwhile
             0,    // no web searches for PR reviews
@@ -119,7 +115,6 @@ pub async fn run(
             prompt: critic_prompt,
             system_prompt: Some(critic_system_prompt()),
             model: model.to_string(),
-            max_budget_usd: critic_budget,
             max_turns: 30,
             effort: "high",
             tools: "Read,Glob,Grep,Bash",
@@ -212,24 +207,6 @@ pub async fn run(
         });
     }
 
-    let remaining_budget = (budget - total_cost).max(0.0);
-    if remaining_budget < 0.10 {
-        // Not enough budget to attempt fixes; just comment.
-        let comment = format!(
-            "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated review by autoanneal. Not enough budget remaining to attempt fixes._",
-            critic_output.score, critic_output.verdict, critic_output.summary
-        );
-        leave_comment(repo_slug, pr.number, &comment).await;
-        add_reviewed_label(repo_slug, pr.number).await;
-        return Ok(PrReviewOutput {
-            pr_number: pr.number,
-            score: critic_output.score,
-            fixed: false,
-            commented: true,
-            cost_usd: total_cost,
-        });
-    }
-
     // 6a. Invoke Claude with fix prompt.
     let fix_prompt = PR_REVIEW_FIX_PROMPT
         .replace("{pr_number}", &pr.number.to_string())
@@ -242,7 +219,6 @@ pub async fn run(
         prompt: fix_prompt,
         system_prompt: Some(pr_review_fix_system_prompt()),
         model: model.to_string(),
-        max_budget_usd: remaining_budget,
         max_turns: 100,
         effort: "high",
         tools: "Read,Glob,Grep,Bash,Edit,Write",
@@ -306,11 +282,10 @@ pub async fn run(
                     };
 
                     // Re-review the fixed diff to get an updated score.
-                    let re_review_budget = (budget - total_cost).max(0.0).min(0.50);
-                    let (final_score, final_verdict, final_summary) = if re_review_budget >= 0.05 {
+                    let (final_score, final_verdict, final_summary) = {
                         info!(pr_number = pr.number, "re-reviewing after fixes");
                         match run_critic_review(
-                            &clone_dir, repo_slug, pr, model, re_review_budget, context_window,
+                            &clone_dir, repo_slug, pr, model, context_window,
                         ).await {
                             Ok((output, cost)) => {
                                 total_cost += cost;
@@ -327,8 +302,6 @@ pub async fn run(
                                 (critic_output.score, critic_output.verdict.clone(), critic_output.summary.clone())
                             }
                         }
-                    } else {
-                        (critic_output.score, critic_output.verdict.clone(), critic_output.summary.clone())
                     };
 
                     let comment = format!(
@@ -537,7 +510,6 @@ async fn run_critic_review(
     repo_slug: &str,
     pr: &ExternalPr,
     model: &str,
-    budget: f64,
     context_window: u64,
 ) -> Result<(CriticOutput, f64)> {
     // Get the updated diff.
@@ -559,7 +531,6 @@ async fn run_critic_review(
         prompt: critic_prompt,
         system_prompt: Some(critic_system_prompt()),
         model: model.to_string(),
-        max_budget_usd: budget,
         max_turns: 1,
         effort: "high",
         tools: "",

@@ -328,7 +328,6 @@ pub async fn invoke<T: DeserializeOwned>(
         base_url = %creds.base_url,
         use_bearer = creds.use_bearer,
         model = %invocation.model,
-        budget = invocation.max_budget_usd,
         max_turns = invocation.max_turns,
         "bridge: invoking via agent module"
     );
@@ -557,7 +556,6 @@ mod tests {
             prompt: "Do something.".to_string(),
             system_prompt: Some("You are helpful.".to_string()),
             model: "claude-sonnet-4-20250514".to_string(),
-            max_budget_usd: 1.0,
             max_turns: 10,
             effort: "high",
             tools: "read_file,write_file,bash",

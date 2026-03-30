@@ -23,7 +23,6 @@ pub async fn run(
     repo_info: &RepoInfo,
     work_dir: &Path,
     model: &str,
-    budget: f64,
     setup_command: Option<&str>,
     context_window: u64,
 ) -> Result<ReconOutput> {
@@ -50,7 +49,7 @@ pub async fn run(
 
     // 7. Claude architecture summary.
     let (arch_summary, cost_usd) =
-        llm_recon(&clone_path, model, budget, &mut stack_info, context_window).await?;
+        llm_recon(&clone_path, model, &mut stack_info, context_window).await?;
 
     Ok(ReconOutput {
         clone_path,
@@ -343,7 +342,6 @@ async fn fetch_open_prs(repo_info: &RepoInfo) -> Result<Vec<OpenPr>> {
 async fn llm_recon(
     clone_path: &Path,
     model: &str,
-    budget: f64,
     stack_info: &mut StackInfo,
     context_window: u64,
 ) -> Result<(String, f64)> {
@@ -351,7 +349,6 @@ async fn llm_recon(
         prompt: RECON_PROMPT.to_string(),
         system_prompt: Some(recon_system_prompt()),
         model: model.to_string(),
-        max_budget_usd: budget,
         max_turns: 25,
         effort: "low",
         tools: "Read,Glob,Grep,Bash",

@@ -31,12 +31,11 @@ pub async fn run(
     clone_path: &Path,
     default_branch: &str,
     models: &[String],
-    budget: f64,
     context_window: u64,
     skip_gate1: bool,
     exa_max_searches: u32,
 ) -> Result<CriticOutput> {
-    run_with_diff(clone_path, default_branch, models, budget, context_window, skip_gate1, exa_max_searches, None).await
+    run_with_diff(clone_path, default_branch, models, context_window, skip_gate1, exa_max_searches, None).await
 }
 
 /// Run the critic panel with an optional pre-fetched diff.
@@ -48,7 +47,6 @@ pub async fn run_with_diff(
     clone_path: &Path,
     default_branch: &str,
     models: &[String],
-    budget: f64,
     context_window: u64,
     skip_gate1: bool,
     exa_max_searches: u32,
@@ -56,7 +54,6 @@ pub async fn run_with_diff(
 ) -> Result<CriticOutput> {
     info!(
         models = models.len(),
-        budget,
         skip_gate1,
         override_diff = override_diff.is_some(),
         "starting critic panel deliberation"
@@ -87,10 +84,6 @@ pub async fn run_with_diff(
         .map(|i| models[i % models.len()].clone())
         .collect();
 
-    // ── Budget allocation ───────────────────────────────────────────
-    let gate1_budget = budget * 0.25;
-    let gate2_budget = budget * 0.75;
-
     let mut total_cost = 0.0;
 
     // ── Gate 1: WORTHWHILE ──────────────────────────────────────────
@@ -101,7 +94,7 @@ pub async fn run_with_diff(
 
     if !skip_gate1 {
         let (g1_passed, g1_responses, g1_cost, g1_research) =
-            run_gate1(&diff, &critics, gate1_budget / (critics.len() as f64 * 2.0), context_window, clone_path, exa_max_searches)
+            run_gate1(&diff, &critics, context_window, clone_path, exa_max_searches)
                 .await?;
         total_cost += g1_cost;
         gate1_research = g1_research;
@@ -144,12 +137,10 @@ pub async fn run_with_diff(
         Some((findings, 0.0)) // cost already counted in gate 1
     } else if !skip_gate1 {
         // Gate 1 passed without rebuttal — run research now
-        let research_budget = budget * 0.10;
         let findings = run_research(
             "Review the diff and investigate any potential issues with the changes.",
             &diff,
             &critics[0],
-            research_budget,
             context_window,
             clone_path,
             exa_max_searches,
@@ -176,11 +167,9 @@ pub async fn run_with_diff(
         run_gate2(
             &diff,
             &critics,
-            gate2_budget / (critics.len() as f64 * 2.0),
             context_window,
             clone_path,
             gate1_research_for_gate2.as_ref().map(|(f, _)| f.as_str()),
-            budget * 0.10, // research budget (only used if no gate1 research)
             exa_max_searches,
         )
         .await?;
@@ -288,7 +277,6 @@ pub async fn run_with_diff(
 async fn run_gate1(
     diff: &str,
     critics: &[String],
-    budget_per_critic: f64,
     context_window: u64,
     clone_path: &Path,
     exa_max_searches: u32,
@@ -310,7 +298,6 @@ async fn run_gate1(
                 system,
                 prompt,
                 model.clone(),
-                budget_per_critic,
                 context_window,
                 &wd,
             )
@@ -408,12 +395,10 @@ async fn run_gate1(
 
     // Run research agent to investigate disagreement before rebuttal
     let g1_text = format_all_responses_for_research(&responses);
-    let research_budget = budget_per_critic * critics.len() as f64; // use one round's worth
     let research_result = run_research(
         &g1_text,
         diff,
         &critics[0],
-        research_budget,
         context_window,
         clone_path,
         exa_max_searches,
@@ -444,7 +429,6 @@ async fn run_gate1(
                 system,
                 prompt,
                 model.clone(),
-                budget_per_critic,
                 context_window,
                 &wd,
             )
@@ -526,11 +510,9 @@ async fn run_gate1(
 async fn run_gate2(
     diff: &str,
     critics: &[String],
-    budget_per_critic: f64,
     context_window: u64,
     clone_path: &Path,
     gate1_research: Option<&str>,
-    research_budget: f64,
     exa_max_searches: u32,
 ) -> Result<(bool, Vec<(ReadyResponse, f64)>, Vec<CriticIssue>, u32, String, f64)> {
     let mut total_cost = 0.0;
@@ -552,7 +534,6 @@ async fn run_gate2(
                 system,
                 prompt,
                 model.clone(),
-                budget_per_critic,
                 context_window,
                 &wd,
             )
@@ -629,7 +610,6 @@ async fn run_gate2(
             &claims_text,
             diff,
             &critics[0],
-            research_budget,
             context_window,
             clone_path,
             exa_max_searches,
@@ -663,7 +643,6 @@ async fn run_gate2(
                 system,
                 prompt,
                 model.clone(),
-                budget_per_critic,
                 context_window,
                 &wd,
             )
@@ -797,7 +776,6 @@ async fn invoke_critic<T: serde::de::DeserializeOwned + Send + 'static>(
     system_prompt: String,
     user_prompt: String,
     model: String,
-    budget: f64,
     context_window: u64,
     clone_path: &Path,
 ) -> Result<(T, f64)> {
@@ -807,7 +785,6 @@ async fn invoke_critic<T: serde::de::DeserializeOwned + Send + 'static>(
         prompt: user_prompt,
         system_prompt: Some(system_prompt),
         model: model_name,
-        max_budget_usd: budget,
         max_turns: 1,
         effort: "high",
         tools: "",
@@ -1026,7 +1003,6 @@ async fn run_research(
     critic_responses: &str,
     diff: &str,
     model: &str,
-    budget: f64,
     context_window: u64,
     clone_path: &Path,
     exa_max_searches: u32,
@@ -1041,7 +1017,6 @@ async fn run_research(
         prompt: user_prompt,
         system_prompt: Some(prompts::RESEARCH_SYSTEM.to_string()),
         model: model_name,
-        max_budget_usd: budget,
         max_turns: 15,
         effort: "high",
         tools: "Read,Glob,Grep,Bash,WebSearch,CheckVulnerability,CheckPackage,SearchIssues",

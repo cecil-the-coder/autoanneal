@@ -101,8 +101,6 @@ fn default_namespace() -> String { "default".into() }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct WorkerDefaults {
-    #[serde(default = "default_max_budget")]
-    pub max_budget: String,
     #[serde(default = "default_timeout")]
     pub timeout: String,
     #[serde(default = "default_model")]
@@ -161,8 +159,6 @@ pub struct WorkerDefaults {
     pub investigate_issues: String,
     #[serde(default = "default_max_issues")]
     pub max_issues: usize,
-    #[serde(default = "default_issue_budget")]
-    pub issue_budget: String,
     #[serde(default = "default_context_window")]
     pub context_window: u64,
 }
@@ -170,7 +166,6 @@ pub struct WorkerDefaults {
 impl Default for WorkerDefaults {
     fn default() -> Self {
         Self {
-            max_budget: default_max_budget(),
             timeout: default_timeout(),
             model: default_model(),
             model_recon: None,
@@ -200,13 +195,11 @@ impl Default for WorkerDefaults {
             max_open_prs: default_max_open_prs(),
             investigate_issues: String::new(),
             max_issues: default_max_issues(),
-            issue_budget: default_issue_budget(),
             context_window: default_context_window(),
         }
     }
 }
 
-fn default_max_budget() -> String { "5.00".into() }
 fn default_timeout() -> String { "30m".into() }
 fn default_model() -> String { "sonnet".into() }
 fn default_max_tasks() -> usize { 3 }
@@ -219,7 +212,6 @@ fn default_review_filter() -> String { "all".into() }
 fn default_review_fix_threshold() -> u32 { 7 }
 fn default_max_open_prs() -> usize { 5 }
 fn default_max_issues() -> usize { 2 }
-fn default_issue_budget() -> String { "3.00".into() }
 fn default_context_window() -> u64 { 128000 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -231,8 +223,6 @@ pub struct RepoEntry {
     #[serde(default = "default_true")]
     pub enabled: bool,
     // Per-repo overrides (all optional, fall back to defaults)
-    #[serde(default)]
-    pub max_budget: Option<String>,
     #[serde(default)]
     pub timeout: Option<String>,
     #[serde(default)]
@@ -292,8 +282,6 @@ pub struct RepoEntry {
     #[serde(default)]
     pub max_issues: Option<usize>,
     #[serde(default)]
-    pub issue_budget: Option<String>,
-    #[serde(default)]
     pub context_window: Option<u64>,
 }
 
@@ -302,7 +290,6 @@ impl RepoEntry {
     pub fn to_worker_args(&self, defaults: &WorkerDefaults) -> Vec<String> {
         let mut args = vec![
             self.repo.clone(),
-            "--max-budget".to_string(), self.max_budget.as_ref().unwrap_or(&defaults.max_budget).clone(),
             "--timeout".to_string(), self.timeout.as_ref().unwrap_or(&defaults.timeout).clone(),
             "--model".to_string(), self.model.as_ref().unwrap_or(&defaults.model).clone(),
             "--max-tasks".to_string(), self.max_tasks.unwrap_or(defaults.max_tasks).to_string(),
@@ -317,7 +304,6 @@ impl RepoEntry {
             "--concurrency".to_string(), self.concurrency.unwrap_or(defaults.concurrency).to_string(),
             "--max-open-prs".to_string(), self.max_open_prs.unwrap_or(defaults.max_open_prs).to_string(),
             "--max-issues".to_string(), self.max_issues.unwrap_or(defaults.max_issues).to_string(),
-            "--issue-budget".to_string(), self.issue_budget.as_ref().unwrap_or(&defaults.issue_budget).clone(),
             "--context-window".to_string(), self.context_window.unwrap_or(defaults.context_window).to_string(),
         ];
 
@@ -399,7 +385,6 @@ mod tests {
             repo: repo.into(),
             schedule: String::new(),
             enabled: true,
-            max_budget: None,
             timeout: None,
             model: None,
             model_recon: None,
@@ -429,7 +414,6 @@ mod tests {
             max_open_prs: None,
             investigate_issues: None,
             max_issues: None,
-            issue_budget: None,
             context_window: None,
         }
     }
@@ -437,7 +421,6 @@ mod tests {
     #[test]
     fn test_default_config_loads() {
         let defaults = WorkerDefaults::default();
-        assert_eq!(defaults.max_budget, "5.00");
         assert_eq!(defaults.timeout, "30m");
         assert_eq!(defaults.model, "sonnet");
         assert_eq!(defaults.max_tasks, 3);
@@ -471,7 +454,6 @@ mod tests {
             assert_eq!(args[idx + 1], val, "wrong value for {flag}");
         };
 
-        check("--max-budget", "5.00");
         check("--model", "sonnet");
         // Default boolean flags (all use --flag value format)
         check("--fix-ci", "true");
@@ -486,7 +468,6 @@ mod tests {
     fn test_repo_to_worker_args_with_overrides() {
         let defaults = WorkerDefaults::default();
         let mut entry = minimal_repo_entry("test-repo", "owner/repo");
-        entry.max_budget = Some("10.00".into());
         entry.model = Some("opus".into());
         entry.dry_run = Some(true);
         entry.fix_ci = Some(false);
@@ -494,9 +475,6 @@ mod tests {
         let args = entry.to_worker_args(&defaults);
 
         // Overridden values
-        let budget_idx = args.iter().position(|a| a == "--max-budget").unwrap();
-        assert_eq!(args[budget_idx + 1], "10.00");
-
         let model_idx = args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(args[model_idx + 1], "opus");
 
@@ -513,7 +491,6 @@ mod tests {
     fn test_repo_to_worker_args_all_fields() {
         let defaults = WorkerDefaults::default();
         let mut entry = minimal_repo_entry("test-repo", "owner/repo");
-        entry.max_budget = Some("15.00".into());
         entry.timeout = Some("60m".into());
         entry.model = Some("haiku".into());
         entry.model_recon = Some("sonnet".into());
@@ -542,7 +519,6 @@ mod tests {
         entry.max_open_prs = Some(10);
         entry.investigate_issues = Some("all".into());
         entry.max_issues = Some(5);
-        entry.issue_budget = Some("8.00".into());
         entry.context_window = Some(200000);
 
         let args = entry.to_worker_args(&defaults);
@@ -554,7 +530,6 @@ mod tests {
             assert_eq!(args[idx + 1], val, "wrong value for {flag}");
         };
 
-        check("--max-budget", "15.00");
         check("--timeout", "60m");
         check("--model", "haiku");
         check("--model-recon", "sonnet");
@@ -575,7 +550,6 @@ mod tests {
         check("--concurrency", "2");
         check("--max-open-prs", "10");
         check("--max-issues", "5");
-        check("--issue-budget", "8.00");
         check("--context-window", "200000");
         check("--setup-command", "make setup");
         check("--investigate-issues", "all");
@@ -599,7 +573,6 @@ manager:
   worker_image: "myimage:v1"
 
 defaults:
-  max_budget: "10.00"
   model: "opus"
 
 repos:
@@ -615,7 +588,6 @@ repos:
         assert_eq!(config.manager.global_concurrency, 5);
         assert_eq!(config.manager.webhook_secret, "mysecret");
         assert_eq!(config.manager.worker_image, "myimage:v1");
-        assert_eq!(config.defaults.max_budget, "10.00");
         assert_eq!(config.defaults.model, "opus");
         assert_eq!(config.repos.len(), 2);
         assert_eq!(config.repos[0].name, "my-repo");
@@ -640,7 +612,6 @@ repos:
         assert!(config.manager.docker_mode);
         assert_eq!(config.manager.webhook_secret, "");
         // Defaults block should get WorkerDefaults::default()
-        assert_eq!(config.defaults.max_budget, "5.00");
         assert_eq!(config.defaults.timeout, "30m");
         assert_eq!(config.defaults.model, "sonnet");
         // Repo should default to enabled

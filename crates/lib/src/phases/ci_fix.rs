@@ -46,7 +46,6 @@ pub async fn run(
     repo_slug: &str,
     worktree_path: &Path,
     model: &str,
-    budget: f64,
     default_branch: &str,
     context_window: u64,
 ) -> Result<CiFixOutput> {
@@ -174,7 +173,6 @@ pub async fn run(
         prompt,
         system_prompt: Some(system_prompt),
         model: model.to_string(),
-        max_budget_usd: budget,
         max_turns: 30,
         effort: "high",
         tools,

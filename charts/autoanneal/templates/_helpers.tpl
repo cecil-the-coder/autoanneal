@@ -92,8 +92,6 @@ Expects a dict with keys: repo (the repo entry), root (top-level context).
 {{- $repo := .repo -}}
 {{- $defaults := .root.Values.defaults -}}
 - {{ $repo.repo | quote }}
-- "--max-budget"
-- {{ ($repo.maxBudget | default $defaults.maxBudget) | quote }}
 - "--timeout"
 - {{ ($repo.timeout | default $defaults.timeout) | quote }}
 - "--model"
@@ -170,8 +168,6 @@ Expects a dict with keys: repo (the repo entry), root (top-level context).
 {{- end }}
 - "--max-issues"
 - {{ ($repo.maxIssues | default $defaults.maxIssues) | quote }}
-- "--issue-budget"
-- {{ ($repo.issueBudget | default $defaults.issueBudget) | quote }}
 - "--max-open-prs"
 - {{ ($repo.maxOpenPrs | default $defaults.maxOpenPrs) | quote }}
 - "--context-window"
