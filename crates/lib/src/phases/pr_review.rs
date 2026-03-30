@@ -180,6 +180,23 @@ pub async fn run(
     }
 
     // 6. Score < fix_threshold -- the PR needs work. Try to fix it.
+    // But don't attempt fixes on rejected PRs -- they shouldn't exist at all.
+    if critic_output.verdict == "reject" {
+        let comment = format!(
+            "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}",
+            critic_output.score, critic_output.verdict, critic_output.summary
+        );
+        leave_comment(repo_slug, pr.number, &comment).await;
+        add_reviewed_label(repo_slug, pr.number).await;
+        return Ok(PrReviewOutput {
+            pr_number: pr.number,
+            score: critic_output.score,
+            fixed: false,
+            commented: true,
+            cost_usd: total_cost,
+        });
+    }
+
     let remaining_budget = (budget - total_cost).max(0.0);
     if remaining_budget < 0.10 {
         // Not enough budget to attempt fixes; just comment.
