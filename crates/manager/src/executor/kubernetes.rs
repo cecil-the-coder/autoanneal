@@ -329,17 +329,33 @@ impl Executor for KubernetesExecutor {
 }
 
 /// Parse a timeout string like "30m" or "1h" into seconds.
+/// Uses checked arithmetic to prevent overflow and caps at 24 hours (86400 seconds).
 fn parse_timeout(timeout: &str) -> i64 {
+    const MAX_TIMEOUT_SECS: i64 = 24 * 3600; // 24 hours
+    
     let timeout = timeout.trim();
-    if let Some(mins) = timeout.strip_suffix('m') {
-        mins.parse::<i64>().unwrap_or(30) * 60
+    let secs = if let Some(mins) = timeout.strip_suffix('m') {
+        mins.parse::<i64>().ok().and_then(|m| m.checked_mul(60))
     } else if let Some(hours) = timeout.strip_suffix('h') {
-        hours.parse::<i64>().unwrap_or(1) * 3600
+        hours.parse::<i64>().ok().and_then(|h| h.checked_mul(3600))
     } else if let Some(secs) = timeout.strip_suffix('s') {
-        secs.parse::<i64>().unwrap_or(1800)
+        secs.parse::<i64>().ok()
     } else {
-        // Assume seconds
-        timeout.parse::<i64>().unwrap_or(1800)
-    }
+        timeout.parse::<i64>().ok()
+    };
+    
+    // Use the parsed value if valid, otherwise use defaults based on unit
+    let secs = secs.unwrap_or_else(|| {
+        if timeout.strip_suffix('m').is_some() {
+            30 * 60
+        } else if timeout.strip_suffix('h').is_some() {
+            1 * 3600
+        } else {
+            1800
+        }
+    });
+    
+    // Cap at the maximum to prevent excessive timeouts
+    secs.min(MAX_TIMEOUT_SECS)
 }
 
