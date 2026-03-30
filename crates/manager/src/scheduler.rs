@@ -458,7 +458,9 @@ fn apply_overrides(entry: &RepoEntry, overrides: Option<&TriggerOverrides>) -> R
 /// - 'm' suffix defaults to 30 minutes
 /// - 'h' suffix defaults to 1 hour
 /// - 's' or no suffix defaults to 30 minutes
+/// Values exceeding 24 hours are capped at 24 hours (86400 seconds).
 fn parse_timeout_str(s: &str) -> Duration {
+    const MAX_TIMEOUT_SECS: u64 = 24 * 3600; // 24 hours
     const DEFAULT_MINUTES: u64 = 30 * 60;
     const DEFAULT_HOURS: u64 = 1 * 3600;
     const DEFAULT_SECS: u64 = 30 * 60;
@@ -471,8 +473,7 @@ fn parse_timeout_str(s: &str) -> Duration {
 
     let mut total_secs: u64 = 0;
     let mut current_num = String::new();
-    #[allow(unused_assignments)]
-    let mut last_suffix: Option<char> = None;
+    let mut last_suffix: Option<char>;
 
     for c in s.chars() {
         if c.is_ascii_digit() {
@@ -542,11 +543,16 @@ fn parse_timeout_str(s: &str) -> Duration {
         }
     }
 
-    if total_secs == 0 {
-        Duration::from_secs(DEFAULT_SECS)
+    let final_secs = if total_secs == 0 {
+        DEFAULT_SECS
+    } else if total_secs > MAX_TIMEOUT_SECS {
+        warn!(timeout = %s, value = %total_secs, max = %MAX_TIMEOUT_SECS, "timeout exceeds maximum, capping");
+        MAX_TIMEOUT_SECS
     } else {
-        Duration::from_secs(total_secs)
-    }
+        total_secs
+    };
+
+    Duration::from_secs(final_secs)
 }
 
 #[cfg(test)]
@@ -607,5 +613,23 @@ mod tests {
         assert_eq!(parse_timeout_str("0m").as_secs(), 1800);
         assert_eq!(parse_timeout_str("0s").as_secs(), 1800);
         assert_eq!(parse_timeout_str("0h").as_secs(), 1800);
+    }
+
+    #[test]
+    fn test_parse_timeout_str_24h_cap() {
+        // Values exceeding 24 hours should be capped
+        assert_eq!(parse_timeout_str("25h").as_secs(), 24 * 3600);
+        assert_eq!(parse_timeout_str("48h").as_secs(), 24 * 3600);
+        assert_eq!(parse_timeout_str("1500m").as_secs(), 24 * 3600);
+        assert_eq!(parse_timeout_str("100000s").as_secs(), 24 * 3600);
+        assert_eq!(parse_timeout_str("24h30m").as_secs(), 24 * 3600);
+        assert_eq!(parse_timeout_str("23h60m").as_secs(), 24 * 3600);
+    }
+
+    #[test]
+    fn test_parse_timeout_str_exactly_24h() {
+        assert_eq!(parse_timeout_str("24h").as_secs(), 24 * 3600);
+        assert_eq!(parse_timeout_str("1440m").as_secs(), 24 * 3600);
+        assert_eq!(parse_timeout_str("86400s").as_secs(), 24 * 3600);
     }
 }
