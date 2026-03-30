@@ -55,7 +55,7 @@ async fn read_response_text(
         .bytes()
         .await
         .map_err(|e| ToolError::InvalidInput(format!("Failed to read {api_name} response body: {e}")))?;
-    if let Some(err) = check_content_length(body.len().try_into().unwrap_or(u64::MAX)) {
+    if let Some(err) = check_content_length(body.len() as u64) {
         return Err(err);
     }
     Ok(String::from_utf8_lossy(&body).into_owned())
