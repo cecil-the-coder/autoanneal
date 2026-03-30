@@ -56,10 +56,20 @@ pub async fn handle_github_webhook(
     debug!(event = %event, repo = %repo_full_name, "received webhook");
 
     // Find matching repo entry
-    let repo_name = state.repo_configs.lock().unwrap()
+    let repo_configs = match state.repo_configs.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            warn!(error = %e, "repo_configs mutex is poisoned");
+            return StatusCode::SERVICE_UNAVAILABLE;
+        }
+    };
+
+    let repo_name = repo_configs
         .iter()
         .find(|(key, _)| *key == repo_full_name)
         .map(|(_, name)| name.clone());
+
+    drop(repo_configs);
 
     let Some(repo_name) = repo_name else {
         debug!(repo = %repo_full_name, "no matching repo configured");
@@ -69,7 +79,13 @@ pub async fn handle_github_webhook(
     // Check cooldown
     let cooldown_key = repo_name.clone();
     let should_trigger = {
-        let cooldowns = state.webhook_cooldowns.lock().unwrap();
+        let cooldowns = match state.webhook_cooldowns.lock() {
+            Ok(guard) => guard,
+            Err(e) => {
+                warn!(error = %e, "webhook_cooldowns mutex is poisoned");
+                return StatusCode::SERVICE_UNAVAILABLE;
+            }
+        };
         match cooldowns.get(&cooldown_key) {
             Some(last) => {
                 let elapsed = last.elapsed();
@@ -86,7 +102,13 @@ pub async fn handle_github_webhook(
 
     // Update cooldown
     {
-        let mut cooldowns = state.webhook_cooldowns.lock().unwrap();
+        let mut cooldowns = match state.webhook_cooldowns.lock() {
+            Ok(guard) => guard,
+            Err(e) => {
+                warn!(error = %e, "webhook_cooldowns mutex is poisoned");
+                return StatusCode::SERVICE_UNAVAILABLE;
+            }
+        };
         cooldowns.insert(cooldown_key, std::time::Instant::now());
     }
 
@@ -197,7 +219,8 @@ mod tests {
     use hmac::Mac;
 
     fn compute_hmac(secret: &str, body: &[u8]) -> String {
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+            .expect("HMAC initialization failed: invalid secret key length");
         mac.update(body);
         let result = mac.finalize().into_bytes();
         format!("sha256={}", hex::encode(result))
