@@ -369,7 +369,9 @@ impl ToolExecutor {
                 #[cfg(target_os = "linux")]
                 unsafe {
                     cmd.pre_exec(|| {
-                        let _ = std::fs::write("/proc/self/oom_score_adj", "1000");
+                        if let Err(e) = std::fs::write("/proc/self/oom_score_adj", "1000") {
+                            tracing::warn!(error = %e, "failed to write oom_score_adj; OOM protection not applied");
+                        }
 
                         // Cap virtual memory at 3 GiB — child gets allocation
                         // failure instead of triggering container OOM kill.
