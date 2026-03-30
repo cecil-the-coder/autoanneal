@@ -52,6 +52,18 @@ async fn ready(State(_state): State<AppState>) -> impl IntoResponse {
     (StatusCode::OK, "ready")
 }
 
+async fn list_runs(
+    State(state): State<AppState>,
+) -> Json<Vec<RunRecord>> {
+    Json(state.state_store.recent_runs())
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    status: String,
+    message: String,
+}
+
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     if let Some(m) = state.metrics.as_ref() {
         match m.render() {
@@ -85,20 +97,8 @@ struct TriggerRequest {
     overrides: Option<crate::scheduler::TriggerOverrides>,
 }
 
-async fn list_runs(
-    State(state): State<AppState>,
-) -> Json<Vec<RunRecord>> {
-    Json(state.state_store.recent_runs())
-}
-
 #[derive(Serialize)]
 struct TriggerResponse {
-    status: String,
-    message: String,
-}
-
-#[derive(Serialize)]
-struct ErrorResponse {
     status: String,
     message: String,
 }
