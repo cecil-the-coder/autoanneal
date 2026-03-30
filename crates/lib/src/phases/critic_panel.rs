@@ -54,6 +54,11 @@ pub async fn run_with_diff(
     exa_max_searches: u32,
     override_diff: Option<&str>,
 ) -> Result<CriticOutput> {
+    // Validate early that we have critic models configured
+    if models.is_empty() {
+        anyhow::bail!("no critic models configured — cannot run critic panel");
+    }
+
     info!(
         models = models.len(),
         budget,
@@ -86,10 +91,6 @@ pub async fn run_with_diff(
     let critics: Vec<String> = (0..num_critics)
         .map(|i| models[i % models.len()].clone())
         .collect();
-
-    if critics.is_empty() {
-        anyhow::bail!("no critic models configured — cannot run critic panel");
-    }
 
     // ── Budget allocation ───────────────────────────────────────────
     let gate1_budget = budget * 0.25;
@@ -1090,4 +1091,34 @@ async fn get_diff(clone_path: &Path, default_branch: &str) -> Result<String> {
 
     let diff = String::from_utf8_lossy(&diff_output.stdout).to_string();
     Ok(llm::truncate_to_char_boundary(&diff, MAX_DIFF_CHARS))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_empty_critics_fails_early() {
+        // The empty critics check should fail before any filesystem operations
+        // when an override_diff is provided (skipping the git diff step)
+        let result = run_with_diff(
+            Path::new("/nonexistent/path"),
+            "main",
+            &[], // empty models list
+            1.0,
+            8192,
+            false,
+            0,
+            Some("some diff content"), // provide override to skip git diff
+        )
+        .await;
+
+        match result {
+            Err(e) => {
+                let err_msg = e.to_string();
+                assert!(err_msg.contains("no critic models configured"), "Unexpected error: {}", err_msg);
+            }
+            Ok(_) => panic!("expected an error for empty critics"),
+        }
+    }
 }
