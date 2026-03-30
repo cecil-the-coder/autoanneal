@@ -8,6 +8,8 @@ metadata:
     app.kubernetes.io/component: manager
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "autoanneal.selectorLabels" . | nindent 6 }}
