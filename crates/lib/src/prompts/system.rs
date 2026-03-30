@@ -149,6 +149,13 @@ Use professional, concise tone. No filler or marketing language.
 
 Output a single JSON code block with two keys: "title" (string, max 72 chars) and "body" (string, full markdown).
 
+```json
+{
+  "title": "...",
+  "body": "..."
+}
+```
+
 Do NOT use placeholder text — write the actual title and body for these specific improvements."#;
 
 const IMPLEMENT_DIRECTIVES: &str = r#"# Phase: Implementation

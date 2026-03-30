@@ -16,4 +16,11 @@ Use a professional, concise tone. Do not use filler language or marketing speak.
 
 Output as a JSON code block with two keys: "title" (string, max 72 chars) and "body" (string, full markdown).
 
+```json
+{
+  "title": "...",
+  "body": "..."
+}
+```
+
 Do NOT use placeholder text — write the actual title and body for these specific improvements."#;
