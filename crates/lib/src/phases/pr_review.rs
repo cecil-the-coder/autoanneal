@@ -336,6 +336,7 @@ pub async fn run(
                         info!(pr_number = pr.number, "re-reviewing after fixes");
                         match run_critic_review(
                             &clone_dir, repo_slug, pr, model, re_review_budget, context_window,
+                            critic_output.score, &critic_output.summary,
                         ).await {
                             Ok((output, cost)) => {
                                 total_cost += cost;
@@ -591,7 +592,9 @@ async fn add_ready_to_merge_label(repo_slug: &str, pr_number: u64) {
     }
 }
 
-/// Run a single critic review on the current diff in the clone dir.
+/// Run a re-review anchored to the initial review's score and deductions.
+/// The re-review checks whether the fix agent addressed the deductions,
+/// rather than scoring the PR from scratch.
 /// Returns (CriticOutput, cost) on success.
 async fn run_critic_review(
     clone_dir: &Path,
@@ -600,6 +603,8 @@ async fn run_critic_review(
     model: &str,
     budget: f64,
     context_window: u64,
+    initial_score: u32,
+    initial_deductions: &str,
 ) -> Result<(CriticOutput, f64)> {
     // Get the updated diff.
     let diff_output = tokio::process::Command::new("gh")
@@ -615,10 +620,46 @@ async fn run_critic_review(
     let diff = String::from_utf8_lossy(&diff_output.stdout);
     let diff = llm::truncate_to_char_boundary(&diff, MAX_DIFF_CHARS);
 
-    let critic_prompt = CRITIC_PROMPT.replace("{diff}", &diff);
+    let critic_prompt = format!(
+        r#"You are re-reviewing a PR after automated fixes were applied.
+
+The initial review scored this PR {initial_score}/10 with these deductions:
+
+{initial_deductions}
+
+A fix agent attempted to address these deductions. Review the updated diff below.
+
+For each original deduction:
+- If it was fixed, remove that deduction (add points back)
+- If it was NOT fixed, keep it
+
+If the fixes introduced NEW issues not in the original review, add new deductions.
+
+Your score should start from {initial_score}/10 and adjust based on which deductions were resolved and any new issues found.
+
+## Updated Diff
+
+```
+{diff}
+```
+
+Output a JSON code block:
+
+```json
+{{
+  "score": 9,
+  "verdict": "approve|needs_work|reject",
+  "summary": "Brief summary of what changed since the initial review",
+  "deductions": ["Any remaining or new deductions"]
+}}
+```"#,
+        initial_score = initial_score,
+        initial_deductions = initial_deductions,
+        diff = diff,
+    );
     let invocation = LlmInvocation {
         prompt: critic_prompt,
-        system_prompt: Some(critic_system_prompt()),
+        system_prompt: Some("You are a code reviewer re-evaluating a PR after automated fixes. Output only JSON.".to_string()),
         model: model.to_string(),
         max_budget_usd: budget,
         max_turns: 1,
