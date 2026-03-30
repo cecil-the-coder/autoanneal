@@ -1117,5 +1117,11 @@ mod tests {
         .await;
 
         assert!(result.is_err(), "expected an error for empty critics");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("no critic models configured"),
+            "expected error message about no critic models configured, got: {}",
+            err_msg
+        );
     }
 }
