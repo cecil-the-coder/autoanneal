@@ -12,6 +12,10 @@ use tracing::{info, warn};
 
 use super::critic::CriticOutput;
 
+/// Per-critic timeout. If a single critic doesn't respond within this time,
+/// it's excluded from the panel (treated as unavailable, not penalized).
+const CRITIC_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Maximum diff length (in characters) sent to critics.
 const MAX_DIFF_CHARS: usize = 50_000;
 
@@ -294,14 +298,20 @@ async fn run_gate1(
         let model = critics[i].clone();
         let wd = clone_path.to_path_buf();
         set.spawn(async move {
-            let result = invoke_critic::<WorthwhileResponse>(
+            let result = match tokio::time::timeout(CRITIC_TIMEOUT, invoke_critic::<WorthwhileResponse>(
                 system,
                 prompt,
                 model.clone(),
                 context_window,
                 &wd,
-            )
-            .await;
+            ))
+            .await {
+                Ok(r) => r,
+                Err(_) => {
+                    warn!(model = %model, "gate1 critic timed out");
+                    Err(anyhow::anyhow!("critic timed out after {}s", CRITIC_TIMEOUT.as_secs()))
+                }
+            };
             (model, result)
         });
     }
@@ -425,14 +435,20 @@ async fn run_gate1(
         let model = critics[i].clone();
         let wd = clone_path.to_path_buf();
         rebuttal_set.spawn(async move {
-            let result = invoke_critic::<WorthwhileResponse>(
+            let result = match tokio::time::timeout(CRITIC_TIMEOUT, invoke_critic::<WorthwhileResponse>(
                 system,
                 prompt,
                 model.clone(),
                 context_window,
                 &wd,
-            )
-            .await;
+            ))
+            .await {
+                Ok(r) => r,
+                Err(_) => {
+                    warn!(model = %model, "gate1 rebuttal critic timed out");
+                    Err(anyhow::anyhow!("critic timed out after {}s", CRITIC_TIMEOUT.as_secs()))
+                }
+            };
             (model, result)
         });
     }
@@ -530,14 +546,20 @@ async fn run_gate2(
         let model = critics[i].clone();
         let wd = clone_path.to_path_buf();
         set.spawn(async move {
-            let result = invoke_critic::<ReadyResponse>(
+            let result = match tokio::time::timeout(CRITIC_TIMEOUT, invoke_critic::<ReadyResponse>(
                 system,
                 prompt,
                 model.clone(),
                 context_window,
                 &wd,
-            )
-            .await;
+            ))
+            .await {
+                Ok(r) => r,
+                Err(_) => {
+                    warn!(model = %model, "gate2 critic timed out");
+                    Err(anyhow::anyhow!("critic timed out after {}s", CRITIC_TIMEOUT.as_secs()))
+                }
+            };
             (model, result)
         });
     }
@@ -639,14 +661,20 @@ async fn run_gate2(
         let model = critics[i].clone();
         let wd = clone_path.to_path_buf();
         rebuttal_set.spawn(async move {
-            let result = invoke_critic::<ReadyResponse>(
+            let result = match tokio::time::timeout(CRITIC_TIMEOUT, invoke_critic::<ReadyResponse>(
                 system,
                 prompt,
                 model.clone(),
                 context_window,
                 &wd,
-            )
-            .await;
+            ))
+            .await {
+                Ok(r) => r,
+                Err(_) => {
+                    warn!(model = %model, "gate2 rebuttal critic timed out");
+                    Err(anyhow::anyhow!("critic timed out after {}s", CRITIC_TIMEOUT.as_secs()))
+                }
+            };
             (model, result)
         });
     }

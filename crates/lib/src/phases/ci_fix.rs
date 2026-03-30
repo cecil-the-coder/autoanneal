@@ -107,7 +107,7 @@ pub async fn run(
         match merge_output {
             Ok(out) if out.status.success() => {
                 info!(pr_number = pr.number, default_branch = default_branch, "merged default branch successfully, no conflicts remain");
-                // Push the merge commit directly — no Claude needed.
+                // Push the merge commit directly — no LLM needed.
                 // git merge --no-edit already created the commit, so just push.
                 let push_result = push_branch(&clone_dir, &pr.branch).await;
                 return Ok(CiFixOutput {
@@ -117,8 +117,8 @@ pub async fn run(
                 });
             }
             _ => {
-                // Merge has conflicts — let Claude resolve them
-                info!(pr_number = pr.number, "merge conflicts detected, invoking Claude to resolve");
+                // Merge has conflicts — let LLM resolve them
+                info!(pr_number = pr.number, "merge conflicts detected, invoking LLM to resolve");
             }
         }
     }
@@ -149,7 +149,7 @@ pub async fn run(
         (truncated, "Read,Glob,Grep,Edit,Write,GhWorkflowLogs,Git", Some(ctx))
     };
 
-    // 6. Invoke Claude.
+    // 6. Invoke LLM.
     let prompt = if pr.has_merge_conflicts {
         format!(
             "Pull request #{} (branch: {}) has merge conflicts with {}.\n\n\

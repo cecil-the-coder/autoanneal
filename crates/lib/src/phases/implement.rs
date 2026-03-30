@@ -15,7 +15,7 @@ use tracing::{info, warn};
 /// Maximum number of worktree groups running in parallel per batch.
 const MAX_PARALLEL_GROUPS: usize = 5;
 
-/// Timeout for a single Claude task invocation.
+/// Timeout for a single LLM task invocation.
 const TASK_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub struct ImplementOutput {
@@ -384,7 +384,7 @@ async fn run_single_task(
         .replace("{build_command}", build_command)
         .replace("{test_command}", test_command);
 
-    // Step 3: Invoke Claude.
+    // Step 3: Invoke LLM.
     let invocation = LlmInvocation {
         prompt,
         system_prompt: Some(implement_system_prompt()),

@@ -20,8 +20,8 @@ impl Provider {
     /// Return the required HTTP headers.
     ///
     /// When `use_bearer` is true for the Anthropic provider, sends
-    /// `Authorization: Bearer` instead of `x-api-key`. This matches Claude
-    /// Code's ANTHROPIC_AUTH_TOKEN behavior for proxies/gateways.
+    /// `Authorization: Bearer` instead of `x-api-key`. This matches the
+    /// ANTHROPIC_AUTH_TOKEN behavior for proxies/gateways.
     pub fn auth_headers(&self, api_key: &str, use_bearer: bool) -> Vec<(&'static str, String)> {
         match self {
             Provider::Anthropic if use_bearer => vec![

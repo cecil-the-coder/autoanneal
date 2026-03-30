@@ -18,7 +18,7 @@ pub struct ReconOutput {
 }
 
 /// Run the recon phase: clone the repo, detect the stack, fetch open PRs,
-/// and invoke Claude for an architecture summary.
+/// and invoke the LLM for an architecture summary.
 pub async fn run(
     repo_info: &RepoInfo,
     work_dir: &Path,
@@ -47,7 +47,7 @@ pub async fn run(
     // 6. Fetch open PRs.
     let open_prs = fetch_open_prs(repo_info).await?;
 
-    // 7. Claude architecture summary.
+    // 7. LLM architecture summary.
     let (arch_summary, cost_usd) =
         llm_recon(&clone_path, model, &mut stack_info, context_window).await?;
 
@@ -337,8 +337,8 @@ async fn fetch_open_prs(repo_info: &RepoInfo) -> Result<Vec<OpenPr>> {
     Ok(open_prs)
 }
 
-/// Invoke Claude for the architecture summary and update stack_info with
-/// any more specific commands Claude discovers.
+/// Invoke the LLM for the architecture summary and update stack_info with
+/// any more specific commands it discovers.
 async fn llm_recon(
     clone_path: &Path,
     model: &str,
@@ -364,19 +364,19 @@ async fn llm_recon(
     let timeout = Duration::from_secs(300);
     let response = llm::invoke::<ReconResult>(&invocation, timeout)
         .await
-        .context("Claude recon invocation failed")?;
+        .context("recon invocation failed")?;
 
     let cost_usd = response.cost_usd;
 
     let recon = match response.structured {
         Some(r) => r,
         None => {
-            warn!("Claude did not return structured output; using text as summary");
+            warn!("LLM did not return structured output; using text as summary");
             return Ok((response.text, cost_usd));
         }
     };
 
-    // Update stack_info with Claude's findings if they are more specific.
+    // Update stack_info with LLM findings if they are more specific.
     if !recon.build_commands.is_empty() {
         stack_info.build_commands = recon.build_commands;
     }
@@ -396,7 +396,7 @@ async fn llm_recon(
     info!(
         cost_usd,
         summary_len = recon.summary.len(),
-        "Claude recon complete"
+        "LLM recon complete"
     );
 
     Ok((recon.summary, cost_usd))

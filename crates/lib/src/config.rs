@@ -11,7 +11,7 @@ pub struct Config {
     #[arg(long, default_value = "30m")]
     pub timeout: String,
 
-    /// Default Claude model alias or ID (used for phases without a specific override)
+    /// Default model alias or ID (used for phases without a specific override)
     #[arg(long, default_value = "sonnet")]
     pub model: String,
 

@@ -639,7 +639,7 @@ impl ToolExecutor {
         defs
     }
 
-    /// Return the full set of tool definitions for the Claude API.
+    /// Return the full set of tool definitions for the LLM API.
     fn all_tool_definitions() -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {

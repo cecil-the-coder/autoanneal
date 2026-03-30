@@ -1,5 +1,5 @@
 //! Bridge module: drop-in replacement for `llm::invoke` that uses the agent
-//! module's conversation loop instead of shelling out to the `claude` CLI.
+//! module's conversation loop instead of calling the LLM API directly.
 //!
 //! Also provides `memory_stats()` for tracking RSS usage.
 
@@ -27,7 +27,7 @@ pub struct Credentials {
     pub base_url: String,
     pub api_key: String,
     /// When true, use `Authorization: Bearer` even for Anthropic provider
-    /// (matches Claude Code's ANTHROPIC_AUTH_TOKEN behavior for proxies/gateways).
+    /// (matches the ANTHROPIC_AUTH_TOKEN behavior for proxies/gateways).
     pub use_bearer: bool,
 }
 
@@ -38,7 +38,7 @@ pub struct Credentials {
 /// 2. Presence of `OPENAI_BASE_URL` → OpenAI
 /// 3. Default → Anthropic
 ///
-/// Anthropic auth (matches Claude Code precedence):
+/// Anthropic auth precedence:
 /// - `ANTHROPIC_AUTH_TOKEN` → Bearer token (for proxies/gateways)
 /// - `ANTHROPIC_API_KEY` → x-api-key header (direct API)
 ///
@@ -78,7 +78,7 @@ fn resolve_anthropic() -> Result<Credentials> {
     let base_url = std::env::var("ANTHROPIC_BASE_URL")
         .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
 
-    // AUTH_TOKEN takes precedence (like Claude Code) — used for proxies/gateways.
+    // AUTH_TOKEN takes precedence — used for proxies/gateways.
     if let Ok(token) = std::env::var("ANTHROPIC_AUTH_TOKEN") {
         return Ok(Credentials {
             provider: Provider::Anthropic,
@@ -261,7 +261,7 @@ fn map_result<T: DeserializeOwned>(result: ConversationResult, duration_ms: u64)
         + result.total_output_tokens as f64 * 15.0)
         / 1_000_000.0;
 
-    // Extract structured output using the same strategies as claude.rs:
+    // Extract structured output using the same strategies as the old CLI path:
     // 1. Try parsing the full text as JSON.
     // 2. Try extracting from a markdown code fence.
     let structured: Option<T> = if let Ok(parsed) = serde_json::from_str::<T>(&result.text) {
@@ -308,7 +308,7 @@ fn map_result<T: DeserializeOwned>(result: ConversationResult, duration_ms: u64)
 /// Drop-in replacement for `llm::invoke` that uses the agent module internally.
 /// This bridges the old `LlmInvocation`/`LlmResponse` types to the new
 /// conversation loop, calling the LLM API directly instead of shelling out to
-/// the `claude` CLI.
+/// the CLI.
 pub async fn invoke<T: DeserializeOwned>(
     invocation: &LlmInvocation,
     timeout: Duration,
@@ -370,7 +370,7 @@ pub async fn invoke<T: DeserializeOwned>(
 
     let config = build_config(invocation, timeout);
 
-    // Prepend working directory context (reuse the logic from claude.rs).
+    // Prepend working directory context.
     let dir_context = llm::get_dir_context(&invocation.working_dir).await;
     let mut augmented_prompt = if dir_context.is_empty() {
         invocation.prompt.clone()
