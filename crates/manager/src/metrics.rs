@@ -61,12 +61,14 @@ impl Metrics {
         })
     }
 
-    pub fn render(&self) -> String {
+    pub fn render(&self) -> Result<String, String> {
         let encoder = TextEncoder::new();
         let metric_families = self.registry.gather();
         let mut buffer = Vec::new();
-        encoder.encode(&metric_families, &mut buffer).unwrap();
-        String::from_utf8(buffer).unwrap()
+        encoder
+            .encode(&metric_families, &mut buffer)
+            .map_err(|e| format!("failed to encode metrics: {}", e))?;
+        String::from_utf8(buffer).map_err(|e| format!("invalid UTF-8 in metrics: {}", e))
     }
 }
 
@@ -80,7 +82,7 @@ mod tests {
         m.runs_total.inc();
         m.runs_success.inc();
 
-        let output = m.render();
+        let output = m.render().unwrap();
         // Should be valid Prometheus text format with HELP and TYPE lines
         assert!(output.contains("# HELP"));
         assert!(output.contains("# TYPE"));
@@ -92,7 +94,7 @@ mod tests {
     #[test]
     fn test_metrics_contain_expected_names() {
         let m = Metrics::new().unwrap();
-        let output = m.render();
+        let output = m.render().unwrap();
 
         let expected_names = [
             "autoanneal_runs_total",
