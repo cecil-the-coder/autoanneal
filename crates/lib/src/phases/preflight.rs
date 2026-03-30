@@ -243,7 +243,7 @@ async fn fetch_all_prs(
         let final_result: Vec<ExternalPr> = result
             .into_iter()
             .filter(|pr| {
-                let dominated_by_review = !pr.reviewed && config.review_prs;
+                let dominated_by_review = (config.force_review || !pr.reviewed) && (config.review_prs || config.force_review);
                 let included_for_conflicts = pr.has_merge_conflicts && config.fix_conflicts;
                 let included_for_ci = pr.ci_status == CiStatus::Failing && config.fix_external_ci;
                 dominated_by_review || included_for_conflicts || included_for_ci
