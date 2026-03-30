@@ -473,7 +473,7 @@ fn parse_timeout_str(s: &str) -> Duration {
 
     let mut total_secs: u64 = 0;
     let mut current_num = String::new();
-    let mut last_suffix: Option<char>;
+    let mut last_suffix: Option<char> = None;
 
     for c in s.chars() {
         if c.is_ascii_digit() {
