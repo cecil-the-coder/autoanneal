@@ -29,11 +29,11 @@ impl Drop for FixingLabelGuard {
             pr_number = pr_number,
             "removing autoanneal:fixing label"
         );
-        // Offload blocking std::process::Command to tokio's blocking thread pool
-        // so we don't stall the async runtime. Fire-and-forget is acceptable
-        // here since the original code also silently discarded errors.
-        let _ = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("gh")
+        // Use a synchronous std::thread::spawn to avoid runtime dependency.
+        // This ensures the label removal runs regardless of async runtime state.
+        // We detach the thread (don't join) to avoid blocking the drop.
+        std::thread::spawn(move || {
+            let _ = std::process::Command::new("gh")
                 .args([
                     "pr",
                     "edit",
@@ -43,7 +43,7 @@ impl Drop for FixingLabelGuard {
                     "-R",
                     &repo_slug,
                 ])
-                .output()
+                .output();
         });
     }
 }

@@ -80,7 +80,8 @@ pub async fn gh_command(repo_dir: &Path, args: &[&str]) -> Result<String> {
             .context("failed to spawn gh process")?;
 
         if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stdout = String::from_utf8(output.stdout)
+                .map_err(|e| anyhow::anyhow!("gh command produced invalid UTF-8: {e}"))?;
             return Ok(stdout);
         }
 

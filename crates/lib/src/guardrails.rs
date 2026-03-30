@@ -12,8 +12,8 @@ pub enum GuardrailViolation {
     UnauthorizedFiles { files: Vec<String> },
     #[error("unauthorized file deletions: {files:?}")]
     UnauthorizedDeletion { files: Vec<String> },
-    #[error("arithmetic overflow counting diff lines")]
-    ArithmeticOverflow,
+    #[error("arithmetic overflow counting diff lines: {counter}")]
+    ArithmeticOverflow { counter: &'static str },
     #[error("I/O error: {0}")]
     IoError(String),
 }
@@ -101,8 +101,8 @@ pub async fn validate_diff(
             0
         });
 
-        lines_added = lines_added.checked_add(added).ok_or(GuardrailViolation::ArithmeticOverflow)?;
-        lines_removed = lines_removed.checked_add(removed).ok_or(GuardrailViolation::ArithmeticOverflow)?;
+        lines_added = lines_added.checked_add(added).ok_or(GuardrailViolation::ArithmeticOverflow { counter: "lines_added" })?;
+        lines_removed = lines_removed.checked_add(removed).ok_or(GuardrailViolation::ArithmeticOverflow { counter: "lines_removed" })?;
         files_changed.push(filename);
     }
 
