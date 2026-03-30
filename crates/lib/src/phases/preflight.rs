@@ -424,7 +424,8 @@ fn matches_review_filter(filter: &str, updated_at: &str, labels: &[String]) -> b
         "recent" => {
             if let Ok(updated) = chrono::DateTime::parse_from_rfc3339(updated_at) {
                 let age = chrono::Utc::now().signed_duration_since(updated);
-                age.num_hours() <= 24
+                // Ensure age is non-negative (not a future date) and within 24 hours.
+                age.num_hours() >= 0 && age.num_hours() <= 24
             } else {
                 false
             }
@@ -955,8 +956,11 @@ mod tests {
 
     #[test]
     fn test_review_filter_recent() {
-        let recent = mock_pr(1, "feat/a", &[], "MERGEABLE", "2026-03-29T00:00:00Z", "alice");
-        let old = mock_pr(2, "feat/b", &[], "MERGEABLE", "2025-01-01T00:00:00Z", "bob");
+        // Generate a recent timestamp (2 hours ago) and an old timestamp.
+        let recent_ts = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        let old_ts = (chrono::Utc::now() - chrono::Duration::hours(25)).to_rfc3339();
+        let recent = mock_pr(1, "feat/a", &[], "MERGEABLE", &recent_ts, "alice");
+        let old = mock_pr(2, "feat/b", &[], "MERGEABLE", &old_ts, "bob");
         let prs: Vec<&serde_json::Value> = vec![&recent, &old];
 
         let config = PrFetchConfig {
