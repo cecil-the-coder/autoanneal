@@ -18,28 +18,6 @@ use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 /// Maximum allowed API response body size in bytes (10 MB).
 const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
 
-/// Check if content length exceeds MAX_RESPONSE_SIZE.
-/// Returns an error message if too large, None if acceptable.
-fn check_content_length(len: u64) -> Option<ToolError> {
-    // Safely handle conversion from u64 to usize for 32-bit targets
-    let len_usize = match len.try_into() {
-        Ok(n) => n,
-        Err(_) => return Some(ToolError::InvalidInput(format!(
-            "Response body too large: {len} bytes exceeds the {}-byte limit",
-            MAX_RESPONSE_SIZE
-        ))),
-    };
-    
-    if len_usize > MAX_RESPONSE_SIZE {
-        Some(ToolError::InvalidInput(format!(
-            "Response body too large: {len} bytes exceeds the {}-byte limit",
-            MAX_RESPONSE_SIZE
-        )))
-    } else {
-        None
-    }
-}
-
 /// Read a response body as text, enforcing a maximum size limit.
 /// Returns a descriptive error if the body exceeds `MAX_RESPONSE_SIZE`.
 async fn read_response_text(
