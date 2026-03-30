@@ -60,7 +60,7 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
                 metrics,
             )
                 .into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     } else {
         (

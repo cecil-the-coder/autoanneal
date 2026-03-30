@@ -1,4 +1,28 @@
 use prometheus::{IntCounter, IntGauge, Histogram, HistogramOpts, Registry, Encoder, TextEncoder};
+use std::fmt;
+
+#[derive(Debug)]
+pub enum MetricsError {
+    Encode(String),
+    Utf8(std::string::FromUtf8Error),
+}
+
+impl fmt::Display for MetricsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MetricsError::Encode(msg) => write!(f, "{}", msg),
+            MetricsError::Utf8(e) => write!(f, "invalid UTF-8 in metrics: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for MetricsError {}
+
+impl From<std::string::FromUtf8Error> for MetricsError {
+    fn from(e: std::string::FromUtf8Error) -> Self {
+        MetricsError::Utf8(e)
+    }
+}
 
 pub struct Metrics {
     pub registry: Registry,
@@ -61,14 +85,14 @@ impl Metrics {
         })
     }
 
-    pub fn render(&self) -> Result<String, String> {
+    pub fn render(&self) -> Result<String, MetricsError> {
         let encoder = TextEncoder::new();
         let metric_families = self.registry.gather();
         let mut buffer = Vec::new();
         encoder
             .encode(&metric_families, &mut buffer)
-            .map_err(|e| format!("failed to encode metrics: {}", e))?;
-        String::from_utf8(buffer).map_err(|e| format!("invalid UTF-8 in metrics: {}", e))
+            .map_err(|e| MetricsError::Encode(format!("failed to encode metrics: {}", e)))?;
+        String::from_utf8(buffer).map_err(MetricsError::from)
     }
 }
 
