@@ -197,7 +197,8 @@ mod tests {
     use hmac::Mac;
 
     fn compute_hmac(secret: &str, body: &[u8]) -> String {
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+            .expect("HMAC key should be valid for test");
         mac.update(body);
         let result = mac.finalize().into_bytes();
         format!("sha256={}", hex::encode(result))
