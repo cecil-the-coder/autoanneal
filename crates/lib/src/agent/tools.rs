@@ -136,7 +136,10 @@ impl ToolExecutor {
         // parent must already exist.
         // Walk up to find the deepest existing ancestor so we can
         // canonicalize it, then re-append the non-existent tail.
-        let resolved = if let Ok(canonical) = candidate.canonicalize() {
+        // NOTE: We canonicalize first and store the result to avoid borrowing `self`
+        // across the check, which would prevent calling `working_dir_canonicalize()`.
+        let canonical_result = candidate.canonicalize();
+        let resolved = if let Ok(canonical) = canonical_result {
             canonical
         } else {
             let mut ancestor = candidate.clone();
