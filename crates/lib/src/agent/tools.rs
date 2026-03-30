@@ -485,8 +485,8 @@ impl ToolExecutor {
 
         // Run the command using tokio::process::Command + tokio::time::timeout
         // so we can reliably kill the child on timeout.
-        let run = |rt: tokio::runtime::Handle| {
-            rt.block_on(async {
+        let run = move |rt: tokio::runtime::Handle| {
+            rt.block_on(async move {
                 use tokio::io::AsyncReadExt;
 
                 let mut cmd = tokio::process::Command::new("sh");
@@ -673,7 +673,7 @@ impl ToolExecutor {
         let git_args: Vec<String> = git_args.iter().map(|s| s.to_string()).collect();
         let timeout = self.command_timeout;
 
-        let run = |rt: tokio::runtime::Handle| {
+        let run = move |rt: tokio::runtime::Handle| {
             rt.block_on(async move {
                 let output = tokio::time::timeout(
                     timeout,
