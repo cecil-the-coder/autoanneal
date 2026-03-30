@@ -149,7 +149,8 @@ pub async fn create_pr(
             improvements.iter().map(|i| i.title.as_str()).collect::<Vec<_>>().join(", ")
         );
     }
-    if pr_body.body.contains("Full markdown PR body here") || pr_body.body.len() < 20 {
+    let body_lower = pr_body.body.to_lowercase();
+    if body_lower.contains("full markdown pr body here") || body_lower.contains("placeholder") || pr_body.body.len() < 20 {
         warn!(body_len = pr_body.body.len(), "PR body looks like a placeholder, generating fallback");
         pr_body.body = improvements
             .iter()
