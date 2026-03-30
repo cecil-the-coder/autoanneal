@@ -115,7 +115,8 @@ impl WorktreeManager {
                 .current_dir(&self.repo_dir)
                 .output(),
         )
-        .await;
+        .await
+        .map_err(|_| anyhow::anyhow!("git worktree prune timed out after 30s"))??;
 
         info!(path = %worktree_path.display(), "removed git worktree");
         Ok(())

@@ -224,11 +224,11 @@ mod tests {
         // Collect join errors gracefully instead of panicking on the first failure
         let mut join_errors = Vec::new();
         for (i, h) in handles.into_iter().enumerate() {
-            if let Err(e) = h.join() {
-                join_errors.push((i, e));
+            if let Err(_e) = h.join() {
+                join_errors.push(i);
             }
         }
-        assert!(join_errors.is_empty(), "Some threads panicked: {join_errors:?}");
+        assert!(join_errors.is_empty(), "Threads at indices {:?} panicked", join_errors);
 
         assert_eq!(store.active_count(), 10);
         assert_eq!(store.recent_runs().len(), 10);
