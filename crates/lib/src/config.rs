@@ -654,6 +654,8 @@ mod tests {
             issue_budget: 3.0,
             max_open_prs: 5,
             context_window: 128_000,
+            max_pr_fix_attempts: 3,
+            exa_searches: 3,
         }
     }
 
