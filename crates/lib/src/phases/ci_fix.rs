@@ -118,8 +118,8 @@ pub async fn run(
                 });
             }
             _ => {
-                // Merge has conflicts — let the LLM resolve them
-                info!(pr_number = pr.number, "merge conflicts detected, invoking LLM to resolve");
+                // Merge has conflicts — let Claude resolve them
+                info!(pr_number = pr.number, "merge conflicts detected, invoking Claude to resolve");
             }
         }
     }

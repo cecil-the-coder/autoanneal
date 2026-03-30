@@ -399,7 +399,7 @@ async fn llm_recon(
     info!(
         cost_usd,
         summary_len = recon.summary.len(),
-        "recon complete"
+        "Claude recon complete"
     );
 
     Ok((recon.summary, cost_usd))
