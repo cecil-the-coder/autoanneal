@@ -7,7 +7,7 @@ pub struct Config {
     /// GitHub repository (owner/repo or full URL)
     pub repo: String,
 
-    /// Total Claude spend cap in USD
+    /// Total LLM spend cap in USD
     #[arg(long, default_value = "5.00")]
     pub max_budget: f64,
 
@@ -15,8 +15,8 @@ pub struct Config {
     #[arg(long, default_value = "30m")]
     pub timeout: String,
 
-    /// Default Claude model alias or ID (used for phases without a specific override)
-    #[arg(long, default_value = "sonnet")]
+    /// Default model alias or ID (used for phases without a specific override)
+    #[arg(long, default_value = "glm-5")]
     pub model: String,
 
     /// Model for recon phase (defaults to --model)
@@ -326,7 +326,7 @@ mod tests {
             repo: "owner/repo".to_string(),
             max_budget: 5.0,
             timeout: "30m".to_string(),
-            model: "sonnet".to_string(),
+            model: "glm-5".to_string(),
             model_recon: None,
             model_analysis: None,
             model_implement: None,
@@ -370,7 +370,7 @@ mod tests {
             repo: "https://github.com/owner/repo".to_string(),
             max_budget: 5.0,
             timeout: "30m".to_string(),
-            model: "sonnet".to_string(),
+            model: "glm-5".to_string(),
             model_recon: None,
             model_analysis: None,
             model_implement: None,
@@ -414,7 +414,7 @@ mod tests {
             repo: "https://github.com/owner/repo.git".to_string(),
             max_budget: 5.0,
             timeout: "30m".to_string(),
-            model: "sonnet".to_string(),
+            model: "glm-5".to_string(),
             model_recon: None,
             model_analysis: None,
             model_implement: None,
@@ -458,7 +458,7 @@ mod tests {
             repo: "git@github.com:owner/repo.git".to_string(),
             max_budget: 5.0,
             timeout: "30m".to_string(),
-            model: "sonnet".to_string(),
+            model: "glm-5".to_string(),
             model_recon: None,
             model_analysis: None,
             model_implement: None,
@@ -502,7 +502,7 @@ mod tests {
             repo: "owner/repo".to_string(),
             max_budget: 5.0,
             timeout: "30m".to_string(),
-            model: "sonnet".to_string(),
+            model: "glm-5".to_string(),
             model_recon: None,
             model_analysis: None,
             model_implement: None,
@@ -546,7 +546,7 @@ mod tests {
             repo: "owner/repo".to_string(),
             max_budget: 5.0,
             timeout: "30m".to_string(),
-            model: "sonnet".to_string(),
+            model: "glm-5".to_string(),
             model_recon: None,
             model_analysis: None,
             model_implement: None,

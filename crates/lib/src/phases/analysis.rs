@@ -166,7 +166,7 @@ pub async fn run(
         exa_max_searches: 0,
     };
 
-    // 3. Invoke Claude.
+    // 3. Invoke LLM.
     let response = llm::invoke::<AnalysisResult>(&invocation, Duration::from_secs(900)).await?;
 
     let analysis = response
@@ -176,7 +176,7 @@ pub async fn run(
         });
 
     let total_found = analysis.improvements.len();
-    info!(total_found, "analysis phase: raw improvements from Claude");
+    info!(total_found, "analysis phase: raw improvements from LLM");
 
     // 4. Post-process improvements.
     let filtered = post_process_improvements(analysis.improvements, min_severity, max_tasks);
@@ -229,7 +229,7 @@ pub async fn run_doc_analysis(
         exa_max_searches: 0,
     };
 
-    // 3. Invoke Claude.
+    // 3. Invoke LLM.
     let response = llm::invoke::<AnalysisResult>(&invocation, Duration::from_secs(900)).await?;
 
     let analysis = response
@@ -239,7 +239,7 @@ pub async fn run_doc_analysis(
         });
 
     let total_found = analysis.improvements.len();
-    info!(total_found, "doc analysis phase: raw improvements from Claude");
+    info!(total_found, "doc analysis phase: raw improvements from LLM");
 
     // 4. Post-process improvements.
     let filtered = post_process_improvements(analysis.improvements, min_severity, max_tasks);
