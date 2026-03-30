@@ -230,7 +230,7 @@ pub async fn run(
         });
     }
 
-    // 6a. Invoke fix prompt.
+    // 6a. Invoke LLM with fix prompt.
     let fix_prompt = PR_REVIEW_FIX_PROMPT
         .replace("{pr_number}", &pr.number.to_string())
         .replace("{branch}", &pr.branch)
