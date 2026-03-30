@@ -68,7 +68,7 @@ impl StateStore {
     }
 
     pub fn record_completed(&self, record: RunRecord) {
-        let mut runs = self.recent_runs.write().unwrap_or_else(|e| e.into_inner());
+        let mut runs = self.recent_runs.write().unwrap();
         if runs.len() >= self.history_limit {
             runs.pop_front();
         }
@@ -76,7 +76,7 @@ impl StateStore {
     }
 
     pub fn recent_runs(&self) -> Vec<RunRecord> {
-        self.recent_runs.read().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect()
+        self.recent_runs.read().unwrap().iter().cloned().collect()
     }
 }
 
