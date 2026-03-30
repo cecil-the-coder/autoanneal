@@ -58,6 +58,11 @@ pub async fn run_with_diff(
     exa_max_searches: u32,
     override_diff: Option<&str>,
 ) -> Result<CriticOutput> {
+    // Validate early that we have critic models configured
+    if models.is_empty() {
+        anyhow::bail!("no critic models configured — cannot run critic panel (check your config.yaml)");
+    }
+
     info!(
         models = models.len(),
         budget,
@@ -1114,4 +1119,37 @@ async fn get_diff(clone_path: &Path, default_branch: &str) -> Result<String> {
 
     let diff = String::from_utf8_lossy(&diff_output.stdout).to_string();
     Ok(llm::truncate_to_char_boundary(&diff, MAX_DIFF_CHARS))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_empty_critics_fails_early() {
+        // Create a temporary directory for a portable path that exists
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let temp_path = temp_dir.path();
+
+        // The empty critics check should fail early regardless of path validity
+        let result = run_with_diff(
+            temp_path,
+            "main",
+            &[], // empty models list
+            1.0,
+            8192,
+            false,
+            0,
+            Some("some diff content"), // provide override to skip git diff
+        )
+        .await;
+
+        assert!(result.is_err(), "expected an error for empty critics");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("no critic models configured"),
+            "expected error message about no critic models configured, got: {}",
+            err_msg
+        );
+    }
 }
