@@ -232,56 +232,38 @@ fn validate_pr_branch(pr_number: &u64, repo_slug: &str, expected_branch: &str) -
         }
     };
 
+    // Parse JSON response using serde_json for robust handling.
+    #[derive(serde::Deserialize)]
+    struct PrView {
+        #[serde(rename = "headRefName")]
+        head_ref_name: String,
+    }
+
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Parse JSON like {"headRefName":"branch-name"}
-    match extract_head_ref_name(&stdout) {
-        Some(head_branch) => {
-            if head_branch == expected_branch {
+    match serde_json::from_str::<PrView>(&stdout) {
+        Ok(pr_view) => {
+            if pr_view.head_ref_name == expected_branch {
                 true
             } else {
                 tracing::warn!(
                     pr_number = pr_number,
                     expected_branch = %expected_branch,
-                    actual_branch = %head_branch,
+                    actual_branch = %pr_view.head_ref_name,
                     "PR head branch does not match expected branch name"
                 );
                 false
             }
         }
-        None => {
+        Err(e) => {
             tracing::warn!(
                 pr_number = pr_number,
                 stdout = %stdout,
+                error = %e,
                 "Could not parse headRefName from gh pr view output"
             );
             false
         }
     }
-}
-
-/// Extracts the `headRefName` value from a JSON string like `{"headRefName":"branch-name"}`.
-///
-/// This uses simple string matching rather than pulling in a JSON parser dependency.
-fn extract_head_ref_name(json: &str) -> Option<String> {
-    // Look for "headRefName":"<value>"
-    let key = r#""headRefName""#;
-    let start = json.find(key)?;
-    let after_key = &json[start + key.len()..];
-
-    // Skip optional whitespace and colon
-    let after_key = after_key.trim_start();
-    if !after_key.starts_with(':') {
-        return None;
-    }
-    let after_colon = after_key[1..].trim_start();
-
-    // Extract quoted value
-    if !after_colon.starts_with('"') {
-        return None;
-    }
-    let value_start = &after_colon[1..];
-    let value_end = value_start.find('"')?;
-    Some(value_start[..value_end].to_string())
 }
 
 impl Drop for CleanupGuard {
