@@ -136,37 +136,53 @@ impl ToolExecutor {
         // parent must already exist.
         // Walk up to find the deepest existing ancestor so we can
         // canonicalize it, then re-append the non-existent tail.
-        let resolved = if candidate.exists() {
-            candidate
-                .canonicalize()
-                .map_err(|e| ToolError::IoError(e))?
+        let resolved = if let Ok(canonical) = candidate.canonicalize() {
+            canonical
         } else {
             let mut ancestor = candidate.clone();
             let mut tail_parts: Vec<std::ffi::OsString> = Vec::new();
             loop {
-                if ancestor.exists() {
-                    break;
-                }
-                match ancestor.file_name() {
-                    Some(part) => {
-                        tail_parts.push(part.to_os_string());
-                        ancestor = ancestor
-                            .parent()
-                            .ok_or_else(|| {
-                                ToolError::InvalidInput("no parent directory".into())
-                            })?
-                            .to_path_buf();
+                // Attempt to canonicalize; if it succeeds, we've found our
+                // deepest existing ancestor atomically without a separate
+                // existence check (avoiding a TOCTOU race).
+                match ancestor.canonicalize() {
+                    Ok(canonical_ancestor) => {
+                        // Re-verify the ancestor is still the same path component
+                        // by checking it hasn't been swapped with a symlink.
+                        if !canonical_ancestor.starts_with(&self.working_dir_canonicalize()?) {
+                            return Err(ToolError::InvalidInput(format!(
+                                "path escapes working directory: {raw}"
+                            )));
+                        }
+                        let mut base = canonical_ancestor;
+                        for part in tail_parts.into_iter().rev() {
+                            base = base.join(part);
+                        }
+                        break base;
                     }
-                    None => break,
+                    Err(_) => {
+                        // Ancestor doesn't exist or isn't accessible yet.
+                        // Walk up one level.
+                        match ancestor.file_name() {
+                            Some(part) => {
+                                tail_parts.push(part.to_os_string());
+                                ancestor = ancestor
+                                    .parent()
+                                    .ok_or_else(|| {
+                                        ToolError::InvalidInput("no parent directory".into())
+                                    })?
+                                    .to_path_buf();
+                            }
+                            None => {
+                                // Reached root without finding an existing ancestor.
+                                return Err(ToolError::InvalidInput(format!(
+                                    "cannot canonicalize path: no existing ancestor for {raw}"
+                                )));
+                            }
+                        }
+                    }
                 }
             }
-            let mut base = ancestor
-                .canonicalize()
-                .map_err(|e| ToolError::InvalidInput(format!("cannot canonicalize path: {e}")))?;
-            for part in tail_parts.into_iter().rev() {
-                base = base.join(part);
-            }
-            base
         };
 
         if !resolved.starts_with(&self.working_dir_canonicalize()?) {
