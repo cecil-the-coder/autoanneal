@@ -104,6 +104,8 @@ pub(crate) async fn get_dir_context(working_dir: &Path) -> String {
             // Timeout: kill the child process.
             warn!("find command timed out after 30 seconds, killing process");
             let _ = child.kill().await;
+            // Wait for the child process to avoid zombie/defunct processes.
+            let _ = child.wait().await;
             // Abort the reader tasks and await them to ensure cleanup.
             stdout_task.abort();
             stderr_task.abort();

@@ -21,7 +21,7 @@ pub trait MessageSender: Send + Sync {
 #[async_trait::async_trait]
 pub trait ToolHandler: Send + Sync {
     /// Execute a single tool call. Returns `(content, is_error)`.
-    async fn execute(&self, name: &str, input: &serde_json::Value) -> (String, bool);
+    async fn execute(&mut self, name: &str, input: &serde_json::Value) -> (String, bool);
 
     /// Return the tool definitions to include in the API request.
     fn definitions(&self) -> Vec<ToolDefinition>;
@@ -487,7 +487,7 @@ mod tests {
     #[async_trait::async_trait]
     impl ToolHandler for MockToolHandler {
         async fn execute(
-            &self,
+            &mut self,
             name: &str,
             input: &serde_json::Value,
         ) -> (String, bool) {

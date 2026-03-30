@@ -179,7 +179,7 @@ struct ToolExecutorAdapter {
 
 #[async_trait::async_trait]
 impl ToolHandler for ToolExecutorAdapter {
-    async fn execute(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
+    async fn execute(&mut self, name: &str, input: &serde_json::Value) -> (String, bool) {
         if self.debug_stream {
             let input_preview = serde_json::to_string(input)
                 .unwrap_or_else(|_| "?".to_string());

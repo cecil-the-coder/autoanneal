@@ -51,6 +51,7 @@ const MAX_OUTPUT_BYTES: usize = 128 * 1024;
 
 pub struct ToolExecutor {
     working_dir: PathBuf,
+    working_dir_canonical: Option<PathBuf>, // cached canonical path
     command_timeout: Duration,
     ci_context: Option<CiContext>,
     enabled_tools: Option<Vec<String>>,
@@ -69,6 +70,7 @@ impl ToolExecutor {
     ) -> Self {
         Self {
             working_dir,
+            working_dir_canonical: None,
             command_timeout,
             ci_context,
             enabled_tools,
@@ -104,6 +106,7 @@ impl ToolExecutor {
 
         Self {
             working_dir,
+            working_dir_canonical: None,
             command_timeout,
             ci_context,
             enabled_tools,
@@ -120,7 +123,7 @@ impl ToolExecutor {
     // -- path helpers -------------------------------------------------------
 
     /// Resolve `raw` against `working_dir` and ensure it stays inside.
-    fn safe_path(&self, raw: &str) -> Result<PathBuf, ToolError> {
+    fn safe_path(&mut self, raw: &str) -> Result<PathBuf, ToolError> {
         if raw.is_empty() {
             return Err(ToolError::InvalidInput("path must not be empty".into()));
         }
@@ -174,11 +177,16 @@ impl ToolExecutor {
         Ok(resolved)
     }
 
-    /// Canonicalize the working directory.
-    fn working_dir_canonicalize(&self) -> Result<PathBuf, ToolError> {
-        self.working_dir
+    /// Canonicalize the working directory (cached).
+    fn working_dir_canonicalize(&mut self) -> Result<PathBuf, ToolError> {
+        if let Some(ref cached) = self.working_dir_canonical {
+            return Ok(cached.clone());
+        }
+        let canonical = self.working_dir
             .canonicalize()
-            .map_err(|e| ToolError::InvalidInput(format!("cannot canonicalize working directory: {e}")))
+            .map_err(|e| ToolError::InvalidInput(format!("cannot canonicalize working directory: {e}")))?;
+        self.working_dir_canonical = Some(canonical.clone());
+        Ok(canonical)
     }
 
     /// Re-validate that a path is still inside the working directory after
@@ -190,7 +198,7 @@ impl ToolExecutor {
     /// `create_dir_all` re-canonicalizes the (now-existing) parent directory
     /// and verifies the full resolved path still lies within the working
     /// directory.
-    fn validate_path_after_dir_creation(&self, path: &Path) -> Result<(), ToolError> {
+    fn validate_path_after_dir_creation(&mut self, path: &Path) -> Result<(), ToolError> {
         // Try to fully canonicalize; if the final component doesn't exist yet
         // (e.g. the target file), canonicalize the parent and re-append.
         let resolved = if path.exists() {
@@ -200,8 +208,8 @@ impl ToolExecutor {
             let parent = path.parent().filter(|p| p.exists());
             match (parent, path.file_name()) {
                 (Some(p), Some(name)) => p.canonicalize()
-                .map_err(|e| ToolError::InvalidInput(format!("cannot canonicalize parent: {e}")))?
-                .join(name),
+                    .map_err(ToolError::IoError)?
+                    .join(name),
                 _ => {
                     // Cannot canonicalize further — return error to maintain TOCTOU protection.
                     return Err(ToolError::InvalidInput(
@@ -224,7 +232,7 @@ impl ToolExecutor {
 
     /// Read a file, optionally slicing by 1-based line offset and limit.
     pub fn read_file(
-        &self,
+        &mut self,
         path: &str,
         offset: Option<usize>,
         limit: Option<usize>,
@@ -254,7 +262,7 @@ impl ToolExecutor {
     }
 
     /// Write content to a file, creating intermediate directories as needed.
-    pub fn write_file(&self, path: &str, content: &str) -> Result<(), ToolError> {
+    pub fn write_file(&mut self, path: &str, content: &str) -> Result<(), ToolError> {
         let resolved = self.safe_path(path)?;
         if let Some(parent) = resolved.parent() {
             std::fs::create_dir_all(parent)?;
@@ -268,7 +276,7 @@ impl ToolExecutor {
 
     /// Replace exactly one occurrence of `old_string` with `new_string`.
     pub fn edit_file(
-        &self,
+        &mut self,
         path: &str,
         old_string: &str,
         new_string: &str,
@@ -297,7 +305,7 @@ impl ToolExecutor {
     /// Return file paths matching a glob pattern relative to `base` (or
     /// working_dir if `base` is None).
     pub fn search_files(
-        &self,
+        &mut self,
         pattern: &str,
         base: Option<&str>,
     ) -> Result<Vec<String>, ToolError> {
@@ -324,7 +332,7 @@ impl ToolExecutor {
 
     /// Grep for `pattern` (regex) in files under `path`.
     pub fn search_content(
-        &self,
+        &mut self,
         pattern: &str,
         path: Option<&str>,
         file_type: Option<&str>,
@@ -796,7 +804,7 @@ impl ToolExecutor {
     // -- dispatch -----------------------------------------------------------
 
     /// Route a tool call by name to the correct implementation.
-    pub async fn execute_tool(&self, name: &str, input: &Value) -> Result<String, ToolError> {
+    pub async fn execute_tool(&mut self, name: &str, input: &Value) -> Result<String, ToolError> {
         // Check enabled_tools filter.
         if let Some(ref enabled) = self.enabled_tools {
             if !enabled.iter().any(|t| t == name) {
@@ -933,7 +941,7 @@ mod tests {
     /// Create a ToolExecutor rooted in a fresh temp directory and return both.
     fn make_executor() -> (ToolExecutor, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("create temp dir");
-        let exec = ToolExecutor::new(tmp.path().to_path_buf(), Duration::from_secs(30), None, None);
+        let mut exec = ToolExecutor::new(tmp.path().to_path_buf(), Duration::from_secs(30), None, None);
         (exec, tmp)
     }
 
@@ -941,7 +949,7 @@ mod tests {
 
     #[test]
     fn read_file_existing() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("hello.txt");
         fs::write(&file, "line1\nline2\nline3\n").unwrap();
 
@@ -952,7 +960,7 @@ mod tests {
 
     #[test]
     fn read_file_with_offset_and_limit() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("data.txt");
         fs::write(&file, "a\nb\nc\nd\ne\n").unwrap();
 
@@ -962,7 +970,7 @@ mod tests {
 
     #[test]
     fn read_file_nonexistent() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec.read_file("nope.txt", None, None).unwrap_err();
         assert!(
             matches!(err, ToolError::FileNotFound(_)),
@@ -972,7 +980,7 @@ mod tests {
 
     #[test]
     fn read_file_directory() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::create_dir(tmp.path().join("subdir")).unwrap();
         let err = exec.read_file("subdir", None, None).unwrap_err();
         assert!(
@@ -983,7 +991,7 @@ mod tests {
 
     #[test]
     fn read_file_binary_lossy() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("bin.dat");
         fs::write(&file, b"\x80\x81hello\xff").unwrap();
 
@@ -993,7 +1001,7 @@ mod tests {
 
     #[test]
     fn read_file_empty() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("empty.txt"), "").unwrap();
         let content = exec.read_file("empty.txt", None, None).unwrap();
         assert_eq!(content, "");
@@ -1001,7 +1009,7 @@ mod tests {
 
     #[test]
     fn read_file_offset_beyond_length() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("short.txt"), "one\ntwo\n").unwrap();
         let content = exec.read_file("short.txt", Some(999), None).unwrap();
         assert_eq!(content, "");
@@ -1009,7 +1017,7 @@ mod tests {
 
     #[test]
     fn read_file_path_traversal_rejected() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec
             .read_file("../../../etc/passwd", None, None)
             .unwrap_err();
@@ -1024,7 +1032,7 @@ mod tests {
 
     #[test]
     fn write_file_new() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         exec.write_file("new.txt", "hello world").unwrap();
         let on_disk = fs::read_to_string(tmp.path().join("new.txt")).unwrap();
         assert_eq!(on_disk, "hello world");
@@ -1032,7 +1040,7 @@ mod tests {
 
     #[test]
     fn write_file_overwrite() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("over.txt"), "old").unwrap();
         exec.write_file("over.txt", "new").unwrap();
         assert_eq!(
@@ -1043,14 +1051,14 @@ mod tests {
 
     #[test]
     fn write_file_creates_intermediate_dirs() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         exec.write_file("a/b/c/deep.txt", "deep").unwrap();
         assert!(tmp.path().join("a/b/c/deep.txt").exists());
     }
 
     #[test]
     fn write_file_empty_content() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         exec.write_file("blank.txt", "").unwrap();
         assert_eq!(
             fs::read_to_string(tmp.path().join("blank.txt")).unwrap(),
@@ -1060,7 +1068,7 @@ mod tests {
 
     #[test]
     fn write_file_outside_working_dir_rejected() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec.write_file("/tmp/outside.txt", "bad").unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidInput(_)),
@@ -1074,7 +1082,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn write_file_symlink_in_new_path_rejected_after_dir_creation() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         // Create an "outside" directory that is NOT inside the working dir.
         let outside = tempfile::tempdir().expect("create outside dir");
 
@@ -1107,7 +1115,7 @@ mod tests {
 
     #[test]
     fn edit_file_successful_replacement() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("src.rs");
         fs::write(&file, "fn main() {\n    println!(\"old\");\n}\n").unwrap();
 
@@ -1121,7 +1129,7 @@ mod tests {
 
     #[test]
     fn edit_file_old_string_not_found() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("a.txt"), "hello").unwrap();
         let err = exec.edit_file("a.txt", "missing", "x").unwrap_err();
         assert!(matches!(err, ToolError::InvalidInput(_)));
@@ -1129,7 +1137,7 @@ mod tests {
 
     #[test]
     fn edit_file_ambiguous_multiple_matches() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("dup.txt"), "aaa\naaa\n").unwrap();
         let err = exec.edit_file("dup.txt", "aaa", "bbb").unwrap_err();
         assert!(
@@ -1140,7 +1148,7 @@ mod tests {
 
     #[test]
     fn edit_file_delete_by_replacing_with_empty() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("del.txt");
         fs::write(&file, "keep\nremove_me\nkeep").unwrap();
         exec.edit_file("del.txt", "remove_me\n", "").unwrap();
@@ -1151,14 +1159,14 @@ mod tests {
 
     #[test]
     fn edit_file_nonexistent() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec.edit_file("nope.txt", "a", "b").unwrap_err();
         assert!(matches!(err, ToolError::FileNotFound(_)));
     }
 
     #[test]
     fn edit_file_preserves_trailing_newline() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("nl.txt");
         fs::write(&file, "first\nsecond\n").unwrap();
         exec.edit_file("nl.txt", "first", "replaced").unwrap();
@@ -1171,7 +1179,7 @@ mod tests {
 
     #[test]
     fn search_files_glob_matches() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("a.rs"), "").unwrap();
         fs::write(tmp.path().join("b.rs"), "").unwrap();
         fs::write(tmp.path().join("c.txt"), "").unwrap();
@@ -1183,14 +1191,14 @@ mod tests {
 
     #[test]
     fn search_files_no_matches() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let results = exec.search_files("*.zzz", None).unwrap();
         assert!(results.is_empty());
     }
 
     #[test]
     fn search_files_recursive_glob() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let nested = tmp.path().join("d1/d2");
         fs::create_dir_all(&nested).unwrap();
         fs::write(nested.join("deep.rs"), "").unwrap();
@@ -1202,7 +1210,7 @@ mod tests {
 
     #[test]
     fn search_files_invalid_pattern() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec.search_files("[invalid", None).unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidInput(_)),
@@ -1214,7 +1222,7 @@ mod tests {
 
     #[test]
     fn search_content_regex_matches() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("haystack.txt"), "foo bar\nbaz quux\nfoo end\n").unwrap();
 
         let results = exec
@@ -1225,7 +1233,7 @@ mod tests {
 
     #[test]
     fn search_content_no_matches() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("hay.txt"), "nothing here\n").unwrap();
 
         let results = exec
@@ -1236,7 +1244,7 @@ mod tests {
 
     #[test]
     fn search_content_invalid_regex() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec
             .search_content("[invalid", None, None, false)
             .unwrap_err();
@@ -1245,7 +1253,7 @@ mod tests {
 
     #[test]
     fn search_content_file_type_filter() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("code.rs"), "fn main() {}\n").unwrap();
         fs::write(tmp.path().join("notes.txt"), "fn main() {}\n").unwrap();
 
@@ -1258,7 +1266,7 @@ mod tests {
 
     #[test]
     fn search_content_case_insensitive() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("mixed.txt"), "Hello HELLO hello\n").unwrap();
 
         let results = exec
@@ -1271,14 +1279,14 @@ mod tests {
 
     #[test]
     fn run_command_success() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let output = exec.run_command("echo hello", None).unwrap();
         assert_eq!(output.trim(), "hello");
     }
 
     #[test]
     fn run_command_failure() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec.run_command("false", None).unwrap_err();
         assert!(
             matches!(err, ToolError::CommandFailed { .. }),
@@ -1288,7 +1296,7 @@ mod tests {
 
     #[test]
     fn run_command_timeout() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec
             .run_command("sleep 60", Some(Duration::from_millis(200)))
             .unwrap_err();
@@ -1300,7 +1308,7 @@ mod tests {
 
     #[test]
     fn run_command_large_output_truncated() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         // Generate output larger than MAX_OUTPUT_BYTES (128 KiB).
         let output = exec
             .run_command("yes | head -c 200000", None)
@@ -1311,7 +1319,7 @@ mod tests {
 
     #[test]
     fn run_command_empty() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec.run_command("", None).unwrap_err();
         assert!(matches!(err, ToolError::InvalidInput(_)));
     }
@@ -1355,7 +1363,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_tool_routes_correctly() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("routed.txt"), "content here").unwrap();
 
         let result = exec
@@ -1370,7 +1378,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_tool_unknown_name() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("does_not_exist", &serde_json::json!({}))
             .await
@@ -1383,7 +1391,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_tool_missing_required_field() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("read_file", &serde_json::json!({}))
             .await
@@ -1401,7 +1409,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_symlink_escape() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         // Create a symlink inside working_dir that points outside it.
         let outside = tempfile::tempdir().expect("create outside dir");
         let outside_file = outside.path().join("secret.txt");
@@ -1419,7 +1427,7 @@ mod tests {
 
     #[test]
     fn test_absolute_path_inside_working_dir() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("inside.txt");
         fs::write(&file, "I am inside").unwrap();
 
@@ -1431,7 +1439,7 @@ mod tests {
 
     #[test]
     fn test_path_with_dot_components() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let sub = tmp.path().join("foo");
         fs::create_dir(&sub).unwrap();
         fs::write(sub.join("bar.txt"), "dot-dot").unwrap();
@@ -1442,7 +1450,7 @@ mod tests {
 
     #[test]
     fn test_double_slash_path() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let sub = tmp.path().join("foo");
         fs::create_dir(&sub).unwrap();
         fs::write(sub.join("bar.txt"), "double slash").unwrap();
@@ -1461,7 +1469,7 @@ mod tests {
         fs::create_dir(&sibling).unwrap();
         fs::write(sibling.join("secret.txt"), "nope").unwrap();
 
-        let exec = ToolExecutor::new(wd, Duration::from_secs(30), None, None);
+        let mut exec = ToolExecutor::new(wd, Duration::from_secs(30), None, None);
         let sibling_file = sibling.join("secret.txt");
         let err = exec
             .read_file(&sibling_file.to_string_lossy(), None, None)
@@ -1478,7 +1486,7 @@ mod tests {
 
     #[test]
     fn test_read_file_unicode_filename() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("日本語.txt");
         fs::write(&file, "unicode name works").unwrap();
 
@@ -1488,7 +1496,7 @@ mod tests {
 
     #[test]
     fn test_read_file_no_trailing_newline() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("notail.txt"), "line1\nline2").unwrap();
 
         let content = exec.read_file("notail.txt", None, None).unwrap();
@@ -1497,7 +1505,7 @@ mod tests {
 
     #[test]
     fn test_read_file_offset_0_limit_0() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("some.txt"), "a\nb\nc\n").unwrap();
 
         let content = exec.read_file("some.txt", Some(0), Some(0)).unwrap();
@@ -1506,7 +1514,7 @@ mod tests {
 
     #[test]
     fn test_read_file_limit_exceeds_file() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("short.txt"), "one\ntwo\nthree").unwrap();
 
         let content = exec.read_file("short.txt", Some(0), Some(9999)).unwrap();
@@ -1517,7 +1525,7 @@ mod tests {
     #[cfg(unix)]
     fn test_read_file_readonly_permissions() {
         use std::os::unix::fs::PermissionsExt;
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("noperm.txt");
         fs::write(&file, "secret").unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
@@ -1538,7 +1546,7 @@ mod tests {
 
     #[test]
     fn test_edit_at_start_of_file() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("start.txt");
         fs::write(&file, "ABCDEF").unwrap();
 
@@ -1548,7 +1556,7 @@ mod tests {
 
     #[test]
     fn test_edit_at_end_of_file() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("end.txt");
         fs::write(&file, "ABCDEF").unwrap();
 
@@ -1558,7 +1566,7 @@ mod tests {
 
     #[test]
     fn test_edit_spanning_multiple_lines() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("multi.txt");
         fs::write(&file, "line1\nline2\nline3\n").unwrap();
 
@@ -1569,7 +1577,7 @@ mod tests {
 
     #[test]
     fn test_edit_changes_line_count() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("grow.txt");
         fs::write(&file, "before\noriginal\nafter\n").unwrap();
 
@@ -1581,7 +1589,7 @@ mod tests {
 
     #[test]
     fn test_edit_removes_lines() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("shrink.txt");
         fs::write(&file, "keep\nremove1\nremove2\nremove3\nkeep2\n").unwrap();
 
@@ -1593,7 +1601,7 @@ mod tests {
 
     #[test]
     fn test_edit_old_equals_new() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("noop.txt");
         fs::write(&file, "unchanged content here").unwrap();
 
@@ -1608,7 +1616,7 @@ mod tests {
 
     #[test]
     fn test_edit_empty_old_string() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("empty_old.txt");
         fs::write(&file, "some content").unwrap();
 
@@ -1625,7 +1633,7 @@ mod tests {
 
     #[test]
     fn test_edit_regex_special_chars() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let file = tmp.path().join("regex.txt");
         fs::write(&file, "match this: .*+?()[]\n").unwrap();
 
@@ -1643,7 +1651,7 @@ mod tests {
 
     #[test]
     fn test_write_preserves_exact_bytes() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let content = "col1\tcol2\r\nval\x00ue\n";
         exec.write_file("exact.bin", content).unwrap();
 
@@ -1653,7 +1661,7 @@ mod tests {
 
     #[test]
     fn test_write_path_is_existing_directory() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::create_dir(tmp.path().join("adir")).unwrap();
 
         let err = exec.write_file("adir", "contents").unwrap_err();
@@ -1665,7 +1673,7 @@ mod tests {
 
     #[test]
     fn test_write_unicode_content() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let content = "日本語テスト 🦀 émojis café";
         exec.write_file("uni.txt", content).unwrap();
 
@@ -1679,7 +1687,7 @@ mod tests {
 
     #[test]
     fn test_command_stderr_only() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         // Command that writes to stderr and exits 0.
         let result = exec.run_command("echo error >&2", None);
         // The command exits 0, so it succeeds. stdout should be empty.
@@ -1693,7 +1701,7 @@ mod tests {
 
     #[test]
     fn test_command_working_dir() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         let output = exec.run_command("pwd", None).unwrap();
         let canonical_wd = tmp.path().canonicalize().unwrap();
         assert_eq!(
@@ -1705,7 +1713,7 @@ mod tests {
 
     #[test]
     fn test_command_background_process() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         // Background process should not block the command from returning.
         // Redirect background stdout/stderr to /dev/null so the shell does not
         // keep the pipe open waiting for it.
@@ -1717,7 +1725,7 @@ mod tests {
 
     #[test]
     fn test_command_killed_by_signal() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         // A process killed by signal has a non-success exit status.
         let err = exec.run_command("kill -9 $$", None).unwrap_err();
         assert!(
@@ -1728,7 +1736,7 @@ mod tests {
 
     #[test]
     fn test_command_output_exact_max() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         // Generate exactly MAX_OUTPUT_BYTES of output.
         let cmd = format!("head -c {} /dev/zero | tr '\\0' 'A'", MAX_OUTPUT_BYTES);
         let output = exec.run_command(&cmd, None).unwrap();
@@ -1738,7 +1746,7 @@ mod tests {
 
     #[test]
     fn test_command_output_max_plus_one() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let cmd = format!(
             "head -c {} /dev/zero | tr '\\0' 'B'",
             MAX_OUTPUT_BYTES + 1
@@ -1752,7 +1760,7 @@ mod tests {
 
     #[test]
     fn test_command_invalid_utf8() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         // Use Python to reliably output invalid UTF-8 bytes.
         let output = exec
             .run_command("python3 -c \"import sys; sys.stdout.buffer.write(bytes([0x80, 0x81, 0xfe, 0xff]))\"", None)
@@ -1770,7 +1778,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_wrong_type_for_path() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("read_file", &serde_json::json!({ "path": 123 }))
             .await
@@ -1783,7 +1791,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_null_required_field() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("read_file", &serde_json::json!({ "path": null }))
             .await
@@ -1796,7 +1804,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_extra_unknown_fields() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         fs::write(tmp.path().join("extra.txt"), "extra test").unwrap();
 
         // Unknown fields should be silently ignored.
@@ -1816,7 +1824,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_dispatch_all_tools() {
-        let (exec, tmp) = make_executor();
+        let (mut exec, tmp) = make_executor();
         // Set up a file for tools that need it.
         fs::write(tmp.path().join("dispatch.txt"), "dispatch content").unwrap();
 
@@ -1869,7 +1877,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_boolean_as_path() {
-        let (exec, _tmp) = make_executor();
+        let (mut exec, _tmp) = make_executor();
         let err = exec
             .execute_tool("read_file", &serde_json::json!({ "path": true }))
             .await
