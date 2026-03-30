@@ -768,9 +768,12 @@ async fn fetch_issues(repo_slug: &str, label_filter: &str) -> Vec<GithubIssue> {
 
 /// Check that required environment variables are set and non-empty.
 fn validate_env_vars() -> Result<()> {
-    let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-    if api_key.is_empty() {
-        bail!("ANTHROPIC_API_KEY is not set or empty");
+    // Check for an LLM API key — accept any supported provider.
+    let has_anthropic = !std::env::var("ANTHROPIC_API_KEY").unwrap_or_default().is_empty();
+    let has_anthropic_auth = !std::env::var("ANTHROPIC_AUTH_TOKEN").unwrap_or_default().is_empty();
+    let has_openai = !std::env::var("OPENAI_API_KEY").unwrap_or_default().is_empty();
+    if !has_anthropic && !has_anthropic_auth && !has_openai {
+        bail!("No LLM API key set. Set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or OPENAI_API_KEY.");
     }
 
     let gh_token = std::env::var("GH_TOKEN").unwrap_or_default();
