@@ -67,6 +67,8 @@ impl Provider {
 pub enum ProviderError {
     #[error("deserialization failed: {0}")]
     DeserializationFailed(String),
+    #[error("response parse error: {0}")]
+    ResponseParse(String),
     #[error("content filtered: {message}")]
     ContentFiltered { message: String },
 }
@@ -287,8 +289,8 @@ fn deserialize_openai_response(body: &str) -> Result<MessagesResponse, ProviderE
         .ok_or_else(|| ProviderError::DeserializationFailed("missing choices array".into()))?;
 
     if choices.is_empty() {
-        return Err(ProviderError::DeserializationFailed(
-            "empty choices array".into(),
+        return Err(ProviderError::ResponseParse(
+            "empty choices array in response".into(),
         ));
     }
 
