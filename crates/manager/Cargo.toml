@@ -21,7 +21,7 @@ prometheus = "0.14"
 cron = "0.15"
 uuid = { version = "1", features = ["v4"] }
 dashmap = "6"
-hmac = "0.12"
+hmac = "0.13"
 sha2 = { workspace = true }
 hex = { workspace = true }
 kube = { version = "0.98", features = ["runtime", "client"] }

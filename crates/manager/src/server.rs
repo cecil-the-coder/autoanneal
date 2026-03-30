@@ -54,15 +54,20 @@ async fn ready(State(_state): State<AppState>) -> impl IntoResponse {
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     if let Some(m) = state.metrics.as_ref() {
-        (
-            [("content-type", "text/plain; version=0.0.4")],
-            m.render(),
-        )
+        match m.render() {
+            Ok(metrics) => (
+                [("content-type", "text/plain; version=0.0.4")],
+                metrics,
+            )
+                .into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        }
     } else {
         (
             StatusCode::NOT_FOUND,
             "metrics not available",
         )
+            .into_response()
     }
 }
 
