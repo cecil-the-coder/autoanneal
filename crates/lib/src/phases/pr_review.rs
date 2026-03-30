@@ -349,12 +349,46 @@ pub async fn run(
                             }
                             Err(e) => {
                                 warn!(pr_number = pr.number, error = %e, "re-review failed, using initial score");
-                                (critic_output.score, critic_output.verdict.clone(), critic_output.summary.clone())
+                                (critic_output.score, critic_output.verdict.clone(), "Re-review could not be completed.".to_string())
                             }
                         }
                     } else {
-                        (critic_output.score, critic_output.verdict.clone(), critic_output.summary.clone())
+                        (critic_output.score, critic_output.verdict.clone(), "Re-review skipped (insufficient budget).".to_string())
                     };
+
+                    // If the re-review scored lower, the fixes made things worse.
+                    // Revert and comment with just the initial review.
+                    if final_score < critic_output.score {
+                        warn!(
+                            pr_number = pr.number,
+                            initial_score = critic_output.score,
+                            final_score,
+                            "re-review scored lower after fixes, reverting"
+                        );
+                        // Revert: reset to the pre-fix snapshot's parent (the original PR HEAD).
+                        let _ = tokio::process::Command::new("git")
+                            .args(["reset", "--hard", "HEAD~1"])
+                            .current_dir(&clone_dir)
+                            .output()
+                            .await;
+                        let _ = push_changes(&clone_dir, &pr.branch).await;
+
+                        let comment = format!(
+                            "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes were attempted but reverted (re-review scored {}/10, lower than the original {}/10)._",
+                            critic_output.score, critic_output.verdict, critic_output.summary,
+                            final_score, critic_output.score,
+                        );
+                        leave_comment(repo_slug, pr.number, &comment).await;
+                        add_reviewed_label(repo_slug, pr.number).await;
+
+                        return Ok(PrReviewOutput {
+                            pr_number: pr.number,
+                            score: critic_output.score,
+                            fixed: false,
+                            commented: true,
+                            cost_usd: total_cost,
+                        });
+                    }
 
                     let comment = format!(
                         "## Autoanneal Review & Fix\n\n**Score:** {}/10 → {}/10\n**Verdict:** {} → {}\n\n### Issues Found\n{}\n\n### After Fix\n{}\n\n_Automated fixes have been pushed to this branch._",
