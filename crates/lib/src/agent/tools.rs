@@ -142,16 +142,18 @@ impl ToolExecutor {
         // parent must already exist.
         // Walk up to find the deepest existing ancestor so we can
         // canonicalize it, then re-append the non-existent tail.
-        let mut canonical_result = candidate.canonicalize();
+        // NOTE: We canonicalize first and store the result to avoid borrowing `self`
+        // across the check, which would prevent calling `working_dir_canonicalize()`.
+        let canonical_result = candidate.canonicalize();
         let path_existed = canonical_result.is_ok();
-        let resolved = if let Ok(ref canonical) = canonical_result {
+        let resolved = if let Ok(canonical) = canonical_result {
             // Verify the canonical path is within working directory before accepting it.
             if !canonical.starts_with(&wd_canonical) {
                 return Err(ToolError::InvalidInput(format!(
                     "path escapes working directory: {raw}"
                 )));
             }
-            canonical.clone()
+            canonical
         } else {
             let mut ancestor = candidate.clone();
             let mut tail_parts: Vec<std::ffi::OsString> = Vec::new();
