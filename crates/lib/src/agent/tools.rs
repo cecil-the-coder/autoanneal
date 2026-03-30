@@ -369,14 +369,11 @@ impl ToolExecutor {
                 #[cfg(target_os = "linux")]
                 unsafe {
                     cmd.pre_exec(|| {
-                        use std::sync::Once;
-                        static OOM_WARN_ONCE: Once = Once::new();
-
-                        if let Err(e) = std::fs::write("/proc/self/oom_score_adj", "1000") {
-                            OOM_WARN_ONCE.call_once(|| {
-                                tracing::warn!(error = %e, "failed to write oom_score_adj; OOM protection not applied (suppressing further warnings)");
-                            });
-                        }
+                        // Note: This runs in a forked process before exec().
+                        // Only async-signal-safe operations are allowed here.
+                        // We intentionally ignore errors silently to avoid
+                        // potential deadlocks with logging or synchronization.
+                        let _ = std::fs::write("/proc/self/oom_score_adj", "1000");
 
                         // Cap virtual memory at 3 GiB — child gets allocation
                         // failure instead of triggering container OOM kill.

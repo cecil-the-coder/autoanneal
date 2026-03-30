@@ -16,7 +16,14 @@ impl fmt::Display for MetricsError {
     }
 }
 
-impl std::error::Error for MetricsError {}
+impl std::error::Error for MetricsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            MetricsError::Utf8(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 impl From<std::string::FromUtf8Error> for MetricsError {
     fn from(e: std::string::FromUtf8Error) -> Self {
