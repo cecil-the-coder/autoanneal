@@ -346,26 +346,22 @@ impl RepoEntry {
         }
 
         // Optional string flags
-        if let Some(v) = self.setup_command.as_ref().or(defaults.setup_command.as_ref()) {
-            args.extend_from_slice(&["--setup-command".into(), v.clone()]);
-        }
-        if let Some(v) = self.model_recon.as_ref().or(defaults.model_recon.as_ref()) {
-            args.extend_from_slice(&["--model-recon".into(), v.clone()]);
-        }
-        if let Some(v) = self.model_analysis.as_ref().or(defaults.model_analysis.as_ref()) {
-            args.extend_from_slice(&["--model-analysis".into(), v.clone()]);
-        }
-        if let Some(v) = self.model_implement.as_ref().or(defaults.model_implement.as_ref()) {
-            args.extend_from_slice(&["--model-implement".into(), v.clone()]);
-        }
-        if let Some(v) = self.model_critic.as_ref().or(defaults.model_critic.as_ref()) {
-            args.extend_from_slice(&["--model-critic".into(), v.clone()]);
-        }
-        if let Some(v) = self.model_plan.as_ref().or(defaults.model_plan.as_ref()) {
-            args.extend_from_slice(&["--model-plan".into(), v.clone()]);
-        }
-        if let Some(v) = self.critic_models.as_ref().or(defaults.critic_models.as_ref()) {
-            args.extend_from_slice(&["--critic-models".into(), v.clone()]);
+        // Optional string flags — skip empty strings (Helm defaults set them to "").
+        let optional_str_flags: &[(&str, Option<&String>, Option<&String>)] = &[
+            ("--setup-command", self.setup_command.as_ref(), defaults.setup_command.as_ref()),
+            ("--model-recon", self.model_recon.as_ref(), defaults.model_recon.as_ref()),
+            ("--model-analysis", self.model_analysis.as_ref(), defaults.model_analysis.as_ref()),
+            ("--model-implement", self.model_implement.as_ref(), defaults.model_implement.as_ref()),
+            ("--model-critic", self.model_critic.as_ref(), defaults.model_critic.as_ref()),
+            ("--model-plan", self.model_plan.as_ref(), defaults.model_plan.as_ref()),
+            ("--critic-models", self.critic_models.as_ref(), defaults.critic_models.as_ref()),
+        ];
+        for (flag, entry_val, default_val) in optional_str_flags {
+            if let Some(v) = entry_val.or(*default_val) {
+                if !v.is_empty() {
+                    args.extend_from_slice(&[flag.to_string(), v.clone()]);
+                }
+            }
         }
 
         args
