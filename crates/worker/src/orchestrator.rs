@@ -369,7 +369,7 @@ async fn run_pipeline(
         || !preflight_output.prs_needing_rebase().is_empty()
         || has_external_ci_failures
         || has_external_conflicts;
-    let has_reviews = preflight_output.external_prs.iter().any(|pr| !pr.reviewed);
+    let has_reviews = preflight_output.external_prs.iter().any(|pr| config.force_review || !pr.reviewed);
     let has_issues = !preflight_output.issues.is_empty();
     let at_pr_limit = config.max_open_prs > 0
         && preflight_output.in_flight_prs.len() >= config.max_open_prs;
@@ -767,9 +767,9 @@ fn collect_work_items(
         }
     }
 
-    // PR review items — skip PRs already reviewed by autoanneal.
-    if config.review_prs {
-        for pr in external_prs.iter().filter(|pr| !pr.reviewed).take(3) {
+    // PR review items — skip PRs already reviewed unless force_review is set.
+    if config.review_prs || config.force_review {
+        for pr in external_prs.iter().filter(|pr| config.force_review || !pr.reviewed).take(3) {
             items.push(WorkItem {
                 kind: WorkItemKind::PrReview {
                     pr: pr.clone(),
@@ -781,6 +781,34 @@ fn collect_work_items(
                 context_window,
                 exa_searches: config.exa_searches,
             });
+        }
+        // When force_review is set, also review in-flight (autoanneal/) PRs.
+        if config.force_review {
+            for ifp in in_flight_prs.iter().take(5) {
+                let as_external = ExternalPr {
+                    number: ifp.number,
+                    title: ifp.title.clone(),
+                    branch: ifp.branch.clone(),
+                    author: String::new(),
+                    updated_at: String::new(),
+                    labels: vec![],
+                    ci_status: ifp.ci_status.clone(),
+                    reviewed: false,
+                    autoanneal_commit_count: 0,
+                    has_merge_conflicts: ifp.has_merge_conflicts,
+                };
+                items.push(WorkItem {
+                    kind: WorkItemKind::PrReview {
+                        pr: as_external,
+                        fix_threshold: config.review_fix_threshold,
+                        default_branch: repo_info.default_branch.clone(),
+                        critic_models: config.critic_model_list(),
+                    },
+                    budget_cap: budget_remaining,
+                    context_window,
+                    exa_searches: config.exa_searches,
+                });
+            }
         }
     }
 
