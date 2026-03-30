@@ -1,9 +1,8 @@
 use axum::{
     Router,
-    body::Body,
     extract::State,
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::IntoResponse,
     routing::{get, post},
     Json,
 };
@@ -55,15 +54,15 @@ async fn ready(State(_state): State<AppState>) -> impl IntoResponse {
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     if let Some(m) = state.metrics.as_ref() {
-        Response::builder()
-            .header("content-type", "text/plain; version=0.0.4")
-            .body(Body::from(m.render()))
-            .unwrap()
+        (
+            [("content-type", "text/plain; version=0.0.4")],
+            m.render(),
+        )
     } else {
-        Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::from("metrics not available"))
-            .unwrap()
+        (
+            StatusCode::NOT_FOUND,
+            "metrics not available",
+        )
     }
 }
 
