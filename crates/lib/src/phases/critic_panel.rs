@@ -87,6 +87,10 @@ pub async fn run_with_diff(
         .map(|i| models[i % models.len()].clone())
         .collect();
 
+    if critics.is_empty() {
+        anyhow::bail!("no critic models configured — cannot run critic panel");
+    }
+
     // ── Budget allocation ───────────────────────────────────────────
     let gate1_budget = budget * 0.25;
     let gate2_budget = budget * 0.75;
