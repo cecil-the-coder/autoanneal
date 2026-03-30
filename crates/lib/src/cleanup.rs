@@ -37,6 +37,11 @@ impl CleanupGuard {
 
     /// Best-effort cleanup of GitHub resources. Never panics.
     /// Uses `spawn_blocking` to avoid blocking the async runtime when available.
+    ///
+    /// Performs validation to avoid race conditions and inconsistent state:
+    /// - Verifies `repo_dir` still exists before running git commands.
+    /// - Validates that the PR's head branch matches `branch_name` before closing,
+    ///   to prevent closing an unrelated PR if state becomes inconsistent.
     fn cleanup(&self) {
         // Clone values needed for the closure since it may outlive self
         let pr_number = self.pr_number;
@@ -54,6 +59,20 @@ impl CleanupGuard {
                         repo = %repo_slug,
                         "Closing PR and deleting branch (no successful tasks)"
                     );
+
+                    // Validate that the PR's head branch matches our expected branch_name
+                    // to avoid closing an unrelated PR due to inconsistent state.
+                    if let Some(ref expected_branch) = branch_name {
+                        if !validate_pr_branch(&pr, &repo_slug, expected_branch) {
+                            tracing::warn!(
+                                pr_number = pr,
+                                expected_branch = %expected_branch,
+                                "Skipping PR close: head branch mismatch or lookup failed, \
+                                 state may be inconsistent"
+                            );
+                            return;
+                        }
+                    }
 
                     let output = std::process::Command::new("gh")
                         .args([
@@ -100,6 +119,17 @@ impl CleanupGuard {
                 // No PR, no successful tasks -- delete the remote branch (lock cleanup).
                 (None, false) => {
                     if let Some(branch) = branch_name {
+                        // Validate repo_dir still exists before running git commands
+                        // to avoid race conditions where the directory was removed concurrently.
+                        if !repo_dir.exists() {
+                            tracing::warn!(
+                                branch = %branch,
+                                repo_dir = %repo_dir.display(),
+                                "Skipping remote branch deletion: repo_dir no longer exists"
+                            );
+                            return;
+                        }
+
                         tracing::info!(
                             branch = %branch,
                             repo = %repo_slug,
@@ -155,6 +185,83 @@ impl CleanupGuard {
         } else {
             // No tokio runtime available, run blocking (e.g., in tests or non-async context)
             cleanup_fn();
+        }
+    }
+}
+
+/// Validates that the PR's head branch matches the expected branch name.
+///
+/// Returns `true` if the branches match. Returns `false` if:
+/// - The PR cannot be queried (command fails)
+/// - The head branch cannot be parsed from the output
+/// - There is a definitive mismatch between the expected and actual branch
+///
+/// This conservative approach (fail closed) ensures we don't accidentally close
+/// the wrong PR if state becomes inconsistent.
+fn validate_pr_branch(pr_number: &u64, repo_slug: &str, expected_branch: &str) -> bool {
+    let output = match std::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "headRefName",
+            "-R",
+            repo_slug,
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            tracing::warn!(
+                pr_number = pr_number,
+                stderr = %stderr,
+                "Failed to query PR head branch for validation"
+            );
+            // If we can't verify, don't proceed — safer to skip than close wrong PR
+            return false;
+        }
+        Err(e) => {
+            tracing::warn!(
+                pr_number = pr_number,
+                error = %e,
+                "Failed to run gh pr view for branch validation"
+            );
+            return false;
+        }
+    };
+
+    // Parse JSON response using serde_json for robust handling.
+    #[derive(serde::Deserialize)]
+    struct PrView {
+        #[serde(rename = "headRefName")]
+        head_ref_name: String,
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match serde_json::from_str::<PrView>(&stdout) {
+        Ok(pr_view) => {
+            if pr_view.head_ref_name == expected_branch {
+                true
+            } else {
+                tracing::warn!(
+                    pr_number = pr_number,
+                    expected_branch = %expected_branch,
+                    actual_branch = %pr_view.head_ref_name,
+                    "PR head branch does not match expected branch name"
+                );
+                false
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                pr_number = pr_number,
+                stdout = %stdout,
+                error = %e,
+                "Could not parse headRefName from gh pr view output"
+            );
+            false
         }
     }
 }

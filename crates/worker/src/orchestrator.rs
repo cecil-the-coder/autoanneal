@@ -828,8 +828,12 @@ fn collect_work_items(
     }
 
     // Merge open PRs with in-flight autoanneal PRs for analysis overlap avoidance.
+    // Deduplicate: an in-flight autoanneal PR may already appear in open_prs.
     let mut merged_open_prs: Vec<OpenPr> = open_prs.to_vec();
     for ifp in in_flight_prs {
+        if merged_open_prs.iter().any(|p| p.number == ifp.number) {
+            continue;
+        }
         // Extract file paths from the PR's files field.
         let files = ifp.files.clone();
         merged_open_prs.push(OpenPr {

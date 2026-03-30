@@ -1669,9 +1669,9 @@ mod tests {
     #[test]
     fn test_command_invalid_utf8() {
         let (exec, _tmp) = make_executor();
-        // printf bytes that are not valid UTF-8.
+        // Use Python to reliably output invalid UTF-8 bytes.
         let output = exec
-            .run_command("printf '\\x80\\x81\\xfe\\xff'", None)
+            .run_command("python3 -c \"import sys; sys.stdout.buffer.write(bytes([0x80, 0x81, 0xfe, 0xff]))\"", None)
             .unwrap();
         // from_utf8_lossy replaces invalid bytes with U+FFFD.
         assert!(
