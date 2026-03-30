@@ -1,4 +1,35 @@
 use prometheus::{IntCounter, IntGauge, Histogram, HistogramOpts, Registry, Encoder, TextEncoder};
+use std::fmt;
+
+#[derive(Debug)]
+pub enum MetricsError {
+    Encode(String),
+    Utf8(std::string::FromUtf8Error),
+}
+
+impl fmt::Display for MetricsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MetricsError::Encode(msg) => write!(f, "{}", msg),
+            MetricsError::Utf8(e) => write!(f, "prometheus encoder produced invalid UTF-8: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for MetricsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            MetricsError::Utf8(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::string::FromUtf8Error> for MetricsError {
+    fn from(e: std::string::FromUtf8Error) -> Self {
+        MetricsError::Utf8(e)
+    }
+}
 
 pub struct Metrics {
     pub registry: Registry,
@@ -61,12 +92,14 @@ impl Metrics {
         })
     }
 
-    pub fn render(&self) -> String {
+    pub fn render(&self) -> Result<String, MetricsError> {
         let encoder = TextEncoder::new();
         let metric_families = self.registry.gather();
         let mut buffer = Vec::new();
-        encoder.encode(&metric_families, &mut buffer).unwrap();
-        String::from_utf8(buffer).unwrap()
+        encoder
+            .encode(&metric_families, &mut buffer)
+            .map_err(|e| MetricsError::Encode(format!("failed to encode metrics: {}", e)))?;
+        String::from_utf8(buffer).map_err(MetricsError::from)
     }
 }
 
@@ -80,7 +113,7 @@ mod tests {
         m.runs_total.inc();
         m.runs_success.inc();
 
-        let output = m.render();
+        let output = m.render().unwrap();
         // Should be valid Prometheus text format with HELP and TYPE lines
         assert!(output.contains("# HELP"));
         assert!(output.contains("# TYPE"));
@@ -92,7 +125,7 @@ mod tests {
     #[test]
     fn test_metrics_contain_expected_names() {
         let m = Metrics::new().unwrap();
-        let output = m.render();
+        let output = m.render().unwrap();
 
         let expected_names = [
             "autoanneal_runs_total",
@@ -109,6 +142,28 @@ mod tests {
 
         for name in expected_names {
             assert!(output.contains(name), "missing metric: {name}");
+        }
+    }
+
+    #[test]
+    fn test_metrics_error_display() {
+        let encode_err = MetricsError::Encode("test error".to_string());
+        assert_eq!(encode_err.to_string(), "test error");
+
+        let utf8_bytes = vec![0x80, 0x81, 0x82];
+        let utf8_result = String::from_utf8(utf8_bytes);
+        let utf8_err = MetricsError::Utf8(utf8_result.unwrap_err());
+        assert!(utf8_err.to_string().contains("prometheus encoder produced invalid UTF-8"));
+    }
+
+    #[test]
+    fn test_metrics_error_from_utf8() {
+        let bytes = vec![0xff, 0xfe];
+        let result = String::from_utf8(bytes);
+        let err: MetricsError = result.unwrap_err().into();
+        match err {
+            MetricsError::Utf8(_) => (), // expected
+            _ => panic!("expected Utf8 variant"),
         }
     }
 }

@@ -1,9 +1,8 @@
 use axum::{
     Router,
-    body::Body,
     extract::State,
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::IntoResponse,
     routing::{get, post},
     Json,
 };
@@ -32,6 +31,12 @@ pub struct AppState {
     pub api_token: Option<String>,
 }
 
+#[derive(Serialize)]
+struct ErrorResponse {
+    status: String,
+    message: String,
+}
+
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         // Unauthenticated endpoints (k8s probes, prometheus, webhooks)
@@ -53,24 +58,35 @@ async fn ready(State(_state): State<AppState>) -> impl IntoResponse {
     (StatusCode::OK, "ready")
 }
 
-async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
-    if let Some(m) = state.metrics.as_ref() {
-        Response::builder()
-            .header("content-type", "text/plain; version=0.0.4")
-            .body(Body::from(m.render()))
-            .unwrap()
-    } else {
-        Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::from("metrics not available"))
-            .unwrap()
-    }
-}
-
 async fn list_runs(
     State(state): State<AppState>,
 ) -> Json<Vec<RunRecord>> {
     Json(state.state_store.recent_runs())
+}
+
+async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    if let Some(m) = state.metrics.as_ref() {
+        match m.render() {
+            Ok(metrics) => (
+                [("content-type", "text/plain; version=0.0.4")],
+                metrics,
+            )
+                .into_response(),
+            Err(e) => {
+                let body = ErrorResponse {
+                    status: "error".into(),
+                    message: format!("metrics encoding failed: {}", e),
+                };
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+            }
+        }
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            "metrics not available",
+        )
+            .into_response()
+    }
 }
 
 #[derive(Deserialize)]

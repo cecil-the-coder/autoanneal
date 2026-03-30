@@ -369,6 +369,10 @@ impl ToolExecutor {
                 #[cfg(target_os = "linux")]
                 unsafe {
                     cmd.pre_exec(|| {
+                        // Note: This runs in a forked process before exec().
+                        // Only async-signal-safe operations are allowed here.
+                        // We intentionally ignore errors silently to avoid
+                        // potential deadlocks with logging or synchronization.
                         let _ = std::fs::write("/proc/self/oom_score_adj", "1000");
 
                         // Cap virtual memory at 3 GiB — child gets allocation
