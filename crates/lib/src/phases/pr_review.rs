@@ -244,6 +244,19 @@ pub async fn run(
         });
     }
 
+    // Snapshot the current state so guardrails only measure the fix agent's
+    // changes, not the entire PR diff.
+    let _ = tokio::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(&clone_dir)
+        .output()
+        .await;
+    let _ = tokio::process::Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "autoanneal: pre-fix snapshot"])
+        .current_dir(&clone_dir)
+        .output()
+        .await;
+
     // 6a. Invoke Claude with fix prompt.
     let fix_prompt = PR_REVIEW_FIX_PROMPT
         .replace("{pr_number}", &pr.number.to_string())
@@ -286,7 +299,13 @@ pub async fn run(
                 violation = %violation,
                 "guardrail violation, discarding PR review fix changes"
             );
+            // Discard fix agent changes and undo the snapshot commit.
             let _ = guardrails::discard_changes(&clone_dir).await;
+            let _ = tokio::process::Command::new("git")
+                .args(["reset", "--soft", "HEAD~1"])
+                .current_dir(&clone_dir)
+                .output()
+                .await;
             // Leave a comment so the PR author knows fixes were attempted but rejected.
             let comment = format!(
                 "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes were generated but discarded due to safety guardrails ({}). Please review the suggestions above._",
@@ -434,15 +453,17 @@ async fn commit_changes(clone_dir: &Path) -> Result<()> {
         );
     }
 
+    // Amend the pre-fix snapshot commit so the PR gets a single clean commit
+    // instead of snapshot + fix.
     let output = tokio::process::Command::new("git")
-        .args(["commit", "-m", "autoanneal: fix issues found in PR review"])
+        .args(["commit", "--amend", "-m", "autoanneal: fix issues found in PR review"])
         .current_dir(clone_dir)
         .output()
         .await
-        .context("failed to run git commit")?;
+        .context("failed to run git commit --amend")?;
     if !output.status.success() {
         anyhow::bail!(
-            "git commit failed: {}",
+            "git commit --amend failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
