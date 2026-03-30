@@ -30,8 +30,8 @@ pub struct CriticOutput {
     pub cost_usd: f64,
     /// True if the critic made fixes and the score improved.
     pub made_fixes: bool,
-    /// True when fixes were applied but re-review was skipped (budget exhausted
-    /// or re-review failed). Callers should treat the score as a lower bound
+    /// True when fixes were applied but re-review was skipped (re-review
+    /// failed). Callers should treat the score as a lower bound
     /// and may enforce a stricter threshold.
     pub score_unverified: bool,
     /// The initial review summary before fixes were applied (for strikethrough in PR body).

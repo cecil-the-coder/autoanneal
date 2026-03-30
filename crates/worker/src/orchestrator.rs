@@ -773,7 +773,6 @@ fn collect_work_items(
                         default_branch: repo_info.default_branch.clone(),
                         critic_models: config.critic_model_list(),
                     },
-        
                     context_window,
                     exa_searches: config.exa_searches,
                 });
@@ -790,7 +789,6 @@ fn collect_work_items(
                 arch_summary: arch_summary.to_string(),
                 stack_info: stack_info.clone(),
             },
-
             context_window,
             exa_searches: config.exa_searches,
         });
@@ -841,7 +839,6 @@ fn collect_work_items(
                 doc_critic_threshold: config.doc_critic_threshold,
                 critic_models: config.critic_model_list(),
             },
-
             context_window,
             exa_searches: config.exa_searches,
         });

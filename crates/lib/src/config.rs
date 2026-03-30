@@ -316,7 +316,6 @@ mod tests {
     fn test_repo_slug_owner_repo() {
         let config = Config {
             repo: "owner/repo".to_string(),
-
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
             model_recon: None,
@@ -360,7 +359,6 @@ mod tests {
     fn test_repo_slug_full_url() {
         let config = Config {
             repo: "https://github.com/owner/repo".to_string(),
-
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
             model_recon: None,
@@ -404,7 +402,6 @@ mod tests {
     fn test_repo_slug_with_git_suffix() {
         let config = Config {
             repo: "https://github.com/owner/repo.git".to_string(),
-
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
             model_recon: None,
@@ -448,7 +445,6 @@ mod tests {
     fn test_repo_slug_ssh_url() {
         let config = Config {
             repo: "git@github.com:owner/repo.git".to_string(),
-
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
             model_recon: None,
@@ -492,7 +488,6 @@ mod tests {
     fn test_min_severity_parsing() {
         let config = Config {
             repo: "owner/repo".to_string(),
-
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
             model_recon: None,
@@ -536,7 +531,6 @@ mod tests {
     fn test_min_severity_unknown_defaults_to_minor() {
         let config = Config {
             repo: "owner/repo".to_string(),
-
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
             model_recon: None,
