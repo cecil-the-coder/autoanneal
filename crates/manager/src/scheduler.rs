@@ -16,9 +16,6 @@ use tracing::{error, info, warn};
 /// Maximum number of launch retries on failure.
 const MAX_LAUNCH_RETRIES: u32 = 2;
 
-/// Default timeout for a worker run (30 minutes).
-const DEFAULT_TIMEOUT_SECS: u64 = 30 * 60;
-
 pub struct Scheduler {
     config: ManagerConfig,
     executor: Arc<dyn Executor>,
@@ -457,15 +454,25 @@ fn apply_overrides(entry: &RepoEntry, overrides: Option<&TriggerOverrides>) -> R
 }
 
 /// Parse a duration string like "30m", "1h", "1h30m", "90s" into a `Duration`.
-/// Falls back to `DEFAULT_TIMEOUT_SECS` on failure or overflow.
+/// Falls back to suffix-specific defaults on failure or overflow:
+/// - 'm' suffix defaults to 30 minutes
+/// - 'h' suffix defaults to 1 hour
+/// - 's' or no suffix defaults to 30 minutes
 fn parse_timeout_str(s: &str) -> Duration {
+    const DEFAULT_MINUTES: u64 = 30 * 60;
+    const DEFAULT_HOURS: u64 = 1 * 3600;
+    const DEFAULT_SECS: u64 = 30 * 60;
+
     let s = s.trim();
     if s.is_empty() {
-        return Duration::from_secs(DEFAULT_TIMEOUT_SECS);
+        warn!(timeout = %s, "empty timeout string, using default");
+        return Duration::from_secs(DEFAULT_SECS);
     }
 
     let mut total_secs: u64 = 0;
     let mut current_num = String::new();
+    #[allow(unused_assignments)]
+    let mut last_suffix: Option<char> = None;
 
     for c in s.chars() {
         if c.is_ascii_digit() {
@@ -473,24 +480,51 @@ fn parse_timeout_str(s: &str) -> Duration {
         } else {
             let n: u64 = match current_num.parse() {
                 Ok(v) => v,
-                Err(_) => return Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+                Err(_) => {
+                    warn!(timeout = %s, "failed to parse number, using default");
+                    return Duration::from_secs(DEFAULT_SECS);
+                }
             };
             current_num.clear();
 
             let secs = match c {
-                'h' | 'H' => n.checked_mul(3600),
-                'm' | 'M' => n.checked_mul(60),
-                's' | 'S' => Some(n),
-                _ => return Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+                'h' | 'H' => {
+                    last_suffix = Some('h');
+                    n.checked_mul(3600)
+                }
+                'm' | 'M' => {
+                    last_suffix = Some('m');
+                    n.checked_mul(60)
+                }
+                's' | 'S' => {
+                    last_suffix = Some('s');
+                    Some(n)
+                }
+                _ => {
+                    warn!(timeout = %s, suffix = %c, "unknown suffix, using default");
+                    return Duration::from_secs(DEFAULT_SECS);
+                }
             };
 
             let Some(secs) = secs else {
-                return Duration::from_secs(DEFAULT_TIMEOUT_SECS);
+                warn!(timeout = %s, suffix = %c, value = %n, "overflow on multiply, using default");
+                return Duration::from_secs(match last_suffix {
+                    Some('h') => DEFAULT_HOURS,
+                    Some('m') => DEFAULT_MINUTES,
+                    _ => DEFAULT_SECS,
+                });
             };
 
             total_secs = match total_secs.checked_add(secs) {
                 Some(v) => v,
-                None => return Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+                None => {
+                    warn!(timeout = %s, "overflow on add, using default");
+                    return Duration::from_secs(match last_suffix {
+                        Some('h') => DEFAULT_HOURS,
+                        Some('m') => DEFAULT_MINUTES,
+                        _ => DEFAULT_SECS,
+                    });
+                }
             };
         }
     }
@@ -500,14 +534,78 @@ fn parse_timeout_str(s: &str) -> Duration {
         if let Ok(n) = current_num.parse::<u64>() {
             total_secs = match total_secs.checked_add(n) {
                 Some(v) => v,
-                None => return Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+                None => {
+                    warn!(timeout = %s, "overflow on bare number add, using default");
+                    return Duration::from_secs(DEFAULT_SECS);
+                }
             };
         }
     }
 
     if total_secs == 0 {
-        Duration::from_secs(DEFAULT_TIMEOUT_SECS)
+        Duration::from_secs(DEFAULT_SECS)
     } else {
         Duration::from_secs(total_secs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_timeout_str_basic() {
+        assert_eq!(parse_timeout_str("30m").as_secs(), 30 * 60);
+        assert_eq!(parse_timeout_str("1h").as_secs(), 3600);
+        assert_eq!(parse_timeout_str("90s").as_secs(), 90);
+        assert_eq!(parse_timeout_str("1800").as_secs(), 1800);
+    }
+
+    #[test]
+    fn test_parse_timeout_str_combined() {
+        assert_eq!(parse_timeout_str("1h30m").as_secs(), 3600 + 1800);
+        assert_eq!(parse_timeout_str("1h30m10s").as_secs(), 3600 + 1800 + 10);
+        assert_eq!(parse_timeout_str("2h").as_secs(), 7200);
+    }
+
+    #[test]
+    fn test_parse_timeout_str_empty() {
+        // Empty string uses default (1800s)
+        assert_eq!(parse_timeout_str("").as_secs(), 1800);
+        assert_eq!(parse_timeout_str("   ").as_secs(), 1800);
+    }
+
+    #[test]
+    fn test_parse_timeout_str_invalid_suffix() {
+        // Invalid suffix uses default (1800s)
+        assert_eq!(parse_timeout_str("10x").as_secs(), 1800);
+        assert_eq!(parse_timeout_str("10d").as_secs(), 1800);
+    }
+
+    #[test]
+    fn test_parse_timeout_str_suffix_specific_defaults() {
+        // Minutes overflow defaults to 30 minutes (1800s)
+        assert_eq!(parse_timeout_str("99999999999999999m").as_secs(), 30 * 60);
+        // Hours overflow defaults to 1 hour (3600s)
+        assert_eq!(parse_timeout_str("99999999999999999h").as_secs(), 1 * 3600);
+        // Seconds overflow defaults to 30 minutes (1800s)
+        assert_eq!(parse_timeout_str("99999999999999999s").as_secs(), 30 * 60);
+        // Combined overflow uses last suffix to determine default
+        assert_eq!(parse_timeout_str("999999h999999m").as_secs(), 30 * 60);
+        assert_eq!(parse_timeout_str("999999m999999h").as_secs(), 1 * 3600);
+    }
+
+    #[test]
+    fn test_parse_timeout_str_overflow_add() {
+        // Addition overflow during accumulation
+        assert_eq!(parse_timeout_str("9999999999999h30m").as_secs(), 1 * 3600);
+    }
+
+    #[test]
+    fn test_parse_timeout_str_zero() {
+        assert_eq!(parse_timeout_str("0").as_secs(), 1800);
+        assert_eq!(parse_timeout_str("0m").as_secs(), 1800);
+        assert_eq!(parse_timeout_str("0s").as_secs(), 1800);
+        assert_eq!(parse_timeout_str("0h").as_secs(), 1800);
     }
 }

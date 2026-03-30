@@ -332,6 +332,9 @@ impl Executor for KubernetesExecutor {
 /// Uses checked arithmetic to prevent overflow and caps at 24 hours (86400 seconds).
 fn parse_timeout(timeout: &str) -> i64 {
     const MAX_TIMEOUT_SECS: i64 = 24 * 3600; // 24 hours
+    const DEFAULT_MINUTES: i64 = 30 * 60;
+    const DEFAULT_HOURS: i64 = 1 * 3600;
+    const DEFAULT_SECS: i64 = 1800;
 
     let timeout = timeout.trim();
 
@@ -347,16 +350,25 @@ fn parse_timeout(timeout: &str) -> i64 {
     };
 
     // Use the parsed value if valid, otherwise use defaults based on detected suffix
-    let secs = secs.unwrap_or_else(|| {
-        match detected_suffix {
-            Some('m') => 30 * 60,
-            Some('h') => 1 * 3600,
-            _ => 1800,
+    let secs = match secs {
+        Some(s) => s,
+        None => {
+            warn!(timeout = %timeout, "overflow or parse error, using suffix-specific default");
+            match detected_suffix {
+                Some('m') => DEFAULT_MINUTES,
+                Some('h') => DEFAULT_HOURS,
+                _ => DEFAULT_SECS,
+            }
         }
-    });
+    };
 
     // Cap at the maximum to prevent excessive timeouts
-    secs.min(MAX_TIMEOUT_SECS)
+    if secs > MAX_TIMEOUT_SECS {
+        warn!(timeout = %timeout, value = %secs, max = %MAX_TIMEOUT_SECS, "timeout exceeds maximum, capping");
+        MAX_TIMEOUT_SECS
+    } else {
+        secs
+    }
 }
 
 #[cfg(test)]
