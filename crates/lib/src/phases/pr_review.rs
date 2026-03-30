@@ -183,8 +183,9 @@ pub async fn run(
     }
 
     // 6. Score < fix_threshold -- the PR needs work. Try to fix it.
-    // But don't attempt fixes on rejected PRs -- they shouldn't exist at all.
-    if critic_output.verdict == "reject" {
+    // Don't attempt fixes on rejected PRs (shouldn't exist) or approved PRs
+    // (fixing an approved PR invents problems and degrades quality).
+    if critic_output.verdict == "reject" || critic_output.verdict == "approve" {
         let comment = format!(
             "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}",
             critic_output.score, critic_output.verdict, critic_output.summary
