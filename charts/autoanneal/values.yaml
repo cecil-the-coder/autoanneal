@@ -21,7 +21,7 @@ secrets:
 defaults:
   maxBudget: "5.00"
   timeout: "30m"
-  model: "glm-5"
+  model: "sonnet"
   modelRecon: ""          # Per-phase model overrides (empty = use default model)
   modelAnalysis: ""
   modelImplement: ""
