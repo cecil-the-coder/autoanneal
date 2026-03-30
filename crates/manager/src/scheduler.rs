@@ -543,9 +543,7 @@ fn parse_timeout_str(s: &str) -> Duration {
         }
     }
 
-    let final_secs = if total_secs == 0 {
-        DEFAULT_SECS
-    } else if total_secs > MAX_TIMEOUT_SECS {
+    let final_secs = if total_secs > MAX_TIMEOUT_SECS {
         warn!(timeout = %s, value = %total_secs, max = %MAX_TIMEOUT_SECS, "timeout exceeds maximum, capping");
         MAX_TIMEOUT_SECS
     } else {
@@ -590,29 +588,29 @@ mod tests {
 
     #[test]
     fn test_parse_timeout_str_suffix_specific_defaults() {
-        // Minutes overflow defaults to 30 minutes (1800s)
-        assert_eq!(parse_timeout_str("99999999999999999m").as_secs(), 30 * 60);
-        // Hours overflow defaults to 1 hour (3600s)
+        // Hours overflow defaults to 1 hour (3600s) - the multiplier overflows for very large values
         assert_eq!(parse_timeout_str("99999999999999999h").as_secs(), 1 * 3600);
-        // Seconds overflow defaults to 30 minutes (1800s)
-        assert_eq!(parse_timeout_str("99999999999999999s").as_secs(), 30 * 60);
-        // Combined overflow uses last suffix to determine default
-        assert_eq!(parse_timeout_str("999999h999999m").as_secs(), 30 * 60);
+        // Minutes and seconds values that fit but exceed 24h get capped at 24h
+        assert_eq!(parse_timeout_str("99999999999999999m").as_secs(), 24 * 3600);
+        assert_eq!(parse_timeout_str("99999999999999999s").as_secs(), 24 * 3600);
+        // Combined overflow uses last suffix to determine default (h overflow -> 1h default)
+        assert_eq!(parse_timeout_str("999999h999999m").as_secs(), 1 * 3600);
         assert_eq!(parse_timeout_str("999999m999999h").as_secs(), 1 * 3600);
     }
 
     #[test]
     fn test_parse_timeout_str_overflow_add() {
-        // Addition overflow during accumulation
+        // Addition overflow during accumulation (hours overflow -> 1h default)
         assert_eq!(parse_timeout_str("9999999999999h30m").as_secs(), 1 * 3600);
     }
 
     #[test]
     fn test_parse_timeout_str_zero() {
-        assert_eq!(parse_timeout_str("0").as_secs(), 1800);
-        assert_eq!(parse_timeout_str("0m").as_secs(), 1800);
-        assert_eq!(parse_timeout_str("0s").as_secs(), 1800);
-        assert_eq!(parse_timeout_str("0h").as_secs(), 1800);
+        // Zero values should return 0 (zero duration), not the default
+        assert_eq!(parse_timeout_str("0").as_secs(), 0);
+        assert_eq!(parse_timeout_str("0m").as_secs(), 0);
+        assert_eq!(parse_timeout_str("0s").as_secs(), 0);
+        assert_eq!(parse_timeout_str("0h").as_secs(), 0);
     }
 
     #[test]
@@ -631,5 +629,13 @@ mod tests {
         assert_eq!(parse_timeout_str("24h").as_secs(), 24 * 3600);
         assert_eq!(parse_timeout_str("1440m").as_secs(), 24 * 3600);
         assert_eq!(parse_timeout_str("86400s").as_secs(), 24 * 3600);
+    }
+
+    #[test]
+    fn test_parse_timeout_str_whitespace() {
+        assert_eq!(parse_timeout_str("  30m  ").as_secs(), 30 * 60);
+        assert_eq!(parse_timeout_str("  1h  ").as_secs(), 3600);
+        assert_eq!(parse_timeout_str("  90s  ").as_secs(), 90);
+        assert_eq!(parse_timeout_str("  1800  ").as_secs(), 1800);
     }
 }

@@ -417,10 +417,13 @@ mod tests {
 
     #[test]
     fn test_parse_timeout_overflow() {
-        // Very large values should not overflow - use defaults
-        assert_eq!(parse_timeout("99999999999999999m"), 30 * 60);
+        // Very large values should not overflow - use defaults or get capped
+        // Minutes value fits in i64 but exceeds 24h, so gets capped
+        assert_eq!(parse_timeout("99999999999999999m"), 24 * 3600);
+        // Hours multiplier overflows, so uses default (1 hour)
         assert_eq!(parse_timeout("99999999999999999h"), 3600);
-        assert_eq!(parse_timeout("99999999999999999s"), 1800);
+        // Seconds value fits in i64 but exceeds 24h, so gets capped  
+        assert_eq!(parse_timeout("99999999999999999s"), 24 * 3600);
     }
 
     #[test]
