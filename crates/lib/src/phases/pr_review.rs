@@ -135,12 +135,26 @@ pub async fn run(
         let critic_response =
             llm::invoke::<CriticResult>(&critic_invocation, Duration::from_secs(300)).await?;
 
-        let critic = critic_response.structured.unwrap_or(CriticResult {
-            score: 5,
-            verdict: "needs_work".to_string(),
-            summary: "Critic did not return structured output.".to_string(),
-            deductions: vec![],
-        });
+        let critic = if let Some(structured) = critic_response.structured {
+            structured
+        } else {
+            let text_preview: String = critic_response.text.chars().take(500).collect();
+            warn!(
+                pr_number = pr.number,
+                text_len = critic_response.text.len(),
+                text_preview = %text_preview,
+                "critic did not return parseable JSON, using fallback score"
+            );
+            CriticResult {
+                score: 5,
+                verdict: "needs_work".to_string(),
+                summary: format!(
+                    "Critic did not return structured output. Raw response: {}",
+                    text_preview
+                ),
+                deductions: vec![],
+            }
+        };
 
         // Append deductions to summary so the fix agent knows exactly what to address.
         let summary = if critic.deductions.is_empty() {
@@ -230,6 +244,19 @@ pub async fn run(
         });
     }
 
+    // Snapshot the current state so guardrails only measure the fix agent's
+    // changes, not the entire PR diff.
+    let _ = tokio::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(&clone_dir)
+        .output()
+        .await;
+    let _ = tokio::process::Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "autoanneal: pre-fix snapshot"])
+        .current_dir(&clone_dir)
+        .output()
+        .await;
+
     // 6a. Invoke LLM with fix prompt.
     let fix_prompt = PR_REVIEW_FIX_PROMPT
         .replace("{pr_number}", &pr.number.to_string())
@@ -272,7 +299,13 @@ pub async fn run(
                 violation = %violation,
                 "guardrail violation, discarding PR review fix changes"
             );
+            // Discard fix agent changes and undo the snapshot commit.
             let _ = guardrails::discard_changes(&clone_dir).await;
+            let _ = tokio::process::Command::new("git")
+                .args(["reset", "--soft", "HEAD~1"])
+                .current_dir(&clone_dir)
+                .output()
+                .await;
             // Leave a comment so the PR author knows fixes were attempted but rejected.
             let comment = format!(
                 "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes were generated but discarded due to safety guardrails ({}). Please review the suggestions above._",
@@ -297,14 +330,6 @@ pub async fn run(
                 let push_ok = push_changes(&clone_dir, &pr.branch).await.is_ok();
 
                 if push_ok {
-                    // Capture what the fix agent said it did.
-                    let fix_description = if fix_response.text.is_empty() {
-                        "Changes applied.".to_string()
-                    } else {
-                        // Take first ~500 chars of the fix response as a summary.
-                        fix_response.text.chars().take(500).collect::<String>()
-                    };
-
                     // Re-review the fixed diff to get an updated score.
                     let re_review_budget = (budget - total_cost).max(0.0).min(0.50);
                     let (final_score, final_verdict, final_summary) = if re_review_budget >= 0.05 {
@@ -332,10 +357,10 @@ pub async fn run(
                     };
 
                     let comment = format!(
-                        "## Autoanneal Review & Fix\n\n**Score:** {}/10 → {}/10\n**Verdict:** {} → {}\n\n### Issues Found\n{}\n\n### Fixes Applied\n{}\n\n_Automated fixes have been pushed to this branch._",
+                        "## Autoanneal Review & Fix\n\n**Score:** {}/10 → {}/10\n**Verdict:** {} → {}\n\n### Issues Found\n{}\n\n### After Fix\n{}\n\n_Automated fixes have been pushed to this branch._",
                         critic_output.score, final_score,
                         critic_output.verdict, final_verdict,
-                        critic_output.summary, fix_description,
+                        critic_output.summary, final_summary,
                     );
                     leave_comment(repo_slug, pr.number, &comment).await;
                     add_reviewed_label(repo_slug, pr.number).await;
@@ -420,15 +445,17 @@ async fn commit_changes(clone_dir: &Path) -> Result<()> {
         );
     }
 
+    // Amend the pre-fix snapshot commit so the PR gets a single clean commit
+    // instead of snapshot + fix.
     let output = tokio::process::Command::new("git")
-        .args(["commit", "-m", "autoanneal: fix issues found in PR review"])
+        .args(["commit", "--amend", "-m", "autoanneal: fix issues found in PR review"])
         .current_dir(clone_dir)
         .output()
         .await
-        .context("failed to run git commit")?;
+        .context("failed to run git commit --amend")?;
     if !output.status.success() {
         anyhow::bail!(
-            "git commit failed: {}",
+            "git commit --amend failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -575,12 +602,26 @@ async fn run_critic_review(
     let response = llm::invoke::<CriticResult>(&invocation, Duration::from_secs(120)).await?;
     let cost = response.cost_usd;
 
-    let critic = response.structured.unwrap_or(CriticResult {
-        score: 5,
-        verdict: "needs_work".to_string(),
-        summary: "Re-review did not return structured output.".to_string(),
-        deductions: vec![],
-    });
+    let critic = if let Some(structured) = response.structured {
+        structured
+    } else {
+        let text_preview: String = response.text.chars().take(500).collect();
+        warn!(
+            pr_number = pr.number,
+            text_len = response.text.len(),
+            text_preview = %text_preview,
+            "re-review did not return parseable JSON, using fallback score"
+        );
+        CriticResult {
+            score: 5,
+            verdict: "needs_work".to_string(),
+            summary: format!(
+                "Re-review did not return structured output. Raw response: {}",
+                text_preview
+            ),
+            deductions: vec![],
+        }
+    };
 
     Ok((CriticOutput {
         score: critic.score,
