@@ -32,7 +32,7 @@ pub struct OpenPr {
     pub files: Vec<String>,
 }
 
-/// Claude's structured output from the recon phase.
+/// Structured output from the recon phase.
 /// Matches the ReconSchema JSON schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReconResult {
@@ -132,7 +132,7 @@ pub struct AnalysisResult {
     pub improvements: Vec<Improvement>,
 }
 
-/// Claude's structured output for PR title and body.
+/// Structured output for PR title and body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrBody {
     pub title: String,

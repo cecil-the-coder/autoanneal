@@ -7,7 +7,7 @@ pub struct Config {
     /// GitHub repository (owner/repo or full URL)
     pub repo: String,
 
-    /// Total Claude spend cap in USD
+    /// Total LLM spend cap in USD
     #[arg(long, default_value = "5.00")]
     pub max_budget: f64,
 
@@ -15,7 +15,7 @@ pub struct Config {
     #[arg(long, default_value = "30m")]
     pub timeout: String,
 
-    /// Default Claude model alias or ID (used for phases without a specific override)
+    /// Default model alias or ID (used for phases without a specific override)
     #[arg(long, default_value = "sonnet")]
     pub model: String,
 

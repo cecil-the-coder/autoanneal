@@ -257,7 +257,7 @@ pub async fn run(
         .output()
         .await;
 
-    // 6a. Invoke Claude with fix prompt.
+    // 6a. Invoke LLM with fix prompt.
     let fix_prompt = PR_REVIEW_FIX_PROMPT
         .replace("{pr_number}", &pr.number.to_string())
         .replace("{branch}", &pr.branch)
@@ -287,7 +287,7 @@ pub async fn run(
 
     total_cost += fix_response.cost_usd;
 
-    // 6b. Check if Claude made changes.
+    // 6b. Check for changes.
     let has_changes = check_has_changes(&clone_dir).await;
 
     if has_changes {
@@ -431,7 +431,7 @@ pub async fn run(
         }
     }
 
-    // 6c. No changes made by Claude. Leave review comment.
+    // 6c. No changes made. Leave review comment.
     let comment = format!(
         "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}",
         critic_output.score, critic_output.verdict, critic_output.summary

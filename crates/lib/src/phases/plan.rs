@@ -93,7 +93,7 @@ pub async fn create_pr(
     critic_summary: Option<&str>,
     context_window: u64,
 ) -> Result<PrOutput> {
-    // 1. Generate PR body via Claude.
+    // 1. Generate PR body via LLM.
     let improvements_text = improvements
         .iter()
         .enumerate()
@@ -132,11 +132,11 @@ pub async fn create_pr(
 
     let response = invoke::<PrBody>(&invocation, Duration::from_secs(120))
         .await
-        .context("failed to generate PR body via Claude")?;
+        .context("failed to generate PR body")?;
 
     let pr_body = response
         .structured
-        .context("Claude did not return structured PR body output")?;
+        .context("LLM did not return structured PR body output")?;
 
     let cost_usd = response.cost_usd;
 

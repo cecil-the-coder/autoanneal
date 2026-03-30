@@ -9,7 +9,7 @@ pub struct ApiClient {
     provider: Provider,
     /// When true, always use `Authorization: Bearer` regardless of provider.
     /// This supports Anthropic proxies/gateways that use bearer token auth
-    /// (matching Claude Code's ANTHROPIC_AUTH_TOKEN behavior).
+    /// (matching the ANTHROPIC_AUTH_TOKEN behavior).
     use_bearer: bool,
     http: reqwest::Client,
     max_retries: u32,

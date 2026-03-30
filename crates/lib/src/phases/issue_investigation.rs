@@ -73,7 +73,7 @@ pub async fn run(
 
     let system_prompt = prompts::system::issue_investigation_system_prompt();
 
-    // 3. Invoke Claude.
+    // 3. Invoke LLM.
     let invocation = LlmInvocation {
         prompt,
         system_prompt: Some(system_prompt),
