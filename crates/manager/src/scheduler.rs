@@ -32,6 +32,34 @@ pub struct Scheduler {
 pub struct TriggerMessage {
     pub repo_name: String,
     pub reason: TriggerReason,
+    /// Optional overrides applied on top of the repo's config for this run only.
+    pub overrides: Option<TriggerOverrides>,
+}
+
+/// Per-trigger overrides for worker CLI args.
+/// Any field set here takes precedence over the repo config for this run only.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TriggerOverrides {
+    /// Force review of all PRs (even already-reviewed ones).
+    /// Sets force_review=true, review_prs=true, skip_after=0, max_open_prs=0.
+    pub force_review: Option<bool>,
+    pub review_prs: Option<bool>,
+    pub review_filter: Option<String>,
+    /// If critic score is below this, attempt to fix (e.g. 10 = fix everything).
+    pub review_fix_threshold: Option<u32>,
+    pub fix_ci: Option<bool>,
+    pub fix_conflicts: Option<bool>,
+    pub fix_external_ci: Option<bool>,
+    /// Set to 0 to skip the staleness check.
+    pub skip_after: Option<usize>,
+    /// Set to 0 for unlimited open PRs.
+    pub max_open_prs: Option<usize>,
+    pub max_budget: Option<String>,
+    pub max_tasks: Option<usize>,
+    pub model: Option<String>,
+    pub critic_threshold: Option<u32>,
+    pub dry_run: Option<bool>,
 }
 
 /// Per-repo scheduling state: parsed cron schedule and next fire time.
@@ -137,7 +165,20 @@ impl Scheduler {
                     match msg {
                         Some(msg) => {
                             if let Some(entry) = self.config.repos.iter().find(|r| r.name == msg.repo_name) {
-                                self.launch_run(entry, msg.reason).await;
+                                let has_overrides = msg.overrides.is_some();
+                                let entry = apply_overrides(entry, msg.overrides.as_ref());
+                                if has_overrides {
+                                    info!(
+                                        repo = %entry.name,
+                                        force_review = ?entry.force_review,
+                                        review_prs = ?entry.review_prs,
+                                        skip_after = ?entry.skip_after,
+                                        max_open_prs = ?entry.max_open_prs,
+                                        review_fix_threshold = ?entry.review_fix_threshold,
+                                        "trigger with overrides applied"
+                                    );
+                                }
+                                self.launch_run(&entry, msg.reason).await;
                             } else {
                                 warn!(repo = %msg.repo_name, "trigger for unknown repo");
                             }
@@ -383,6 +424,36 @@ impl Scheduler {
             }
         });
     }
+}
+
+/// Apply trigger overrides to a cloned repo entry.
+fn apply_overrides(entry: &RepoEntry, overrides: Option<&TriggerOverrides>) -> RepoEntry {
+    let mut entry = entry.clone();
+    let Some(o) = overrides else { return entry };
+
+    // force_review is a convenience shortcut: enable review, bypass staleness and PR limits
+    if o.force_review == Some(true) {
+        entry.force_review = Some(true);
+        entry.review_prs = Some(true);
+        entry.skip_after = Some(0);
+        entry.max_open_prs = Some(0);
+    }
+
+    if let Some(v) = o.review_prs { entry.review_prs = Some(v); }
+    if let Some(ref v) = o.review_filter { entry.review_filter = Some(v.clone()); }
+    if let Some(v) = o.review_fix_threshold { entry.review_fix_threshold = Some(v); }
+    if let Some(v) = o.fix_ci { entry.fix_ci = Some(v); }
+    if let Some(v) = o.fix_conflicts { entry.fix_conflicts = Some(v); }
+    if let Some(v) = o.fix_external_ci { entry.fix_external_ci = Some(v); }
+    if let Some(v) = o.skip_after { entry.skip_after = Some(v); }
+    if let Some(v) = o.max_open_prs { entry.max_open_prs = Some(v); }
+    if let Some(ref v) = o.max_budget { entry.max_budget = Some(v.clone()); }
+    if let Some(v) = o.max_tasks { entry.max_tasks = Some(v); }
+    if let Some(ref v) = o.model { entry.model = Some(v.clone()); }
+    if let Some(v) = o.critic_threshold { entry.critic_threshold = Some(v); }
+    if let Some(v) = o.dry_run { entry.dry_run = Some(v); }
+
+    entry
 }
 
 /// Parse a duration string like "30m", "1h", "1h30m", "90s" into a `Duration`.

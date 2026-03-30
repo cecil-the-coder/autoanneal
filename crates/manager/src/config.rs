@@ -100,6 +100,7 @@ fn default_true() -> bool { true }
 fn default_namespace() -> String { "default".into() }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkerDefaults {
     #[serde(default = "default_max_budget")]
     pub max_budget: String,
@@ -147,6 +148,8 @@ pub struct WorkerDefaults {
     pub fix_external_ci: bool,
     #[serde(default)]
     pub review_prs: bool,
+    #[serde(default)]
+    pub force_review: bool,
     #[serde(default = "default_review_filter")]
     pub review_filter: String,
     #[serde(default = "default_review_fix_threshold")]
@@ -191,6 +194,7 @@ impl Default for WorkerDefaults {
             doc_critic_threshold: default_doc_critic_threshold(),
             fix_external_ci: false,
             review_prs: false,
+            force_review: false,
             review_filter: default_review_filter(),
             review_fix_threshold: default_review_fix_threshold(),
             concurrency: default_concurrency(),
@@ -220,6 +224,7 @@ fn default_issue_budget() -> String { "3.00".into() }
 fn default_context_window() -> u64 { 128000 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct RepoEntry {
     pub name: String,
     pub repo: String,
@@ -275,6 +280,8 @@ pub struct RepoEntry {
     #[serde(default)]
     pub review_prs: Option<bool>,
     #[serde(default)]
+    pub force_review: Option<bool>,
+    #[serde(default)]
     pub review_filter: Option<String>,
     #[serde(default)]
     pub review_fix_threshold: Option<u32>,
@@ -329,6 +336,8 @@ impl RepoEntry {
         args.extend_from_slice(&["--fix-external-ci".into(), fix_external_ci.to_string()]);
         let review_prs = self.review_prs.unwrap_or(defaults.review_prs);
         args.extend_from_slice(&["--review-prs".into(), review_prs.to_string()]);
+        let force_review = self.force_review.unwrap_or(defaults.force_review);
+        if force_review { args.push("--force-review".into()); }
 
         // Investigate issues
         let investigate = self.investigate_issues.as_deref().unwrap_or(&defaults.investigate_issues);
@@ -415,6 +424,7 @@ mod tests {
             doc_critic_threshold: None,
             fix_external_ci: None,
             review_prs: None,
+            force_review: None,
             review_filter: None,
             review_fix_threshold: None,
             concurrency: None,

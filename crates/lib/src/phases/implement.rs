@@ -185,6 +185,9 @@ async fn run_batch(
             let worktree_path =
                 create_worktree(&clone_path, &format!("batch-group-{group_idx}")).await?;
 
+            // Record the base commit before any tasks modify the worktree.
+            let base_commit = get_head_sha(&worktree_path).await?;
+
             let output = run_group_in_worktree(
                 &worktree_path,
                 &tasks,
@@ -201,7 +204,7 @@ async fn run_batch(
             let patch = if output.as_ref().map_or(false, |o| {
                 o.results.iter().any(|r| matches!(r.status, TaskStatus::Success))
             }) {
-                generate_patch(&worktree_path).await.ok()
+                generate_patch(&worktree_path, &base_commit).await.ok()
             } else {
                 None
             };
@@ -457,8 +460,10 @@ async fn run_single_task(
                 "diff validation passed"
             );
 
-            // Stage all changes (no build check -- CI will verify after push).
+            // Commit changes within the worktree so each task gets its own
+            // commit and subsequent tasks start with a clean working tree.
             stage_all(working_dir).await?;
+            commit_task(working_dir, &improvement.title).await?;
 
             Ok(TaskResult {
                 title: improvement.title.clone(),
@@ -507,18 +512,19 @@ async fn merge_and_push(
             "applying patch from worktree group"
         );
 
-        // Write patch to a temp file.
+        // Write patch to a temp file and apply with `git am` to preserve
+        // individual per-task commits from `format-patch`.
         let patch_file = clone_path.join(".autoanneal-patch.tmp");
         tokio::fs::write(&patch_file, &patch)
             .await
             .context("failed to write patch file")?;
 
         let apply_output = tokio::process::Command::new("git")
-            .args(["apply", "--3way", ".autoanneal-patch.tmp"])
+            .args(["am", "--3way", ".autoanneal-patch.tmp"])
             .current_dir(clone_path)
             .output()
             .await
-            .context("failed to run git apply")?;
+            .context("failed to run git am")?;
 
         // Clean up temp file.
         let _ = tokio::fs::remove_file(&patch_file).await;
@@ -527,8 +533,14 @@ async fn merge_and_push(
             let stderr = String::from_utf8_lossy(&apply_output.stderr);
             warn!(
                 stderr = %stderr,
-                "patch apply failed, marking group tasks as failed"
+                "patch apply failed, aborting and marking group tasks as failed"
             );
+            // Abort the failed am session.
+            let _ = tokio::process::Command::new("git")
+                .args(["am", "--abort"])
+                .current_dir(clone_path)
+                .output()
+                .await;
             // Mark all successful results in this group as failed.
             for result in &mut output.results {
                 if matches!(result.status, TaskStatus::Success) {
@@ -545,44 +557,15 @@ async fn merge_and_push(
     }
 
     if !any_applied {
-        info!("no patches to commit");
+        info!("no patches to apply");
         return Ok(());
     }
 
-    // Stage everything and commit.
-    stage_all(clone_path).await?;
-
-    let commit_msg = if all_successful_titles.len() == 1 {
-        format!(
-            "autoanneal: {}\n\nAutomated by autoanneal",
-            all_successful_titles[0]
-        )
-    } else {
-        let titles_list: String = all_successful_titles
-            .iter()
-            .map(|t| format!("- {t}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!(
-            "autoanneal: implement {} improvements\n\n{titles_list}\n\nAutomated by autoanneal",
-            all_successful_titles.len()
-        )
-    };
-
-    let commit_output = tokio::process::Command::new("git")
-        .args(["commit", "-m", &commit_msg])
-        .current_dir(clone_path)
-        .output()
-        .await
-        .context("failed to run git commit")?;
-
-    if !commit_output.status.success() {
-        let stderr = String::from_utf8_lossy(&commit_output.stderr);
-        warn!(stderr = %stderr, "git commit failed after patch merge");
-        return Err(anyhow::anyhow!("git commit failed: {stderr}"));
-    }
-
-    info!(branch = %branch_name, "committed merged changes (push deferred until after review)");
+    info!(
+        branch = %branch_name,
+        commits = all_successful_titles.len(),
+        "applied commits (push deferred until after review)"
+    );
     Ok(())
 }
 
@@ -660,13 +643,30 @@ async fn remove_worktree(repo_dir: &Path, worktree_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Generate a unified diff of all staged changes in the worktree relative to HEAD.
-async fn generate_patch(worktree_path: &Path) -> Result<String> {
-    // Make sure everything is staged.
+/// Generate a multi-commit patch of all task commits since the base commit.
+async fn generate_patch(worktree_path: &Path, base_commit: &str) -> Result<String> {
+    // Stage any remaining unstaged changes (shouldn't be any if each task committed).
     stage_all(worktree_path).await?;
 
+    // Check for uncommitted staged changes and commit them as a catch-all.
+    let status = tokio::process::Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .current_dir(worktree_path)
+        .status()
+        .await
+        .context("failed to check staged changes")?;
+    if !status.success() {
+        let _ = tokio::process::Command::new("git")
+            .args(["commit", "-m", "autoanneal: uncommitted task changes"])
+            .current_dir(worktree_path)
+            .output()
+            .await;
+    }
+
+    // Generate one patch per commit since the base (pre-task) commit.
+    let range = format!("{base_commit}..HEAD");
     let output = tokio::process::Command::new("git")
-        .args(["diff", "--cached", "HEAD"])
+        .args(["format-patch", &range, "--stdout"])
         .current_dir(worktree_path)
         .output()
         .await
@@ -674,11 +674,22 @@ async fn generate_patch(worktree_path: &Path) -> Result<String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git diff --cached HEAD failed: {stderr}");
+        anyhow::bail!("git format-patch failed: {stderr}");
     }
 
     let patch = String::from_utf8_lossy(&output.stdout).to_string();
     Ok(patch)
+}
+
+/// Get the current HEAD SHA.
+async fn get_head_sha(dir: &Path) -> Result<String> {
+    let output = tokio::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .await
+        .context("failed to get HEAD SHA")?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -697,6 +708,24 @@ async fn stage_all(dir: &Path) -> Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("git add -A failed: {}", stderr);
+    }
+
+    Ok(())
+}
+
+/// Commit staged changes within a worktree with an autoanneal-prefixed message.
+async fn commit_task(dir: &Path, task_title: &str) -> Result<()> {
+    let msg = format!("autoanneal: {task_title}");
+    let output = tokio::process::Command::new("git")
+        .args(["commit", "-m", &msg])
+        .current_dir(dir)
+        .output()
+        .await
+        .context("failed to run git commit")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git commit failed: {}", stderr);
     }
 
     Ok(())

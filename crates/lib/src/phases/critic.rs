@@ -86,11 +86,22 @@ pub async fn run(
     let response = llm::invoke::<CriticResult>(&invocation, Duration::from_secs(600)).await?;
     total_cost += response.cost_usd;
 
-    let initial_review = response.structured.unwrap_or(CriticResult {
-        score: 5,
-        verdict: "needs_work".to_string(),
-        summary: "Critic did not return structured output.".to_string(),
-    });
+    let initial_review = if let Some(structured) = response.structured {
+        structured
+    } else {
+        let text_preview: String = response.text.chars().take(500).collect();
+        warn!(
+            text_len = response.text.len(),
+            text_preview = %text_preview,
+            "critic did not return parseable JSON, using fallback score"
+        );
+        CriticResult {
+            score: 5,
+            verdict: "needs_work".to_string(),
+            summary: "Critic did not return structured output.".to_string(),
+            deductions: vec![],
+        }
+    };
 
     info!(
         score = initial_review.score,

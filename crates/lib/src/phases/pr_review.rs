@@ -135,16 +135,42 @@ pub async fn run(
         let critic_response =
             llm::invoke::<CriticResult>(&critic_invocation, Duration::from_secs(300)).await?;
 
-        let critic = critic_response.structured.unwrap_or(CriticResult {
-            score: 5,
-            verdict: "needs_work".to_string(),
-            summary: "Critic did not return structured output.".to_string(),
-        });
+        let critic = if let Some(structured) = critic_response.structured {
+            structured
+        } else {
+            let text_preview: String = critic_response.text.chars().take(500).collect();
+            warn!(
+                pr_number = pr.number,
+                text_len = critic_response.text.len(),
+                text_preview = %text_preview,
+                "critic did not return parseable JSON, using fallback score"
+            );
+            CriticResult {
+                score: 5,
+                verdict: "needs_work".to_string(),
+                summary: format!(
+                    "Critic did not return structured output. Raw response: {}",
+                    text_preview
+                ),
+                deductions: vec![],
+            }
+        };
+
+        // Append deductions to summary so the fix agent knows exactly what to address.
+        let summary = if critic.deductions.is_empty() {
+            critic.summary
+        } else {
+            format!(
+                "{}\n\nDeductions:\n{}",
+                critic.summary,
+                critic.deductions.iter().map(|d| format!("- {d}")).collect::<Vec<_>>().join("\n")
+            )
+        };
 
         CriticOutput {
             score: critic.score,
             verdict: critic.verdict,
-            summary: critic.summary,
+            summary,
             cost_usd: critic_response.cost_usd,
             made_fixes: false,
             score_unverified: false,
@@ -170,6 +196,9 @@ pub async fn run(
         );
         leave_comment(repo_slug, pr.number, &comment).await;
         add_reviewed_label(repo_slug, pr.number).await;
+        if critic_output.score >= 10 {
+            add_ready_to_merge_label(repo_slug, pr.number).await;
+        }
         return Ok(PrReviewOutput {
             pr_number: pr.number,
             score: critic_output.score,
@@ -180,6 +209,23 @@ pub async fn run(
     }
 
     // 6. Score < fix_threshold -- the PR needs work. Try to fix it.
+    // Don't attempt fixes on rejected PRs -- they shouldn't exist at all.
+    if critic_output.verdict == "reject" {
+        let comment = format!(
+            "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}",
+            critic_output.score, critic_output.verdict, critic_output.summary
+        );
+        leave_comment(repo_slug, pr.number, &comment).await;
+        add_reviewed_label(repo_slug, pr.number).await;
+        return Ok(PrReviewOutput {
+            pr_number: pr.number,
+            score: critic_output.score,
+            fixed: false,
+            commented: true,
+            cost_usd: total_cost,
+        });
+    }
+
     let remaining_budget = (budget - total_cost).max(0.0);
     if remaining_budget < 0.10 {
         // Not enough budget to attempt fixes; just comment.
@@ -197,6 +243,19 @@ pub async fn run(
             cost_usd: total_cost,
         });
     }
+
+    // Snapshot the current state so guardrails only measure the fix agent's
+    // changes, not the entire PR diff.
+    let _ = tokio::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(&clone_dir)
+        .output()
+        .await;
+    let _ = tokio::process::Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "autoanneal: pre-fix snapshot"])
+        .current_dir(&clone_dir)
+        .output()
+        .await;
 
     // 6a. Invoke Claude with fix prompt.
     let fix_prompt = PR_REVIEW_FIX_PROMPT
@@ -240,7 +299,13 @@ pub async fn run(
                 violation = %violation,
                 "guardrail violation, discarding PR review fix changes"
             );
+            // Discard fix agent changes and undo the snapshot commit.
             let _ = guardrails::discard_changes(&clone_dir).await;
+            let _ = tokio::process::Command::new("git")
+                .args(["reset", "--soft", "HEAD~1"])
+                .current_dir(&clone_dir)
+                .output()
+                .await;
             // Leave a comment so the PR author knows fixes were attempted but rejected.
             let comment = format!(
                 "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes were generated but discarded due to safety guardrails ({}). Please review the suggestions above._",
@@ -265,17 +330,47 @@ pub async fn run(
                 let push_ok = push_changes(&clone_dir, &pr.branch).await.is_ok();
 
                 if push_ok {
-                    // Leave a comment summarizing what was fixed.
+                    // Re-review the fixed diff to get an updated score.
+                    let re_review_budget = (budget - total_cost).max(0.0).min(0.50);
+                    let (final_score, final_verdict, final_summary) = if re_review_budget >= 0.05 {
+                        info!(pr_number = pr.number, "re-reviewing after fixes");
+                        match run_critic_review(
+                            &clone_dir, repo_slug, pr, model, re_review_budget, context_window,
+                        ).await {
+                            Ok((output, cost)) => {
+                                total_cost += cost;
+                                info!(
+                                    pr_number = pr.number,
+                                    initial_score = critic_output.score,
+                                    new_score = output.score,
+                                    "re-review complete"
+                                );
+                                (output.score, output.verdict, output.summary)
+                            }
+                            Err(e) => {
+                                warn!(pr_number = pr.number, error = %e, "re-review failed, using initial score");
+                                (critic_output.score, critic_output.verdict.clone(), critic_output.summary.clone())
+                            }
+                        }
+                    } else {
+                        (critic_output.score, critic_output.verdict.clone(), critic_output.summary.clone())
+                    };
+
                     let comment = format!(
-                        "## Autoanneal Review & Fix\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes have been pushed to this branch._",
-                        critic_output.score, critic_output.verdict, critic_output.summary
+                        "## Autoanneal Review & Fix\n\n**Score:** {}/10 → {}/10\n**Verdict:** {} → {}\n\n### Issues Found\n{}\n\n### After Fix\n{}\n\n_Automated fixes have been pushed to this branch._",
+                        critic_output.score, final_score,
+                        critic_output.verdict, final_verdict,
+                        critic_output.summary, final_summary,
                     );
                     leave_comment(repo_slug, pr.number, &comment).await;
                     add_reviewed_label(repo_slug, pr.number).await;
+                    if final_score >= 10 {
+                        add_ready_to_merge_label(repo_slug, pr.number).await;
+                    }
 
                     return Ok(PrReviewOutput {
                         pr_number: pr.number,
-                        score: critic_output.score,
+                        score: final_score,
                         fixed: true,
                         commented: true,
                         cost_usd: total_cost,
@@ -350,15 +445,17 @@ async fn commit_changes(clone_dir: &Path) -> Result<()> {
         );
     }
 
+    // Amend the pre-fix snapshot commit so the PR gets a single clean commit
+    // instead of snapshot + fix.
     let output = tokio::process::Command::new("git")
-        .args(["commit", "-m", "autoanneal: fix issues found in PR review"])
+        .args(["commit", "--amend", "-m", "autoanneal: fix issues found in PR review"])
         .current_dir(clone_dir)
         .output()
         .await
-        .context("failed to run git commit")?;
+        .context("failed to run git commit --amend")?;
     if !output.status.success() {
         anyhow::bail!(
-            "git commit failed: {}",
+            "git commit --amend failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -442,4 +539,98 @@ async fn add_reviewed_label(repo_slug: &str, pr_number: u64) {
     {
         warn!(pr_number, error = %e, "failed to add autoanneal:reviewed label (non-fatal)");
     }
+}
+
+async fn add_ready_to_merge_label(repo_slug: &str, pr_number: u64) {
+    let dot = Path::new(".");
+    if let Err(e) = gh_command(
+        dot,
+        &[
+            "pr", "edit", &pr_number.to_string(),
+            "--add-label", "autoanneal:ready-to-merge",
+            "-R", repo_slug,
+        ],
+    )
+    .await
+    {
+        warn!(pr_number, error = %e, "failed to add autoanneal:ready-to-merge label (non-fatal)");
+    }
+}
+
+/// Run a single critic review on the current diff in the clone dir.
+/// Returns (CriticOutput, cost) on success.
+async fn run_critic_review(
+    clone_dir: &Path,
+    repo_slug: &str,
+    pr: &ExternalPr,
+    model: &str,
+    budget: f64,
+    context_window: u64,
+) -> Result<(CriticOutput, f64)> {
+    // Get the updated diff.
+    let diff_output = tokio::process::Command::new("gh")
+        .args([
+            "pr", "diff", &pr.number.to_string(),
+            "-R", repo_slug,
+        ])
+        .current_dir(clone_dir)
+        .output()
+        .await
+        .context("failed to get PR diff for re-review")?;
+
+    let diff = String::from_utf8_lossy(&diff_output.stdout);
+    let diff = llm::truncate_to_char_boundary(&diff, MAX_DIFF_CHARS);
+
+    let critic_prompt = CRITIC_PROMPT.replace("{diff}", &diff);
+    let invocation = LlmInvocation {
+        prompt: critic_prompt,
+        system_prompt: Some(critic_system_prompt()),
+        model: model.to_string(),
+        max_budget_usd: budget,
+        max_turns: 1,
+        effort: "high",
+        tools: "",
+        json_schema: None,
+        working_dir: clone_dir.to_path_buf(),
+        context_window,
+        provider_hint: None,
+        max_tokens_per_turn: Some(4096),
+        ci_context: None,
+        exa_max_searches: 0,
+    };
+
+    let response = llm::invoke::<CriticResult>(&invocation, Duration::from_secs(120)).await?;
+    let cost = response.cost_usd;
+
+    let critic = if let Some(structured) = response.structured {
+        structured
+    } else {
+        let text_preview: String = response.text.chars().take(500).collect();
+        warn!(
+            pr_number = pr.number,
+            text_len = response.text.len(),
+            text_preview = %text_preview,
+            "re-review did not return parseable JSON, using fallback score"
+        );
+        CriticResult {
+            score: 5,
+            verdict: "needs_work".to_string(),
+            summary: format!(
+                "Re-review did not return structured output. Raw response: {}",
+                text_preview
+            ),
+            deductions: vec![],
+        }
+    };
+
+    Ok((CriticOutput {
+        score: critic.score,
+        verdict: critic.verdict,
+        summary: critic.summary,
+        cost_usd: cost,
+        made_fixes: false,
+        score_unverified: false,
+        initial_summary: None,
+        initial_score: None,
+    }, cost))
 }

@@ -41,6 +41,7 @@ impl PreflightOutput {
 #[derive(Debug, Clone)]
 pub struct PrFetchConfig {
     pub review_prs: bool,
+    pub force_review: bool,
     pub review_filter: String,
     pub fix_external_ci: bool,
     pub fix_conflicts: bool,
@@ -50,6 +51,7 @@ pub struct PrFetchConfig {
 pub async fn run(
     repo_slug: &str,
     review_prs: bool,
+    force_review: bool,
     review_filter: &str,
     investigate_issues: &str,
     fix_external_ci: bool,
@@ -111,11 +113,12 @@ pub async fn run(
     // 5. Fetch all open PRs in a single API call and partition them.
     let fetch_config = PrFetchConfig {
         review_prs,
+        force_review,
         review_filter: review_filter.to_string(),
         fix_external_ci,
         fix_conflicts,
     };
-    let needs_external = review_prs || fix_external_ci || fix_conflicts;
+    let needs_external = review_prs || force_review || fix_external_ci || fix_conflicts;
     let (in_flight_prs, external_prs) =
         fetch_all_prs(repo_slug, &fetch_config, needs_external).await;
 
@@ -240,7 +243,7 @@ async fn fetch_all_prs(
         let final_result: Vec<ExternalPr> = result
             .into_iter()
             .filter(|pr| {
-                let dominated_by_review = !pr.reviewed && config.review_prs;
+                let dominated_by_review = (config.force_review || !pr.reviewed) && (config.review_prs || config.force_review);
                 let included_for_conflicts = pr.has_merge_conflicts && config.fix_conflicts;
                 let included_for_ci = pr.ci_status == CiStatus::Failing && config.fix_external_ci;
                 dominated_by_review || included_for_conflicts || included_for_ci
@@ -389,8 +392,8 @@ fn filter_external_prs(
             .unwrap_or(false);
 
         // Determine if this PR should be included based on config flags.
-        let include_for_review = config.review_prs
-            && !reviewed
+        let include_for_review = (config.review_prs || config.force_review)
+            && (config.force_review || !reviewed)
             && matches_review_filter(&config.review_filter, &updated_at, &labels);
         let include_for_conflicts = config.fix_conflicts && has_merge_conflicts;
         // For CI, we include all candidates and filter after CI status is checked.
@@ -766,9 +769,12 @@ async fn fetch_issues(repo_slug: &str, label_filter: &str) -> Vec<GithubIssue> {
 
 /// Check that required environment variables are set and non-empty.
 fn validate_env_vars() -> Result<()> {
-    let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-    if api_key.is_empty() {
-        bail!("ANTHROPIC_API_KEY is not set or empty");
+    // Check for an LLM API key — accept any supported provider.
+    let has_anthropic = !std::env::var("ANTHROPIC_API_KEY").unwrap_or_default().is_empty();
+    let has_anthropic_auth = !std::env::var("ANTHROPIC_AUTH_TOKEN").unwrap_or_default().is_empty();
+    let has_openai = !std::env::var("OPENAI_API_KEY").unwrap_or_default().is_empty();
+    if !has_anthropic && !has_anthropic_auth && !has_openai {
+        bail!("No LLM API key set. Set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or OPENAI_API_KEY.");
     }
 
     let gh_token = std::env::var("GH_TOKEN").unwrap_or_default();
@@ -840,6 +846,7 @@ mod tests {
 
         let config = PrFetchConfig {
             review_prs: true,
+            force_review: false,
             review_filter: "all".to_string(),
             fix_external_ci: false,
             fix_conflicts: false,
@@ -863,6 +870,7 @@ mod tests {
 
         let config = PrFetchConfig {
             review_prs: false,
+            force_review: false,
             review_filter: "all".to_string(),
             fix_external_ci: false,
             fix_conflicts: true,
@@ -884,6 +892,7 @@ mod tests {
 
         let config = PrFetchConfig {
             review_prs: false,
+            force_review: false,
             review_filter: "all".to_string(),
             fix_external_ci: true,
             fix_conflicts: false,
@@ -903,6 +912,7 @@ mod tests {
 
         let config = PrFetchConfig {
             review_prs: true,
+            force_review: false,
             review_filter: "all".to_string(),
             fix_external_ci: true,
             fix_conflicts: true,
@@ -923,6 +933,7 @@ mod tests {
 
         let config = PrFetchConfig {
             review_prs: false,
+            force_review: false,
             review_filter: "all".to_string(),
             fix_external_ci: false,
             fix_conflicts: false,
@@ -941,6 +952,7 @@ mod tests {
 
         let config = PrFetchConfig {
             review_prs: true,
+            force_review: false,
             review_filter: "all".to_string(),
             fix_external_ci: false,
             fix_conflicts: false,
@@ -965,6 +977,7 @@ mod tests {
 
         let config = PrFetchConfig {
             review_prs: true,
+            force_review: false,
             review_filter: "recent".to_string(),
             fix_external_ci: false,
             fix_conflicts: false,
@@ -984,6 +997,7 @@ mod tests {
 
         let config = PrFetchConfig {
             review_prs: true,
+            force_review: false,
             review_filter: "labeled:needs-review".to_string(),
             fix_external_ci: false,
             fix_conflicts: false,
@@ -1004,6 +1018,7 @@ mod tests {
 
         let config = PrFetchConfig {
             review_prs: false,
+            force_review: false,
             review_filter: "all".to_string(),
             fix_external_ci: false,
             fix_conflicts: true,

@@ -109,6 +109,10 @@ pub struct Config {
     #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     pub review_prs: bool,
 
+    /// Force re-review of PRs even if already reviewed (ignores autoanneal:reviewed label).
+    #[arg(long)]
+    pub force_review: bool,
+
     /// Fix CI failures on external PRs (not created by autoanneal).
     #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     pub fix_external_ci: bool,
@@ -344,6 +348,7 @@ mod tests {
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
+            force_review: false,
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
@@ -387,6 +392,7 @@ mod tests {
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
+            force_review: false,
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
@@ -430,6 +436,7 @@ mod tests {
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
+            force_review: false,
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
@@ -473,6 +480,7 @@ mod tests {
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
+            force_review: false,
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
@@ -516,6 +524,7 @@ mod tests {
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
+            force_review: false,
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
@@ -559,6 +568,7 @@ mod tests {
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
+            force_review: false,
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
