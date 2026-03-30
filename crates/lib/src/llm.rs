@@ -43,23 +43,26 @@ pub struct LlmResponse<T> {
 /// Uses `find` with depth limit, excludes common noise directories,
 /// and truncates to avoid wasting tokens.
 pub(crate) async fn get_dir_context(working_dir: &Path) -> String {
-    let output = tokio::process::Command::new("find")
-        .args([
-            ".",
-            "-maxdepth", "3",
-            "-not", "-path", "./.git/*",
-            "-not", "-path", "./node_modules/*",
-            "-not", "-path", "./target/*",
-            "-not", "-path", "./.venv/*",
-            "-not", "-path", "./vendor/*",
-            "-not", "-path", "./__pycache__/*",
-        ])
-        .current_dir(working_dir)
-        .output()
-        .await;
+    let output = tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::process::Command::new("find")
+            .args([
+                ".",
+                "-maxdepth", "3",
+                "-not", "-path", "./.git/*",
+                "-not", "-path", "./node_modules/*",
+                "-not", "-path", "./target/*",
+                "-not", "-path", "./.venv/*",
+                "-not", "-path", "./vendor/*",
+                "-not", "-path", "./__pycache__/*",
+            ])
+            .current_dir(working_dir)
+            .output(),
+    )
+    .await;
 
     let tree = match output {
-        Ok(out) if out.status.success() => {
+        Ok(Ok(out)) if out.status.success() => {
             String::from_utf8_lossy(&out.stdout).to_string()
         }
         _ => return String::new(),
