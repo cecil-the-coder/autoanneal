@@ -589,12 +589,16 @@ The initial review scored this PR {initial_score}/10 with these deductions:
 A fix agent attempted to address these deductions. Review the updated diff below.
 
 For each original deduction:
-- If it was fixed, remove that deduction (add points back)
+- If it was fixed, remove that deduction (add points back toward 10)
 - If it was NOT fixed, keep it
 
-If the fixes introduced NEW issues not in the original review, add new deductions.
+If the fixes introduced NEW issues not in the original review, add new deductions for those.
 
-Your score should start from {initial_score}/10 and adjust based on which deductions were resolved and any new issues found.
+IMPORTANT:
+- Start from {initial_score}/10 and adjust: +1 per resolved deduction, -1 per new issue
+- Each distinct issue should appear EXACTLY ONCE in your deductions list. Do NOT list the same issue with different wording. Consolidate similar concerns into a single deduction.
+- Each deduction must specify how many points it costs (e.g. "-1: description")
+- The total point deductions must equal (10 - score)
 
 ## Updated Diff
 
@@ -609,7 +613,7 @@ Output a JSON code block:
   "score": 9,
   "verdict": "approve|needs_work|reject",
   "summary": "Brief summary of what changed since the initial review",
-  "deductions": ["Any remaining or new deductions"]
+  "deductions": ["-1: One unique issue per line"]
 }}
 ```"#,
         initial_score = initial_score,
