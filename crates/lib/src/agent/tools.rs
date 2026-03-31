@@ -458,7 +458,7 @@ impl ToolExecutor {
         let timeout = self.command_timeout;
 
         let run = move |rt: tokio::runtime::Handle| {
-            let pattern = full_pattern_str;
+            let pattern = full_pattern_str.clone();
             rt.block_on(async move {
                 // Apply timeout to the entire glob operation
                 let glob_future = async move {
