@@ -128,14 +128,15 @@ impl ToolExecutor {
             return Err(ToolError::InvalidInput("path must not be empty".into()));
         }
         
-        // Cache working directory canonical path upfront to avoid race conditions
-        // and multiple mutable borrows during path resolution.
+        // Cache working directory path and canonical path upfront to avoid
+        // race conditions and borrow checker issues.
+        let working_dir = self.working_dir.clone();
         let wd_canonical = self.working_dir_canonicalize()?;
         
         let candidate = if Path::new(raw).is_absolute() {
             PathBuf::from(raw)
         } else {
-            self.working_dir.join(raw)
+            working_dir.join(raw)
         };
         
         // Canonicalise as far as existing components allow.  For new files the
@@ -219,7 +220,7 @@ impl ToolExecutor {
             // and only check the relative portion.
             let relative_path = if candidate.is_absolute() {
                 // Get the path relative to working directory
-                match candidate.strip_prefix(&self.working_dir) {
+                match candidate.strip_prefix(&working_dir) {
                     Ok(rel) => rel,
                     Err(_) => {
                         // Absolute path that doesn't start with working_dir - reject it
