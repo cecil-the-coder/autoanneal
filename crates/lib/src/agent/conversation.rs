@@ -1322,7 +1322,7 @@ mod tests {
             ("result_c".to_string(), false),
         ]);
 
-        let _ = run(&sender, &executor, &default_config(), "go").await;
+        let _ = run(&sender, &mut executor, &default_config(), "go").await;
 
         let reqs = sender.recorded_requests().await;
         // Second request has tool results as last user message.
