@@ -388,7 +388,7 @@ pub async fn invoke<T: DeserializeOwned>(
     // Run the conversation loop.
     let start = std::time::Instant::now();
     let rss_before = rss_mb();
-    let result = conversation::run(&client, &tool_handler, &config, &augmented_prompt).await;
+    let result = conversation::run(&client, &mut tool_handler, &config, &augmented_prompt).await;
     let duration_ms = start.elapsed().as_millis() as u64;
     let rss_after = rss_mb();
 
@@ -734,7 +734,7 @@ mod tests {
             context_window: crate::agent::context::DEFAULT_CONTEXT_WINDOW,
         };
 
-        let result = conversation::run(&sender, &tool_handler, &config, "hello").await;
+        let result = conversation::run(&sender, &mut tool_handler, &config, "hello").await;
         let response: LlmResponse<serde_json::Value> = map_result(result, 0).unwrap();
 
         assert!(response.structured.is_some());

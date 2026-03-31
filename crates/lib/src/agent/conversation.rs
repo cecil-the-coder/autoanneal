@@ -105,7 +105,7 @@ const MAX_TOOL_RESULT_BYTES: usize = 100_000;
 
 pub async fn run(
     sender: &dyn MessageSender,
-    executor: &dyn ToolHandler,
+    executor: &mut dyn ToolHandler,
     config: &ConversationConfig,
     prompt: &str,
 ) -> ConversationResult {
