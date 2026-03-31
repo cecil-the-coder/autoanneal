@@ -527,6 +527,8 @@ impl ToolExecutor {
         // Clone pattern and file_type to owned strings to avoid lifetime issues in the closure
         let pattern_owned = pattern.to_owned();
         let file_type_owned = file_type.map(|ft| ft.to_owned());
+        // Convert search_dir to string for use in the closure
+        let search_dir_str = search_dir.to_string_lossy().into_owned();
 
         let run = move |rt: tokio::runtime::Handle| {
             rt.block_on(async move {
@@ -544,7 +546,7 @@ impl ToolExecutor {
 
                 // -- separates options from pattern, preventing patterns starting
                 // with '-' from being interpreted as flags.
-                cmd.arg("--").arg(&pattern_owned).arg(&search_dir);
+                cmd.arg("--").arg(&pattern_owned).arg(&search_dir_str);
                 cmd.stdout(std::process::Stdio::piped());
                 cmd.stderr(std::process::Stdio::piped());
 
