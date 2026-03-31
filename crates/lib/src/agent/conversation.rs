@@ -1230,7 +1230,7 @@ mod tests {
         ]);
         let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "go").await;
+        let result = run(&sender, &mut executor, &default_config(), "go").await;
 
         assert_eq!(result.text, "continued");
         assert_eq!(result.turns, 2);
@@ -1258,7 +1258,7 @@ mod tests {
             ("file list".to_string(), false),
         ]);
 
-        let result = run(&sender, &executor, &default_config(), "go").await;
+        let result = run(&sender, &mut executor, &default_config(), "go").await;
 
         let calls = executor.recorded_calls().await;
         assert_eq!(calls.len(), 1);
