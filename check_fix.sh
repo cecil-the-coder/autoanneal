@@ -1,0 +1,1 @@
+cd /tmp/autoanneal-1774989604-1/.worktree-ci-fix-79 && cargo check -p autoanneal 2>&1 | head -50
