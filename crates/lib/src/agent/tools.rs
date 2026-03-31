@@ -219,8 +219,8 @@ impl ToolExecutor {
             // For absolute paths, we need to skip components that are part of wd_canonical
             // and only check the relative portion.
             let relative_path = if candidate.is_absolute() {
-                // Get the path relative to working directory
-                match candidate.strip_prefix(&working_dir) {
+                // Get the path relative to the canonical working directory
+                match candidate.strip_prefix(&wd_canonical) {
                     Ok(rel) => rel,
                     Err(_) => {
                         // Absolute path that doesn't start with working_dir - reject it
