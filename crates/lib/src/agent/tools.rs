@@ -177,6 +177,13 @@ impl ToolExecutor {
                         for part in tail_parts.into_iter().rev() {
                             base = base.join(part);
                         }
+                        // Re-verify the reconstructed path is still within bounds.
+                        // This protects against symlink attacks during the reconstruction.
+                        if !base.starts_with(&wd_canonical) {
+                            return Err(ToolError::InvalidInput(format!(
+                                "path escapes working directory: {raw}"
+                            )));
+                        }
                         break base;
                     }
                     Err(_) => {
