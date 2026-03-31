@@ -1046,7 +1046,7 @@ mod tests {
     /// Create a ToolExecutor rooted in a fresh temp directory and return both.
     fn make_executor() -> (ToolExecutor, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("create temp dir");
-        let exec = ToolExecutor::new(tmp.path().to_path_buf(), Duration::from_secs(30), None, None);
+        let mut exec = ToolExecutor::new(tmp.path().to_path_buf(), Duration::from_secs(30), None, None);
         (exec, tmp)
     }
 
