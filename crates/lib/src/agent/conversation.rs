@@ -895,7 +895,7 @@ mod tests {
             ("unknown tool: nonexistent_tool".to_string(), true),
         ]);
 
-        let result = run(&sender, &executor, &default_config(), "Do it").await;
+        let result = run(&sender, &mut executor, &default_config(), "Do it").await;
 
         assert_eq!(result.text, "I'll try a different approach");
         assert_eq!(result.turns, 2);
@@ -920,7 +920,7 @@ mod tests {
             ("invalid input: expected object".to_string(), true),
         ]);
 
-        let result = run(&sender, &executor, &default_config(), "Read").await;
+        let result = run(&sender, &mut executor, &default_config(), "Read").await;
 
         assert_eq!(result.text, "Sorry, let me fix that");
         assert!(matches!(result.stop_reason, StopReason::EndTurn));
@@ -942,7 +942,7 @@ mod tests {
             ("ok".to_string(), false),
         ]);
 
-        let result = run(&sender, &executor, &default_config(), "Multi-turn").await;
+        let result = run(&sender, &mut executor, &default_config(), "Multi-turn").await;
 
         assert_eq!(result.total_input_tokens, 600); // 100+200+300
         assert_eq!(result.total_output_tokens, 90); // 20+30+40
@@ -967,7 +967,7 @@ mod tests {
         let sender = MockSender::new(vec![Ok(response)]);
         let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "Cache test").await;
+        let result = run(&sender, &mut executor, &default_config(), "Cache test").await;
 
         // input_tokens includes base + cache_creation + cache_read
         assert_eq!(result.total_input_tokens, 350); // 50 + 200 + 100
@@ -987,7 +987,7 @@ mod tests {
         ]);
         let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "Write a lot").await;
+        let result = run(&sender, &mut executor, &default_config(), "Write a lot").await;
 
         assert_eq!(result.text, "partial text\n and more text");
         assert_eq!(result.turns, 2);
@@ -1012,7 +1012,7 @@ mod tests {
             ("127.0.0.1 localhost".to_string(), false),
         ]);
 
-        let result = run(&sender, &executor, &default_config(), "Check hosts").await;
+        let result = run(&sender, &mut executor, &default_config(), "Check hosts").await;
 
         // Text from both turns collected
         assert!(result.text.contains("Let me check that file"));
@@ -1036,7 +1036,7 @@ mod tests {
             ("".to_string(), false), // empty result
         ]);
 
-        let result = run(&sender, &executor, &default_config(), "Run it").await;
+        let result = run(&sender, &mut executor, &default_config(), "Run it").await;
 
         assert_eq!(result.text, "Command produced no output");
         assert!(matches!(result.stop_reason, StopReason::EndTurn));
@@ -1057,7 +1057,7 @@ mod tests {
         ]);
         let executor = MockToolHandler::new(vec![(huge, false)]);
 
-        let result = run(&sender, &executor, &default_config(), "Read big file").await;
+        let result = run(&sender, &mut executor, &default_config(), "Read big file").await;
 
         assert_eq!(result.text, "Got truncated result");
         assert!(matches!(result.stop_reason, StopReason::EndTurn));
@@ -1072,7 +1072,7 @@ mod tests {
         let mut config = default_config();
         config.tools_enabled = false;
 
-        let result = run(&sender, &executor, &config, "No tools").await;
+        let result = run(&sender, &mut executor, &config, "No tools").await;
 
         assert_eq!(result.text, "Just text");
         assert!(matches!(result.stop_reason, StopReason::EndTurn));
@@ -1088,7 +1088,7 @@ mod tests {
         let mut config = default_config();
         config.system_prompt = Some("You are a code reviewer.".to_string());
 
-        let result = run(&sender, &executor, &config, "Review this").await;
+        let result = run(&sender, &mut executor, &config, "Review this").await;
 
         assert_eq!(result.text, "ok");
         assert!(matches!(result.stop_reason, StopReason::EndTurn));
