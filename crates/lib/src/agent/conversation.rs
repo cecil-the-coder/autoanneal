@@ -637,7 +637,7 @@ mod tests {
         let sender = MockSender::new(vec![Ok(text_response("Hello!", 10, 5))]);
         let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "Hi").await;
+        let result = run(&sender, &mut executor, &default_config(), "Hi").await;
 
         assert_eq!(result.text, "Hello!");
         assert_eq!(result.turns, 1);
@@ -651,7 +651,7 @@ mod tests {
         let sender = MockSender::new(vec![Ok(text_response("", 10, 1))]);
         let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "Hi").await;
+        let result = run(&sender, &mut executor, &default_config(), "Hi").await;
 
         assert_eq!(result.text, "");
         assert_eq!(result.turns, 1);
@@ -680,7 +680,7 @@ mod tests {
             ("hello world".to_string(), false),
         ]);
 
-        let result = run(&sender, &executor, &default_config(), "Read the file").await;
+        let result = run(&sender, &mut executor, &default_config(), "Read the file").await;
 
         assert_eq!(result.text, "The file contains: hello");
         assert_eq!(result.turns, 2);
@@ -712,7 +712,7 @@ mod tests {
             ("file1\nfile2".to_string(), false),
         ]);
 
-        let result = run(&sender, &executor, &default_config(), "Do stuff").await;
+        let result = run(&sender, &mut executor, &default_config(), "Do stuff").await;
 
         assert_eq!(result.text, "Done reading and listing");
         assert_eq!(result.turns, 2);
@@ -740,7 +740,7 @@ mod tests {
             ("ENOENT: file not found".to_string(), true),
         ]);
 
-        let result = run(&sender, &executor, &default_config(), "Read it").await;
+        let result = run(&sender, &mut executor, &default_config(), "Read it").await;
 
         assert_eq!(result.text, "File not found, using default");
         assert_eq!(result.turns, 2);
@@ -774,7 +774,7 @@ mod tests {
             ("ok".to_string(), false),
         ]);
 
-        let result = run(&sender, &executor, &default_config(), "Fix the file").await;
+        let result = run(&sender, &mut executor, &default_config(), "Fix the file").await;
 
         assert_eq!(result.text, "File updated successfully");
         assert_eq!(result.turns, 3);
@@ -810,7 +810,7 @@ mod tests {
         let mut config = default_config();
         config.max_turns = 3;
 
-        let result = run(&sender, &executor, &config, "Loop forever").await;
+        let result = run(&sender, &mut executor, &config, "Loop forever").await;
 
         assert!(matches!(result.stop_reason, StopReason::MaxTurns));
         assert_eq!(result.turns, 3);
@@ -821,7 +821,7 @@ mod tests {
         let sender = MockSender::new(vec![Err(ApiError::Timeout)]);
         let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "Slow").await;
+        let result = run(&sender, &mut executor, &default_config(), "Slow").await;
 
         assert!(matches!(result.stop_reason, StopReason::Timeout));
         assert_eq!(result.turns, 1);
@@ -839,7 +839,7 @@ mod tests {
         })]);
         let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "Hi").await;
+        let result = run(&sender, &mut executor, &default_config(), "Hi").await;
 
         assert!(matches!(result.stop_reason, StopReason::Error(_)));
         // Conversation loop does not retry — client handles retries.
@@ -855,7 +855,7 @@ mod tests {
         })]);
         let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "Hi").await;
+        let result = run(&sender, &mut executor, &default_config(), "Hi").await;
 
         assert!(matches!(result.stop_reason, StopReason::Error(_)));
         assert_eq!(sender.call_count.load(Ordering::SeqCst), 1);
@@ -868,7 +868,7 @@ mod tests {
         ))]);
         let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "Hi").await;
+        let result = run(&sender, &mut executor, &default_config(), "Hi").await;
 
         assert!(matches!(result.stop_reason, StopReason::Error(_)));
         if let StopReason::Error(msg) = &result.stop_reason {
