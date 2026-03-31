@@ -34,6 +34,9 @@ RUN ARCH=$(dpkg --print-architecture) \
     && ln -s /usr/local/go/bin/go /usr/local/bin/go \
     && ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 
+# Copy the binary before creating user (needs root)
+COPY --from=builder /build/target/release/autoanneal /usr/local/bin/autoanneal
+
 # Non-root user (create before installing user-scoped tools)
 RUN useradd -m -s /bin/bash worker
 USER worker
@@ -44,7 +47,5 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/home/worker/.cargo/bin:${PATH}"
 
 WORKDIR /work
-
-COPY --from=builder /build/target/release/autoanneal /usr/local/bin/autoanneal
 
 ENTRYPOINT ["autoanneal"]
