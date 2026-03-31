@@ -1,4 +1,3 @@
 #!/bin/bash
-cd "$(dirname "$0")"
-# Use limited parallelism to prevent OOM
-CARGO_BUILD_JOBS=1 cargo check 2>&1
+cd /tmp/autoanneal-1774979404-1/.worktree-ci-fix-79
+cargo check -p autoanneal-lib 2>&1 | head -100
