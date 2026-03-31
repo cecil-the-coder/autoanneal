@@ -454,10 +454,11 @@ impl ToolExecutor {
             None => self.working_dir.clone(),
         };
         let full_pattern = root.join(pattern);
-        let full_pattern_str = full_pattern.to_string_lossy();
+        let full_pattern_str = full_pattern.to_string_lossy().to_string();
         let timeout = self.command_timeout;
 
         let run = move |rt: tokio::runtime::Handle| {
+            let full_pattern_str = full_pattern_str.clone();
             rt.block_on(async move {
                 // Apply timeout to the entire glob operation
                 let glob_future = async move {
