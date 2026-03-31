@@ -458,12 +458,12 @@ impl ToolExecutor {
         let timeout = self.command_timeout;
 
         let run = move |rt: tokio::runtime::Handle| {
-            let full_pattern_str = full_pattern_str.clone();
+            let pattern = full_pattern_str;
             rt.block_on(async move {
                 // Apply timeout to the entire glob operation
                 let glob_future = async move {
                     let paths = tokio::task::spawn_blocking(move || {
-                        glob::glob(&full_pattern_str)
+                        glob::glob(&pattern)
                     })
                     .await
                     .map_err(|e| ToolError::InvalidInput(format!("glob task failed: {e}")))?;
