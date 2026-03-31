@@ -149,7 +149,13 @@ impl ToolExecutor {
         let path_existed = canonical_result.is_ok();
         let resolved = if let Ok(canonical) = canonical_result {
             // Verify the canonical path is within working directory before accepting it.
-            if !canonical.starts_with(&wd_canonical) {
+            // Use proper boundary check: canonical path must either be exactly the working
+            // directory, or start with "{working_dir}/" to prevent prefix attacks
+            // (e.g., /tmp/abcdef being accepted as inside /tmp/abc).
+            let wd_str = wd_canonical.to_string_lossy();
+            let canonical_str = canonical.to_string_lossy();
+            if canonical != wd_canonical && !canonical_str.starts_with(&format!("{}/", wd_str))
+            {
                 return Err(ToolError::InvalidInput(format!(
                     "path escapes working directory: {raw}"
                 )));
@@ -166,7 +172,13 @@ impl ToolExecutor {
                     Ok(canonical_ancestor) => {
                         // Re-verify the ancestor is still the same path component
                         // by checking it hasn't been swapped with a symlink.
-                        if !canonical_ancestor.starts_with(&wd_canonical) {
+                        // Use proper boundary check with path separator to prevent
+                        // prefix attacks (e.g., /tmp/abcdef being accepted as inside /tmp/abc).
+                        let wd_str = wd_canonical.to_string_lossy();
+                        let ancestor_str = canonical_ancestor.to_string_lossy();
+                        if canonical_ancestor != wd_canonical
+                            && !ancestor_str.starts_with(&format!("{}/", wd_str))
+                        {
                             return Err(ToolError::InvalidInput(format!(
                                 "path escapes working directory: {raw}"
                             )));
@@ -209,7 +221,11 @@ impl ToolExecutor {
         if !path_existed {
             // Path didn't exist when we started; if it exists now, re-verify.
             if let Ok(canonical_now) = resolved.canonicalize() {
-                if !canonical_now.starts_with(&wd_canonical) {
+                let wd_str = wd_canonical.to_string_lossy();
+                let canonical_now_str = canonical_now.to_string_lossy();
+                if canonical_now != wd_canonical
+                    && !canonical_now_str.starts_with(&format!("{}/", wd_str))
+                {
                     return Err(ToolError::InvalidInput(format!(
                         "path escapes working directory: {raw}"
                     )));
@@ -247,7 +263,11 @@ impl ToolExecutor {
                                 check_path.parent().unwrap_or(&wd_canonical).join(link_target)
                             };
                             if let Ok(canonical_target) = combined.canonicalize() {
-                                if !canonical_target.starts_with(&wd_canonical) {
+                                let wd_str = wd_canonical.to_string_lossy();
+                                let target_str = canonical_target.to_string_lossy();
+                                if canonical_target != wd_canonical
+                                    && !target_str.starts_with(&format!("{}/", wd_str))
+                                {
                                     return Err(ToolError::InvalidInput(format!(
                                         "path escapes working directory: {raw}"
                                     )));
@@ -275,19 +295,6 @@ impl ToolExecutor {
             }
         }
 
-        let wd_str = wd_canonical.to_string_lossy();
-        let resolved_str = resolved.to_string_lossy();
-        if !resolved.starts_with(&wd_canonical) {
-            return Err(ToolError::InvalidInput(format!(
-                "path escapes working directory: {raw}"
-            )));
-        }
-        // Also ensure proper boundary with path separator.
-        if resolved != wd_canonical && !resolved_str.starts_with(&format!("{}/", wd_str)) {
-            return Err(ToolError::InvalidInput(format!(
-                "path escapes working directory: {raw}"
-            )));
-        }
         Ok(resolved)
     }
 
