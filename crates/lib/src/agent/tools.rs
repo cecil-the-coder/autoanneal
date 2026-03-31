@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -158,7 +159,7 @@ impl ToolExecutor {
             canonical
         } else {
             let mut ancestor = candidate.clone();
-            let mut tail_parts: Vec<std::ffi::OsString> = Vec::new();
+            let mut tail_parts: Vec<OsString> = Vec::new();
             loop {
                 // Attempt to canonicalize; if it succeeds, we've found our
                 // deepest existing ancestor atomically without a separate
