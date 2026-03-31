@@ -256,13 +256,13 @@ impl ToolExecutor {
                         }
                     }
                     Component::ParentDir => {
-                        // Reject paths that would escape via .. components.
+                        // First move up to parent, then check if we're still within bounds.
+                        check_path = check_path.parent().unwrap_or(&wd_canonical).to_path_buf();
                         if !check_path.starts_with(&wd_canonical) {
                             return Err(ToolError::InvalidInput(format!(
                                 "path escapes working directory: {raw}"
                             )));
                         }
-                        check_path = check_path.parent().unwrap_or(&wd_canonical).to_path_buf();
                     }
                     Component::CurDir => {
                         // . is harmless, skip
