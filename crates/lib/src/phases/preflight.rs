@@ -969,8 +969,8 @@ mod tests {
     #[test]
     fn test_review_filter_recent() {
         // Generate a recent timestamp (2 hours ago) and an old timestamp.
-        let recent_ts = (chrono::Utc::now() - std::time::Duration::from_secs(2 * 3600)).to_rfc3339();
-        let old_ts = (chrono::Utc::now() - std::time::Duration::from_secs(25 * 3600)).to_rfc3339();
+        let recent_ts = (chrono::Utc::now() - chrono::TimeDelta::seconds(2 * 3600)).to_rfc3339();
+        let old_ts = (chrono::Utc::now() - chrono::TimeDelta::seconds(25 * 3600)).to_rfc3339();
         let recent = mock_pr(1, "feat/a", &[], "MERGEABLE", &recent_ts, "alice");
         let old = mock_pr(2, "feat/b", &[], "MERGEABLE", &old_ts, "bob");
         let prs: Vec<&serde_json::Value> = vec![&recent, &old];
