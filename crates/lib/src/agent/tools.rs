@@ -455,35 +455,42 @@ impl ToolExecutor {
         };
         let full_pattern = root.join(pattern);
         let full_pattern_str = full_pattern.to_string_lossy();
-
         let timeout = self.command_timeout;
 
         let run = move |rt: tokio::runtime::Handle| {
             rt.block_on(async move {
-                let paths = tokio::task::spawn_blocking(move || {
-                    glob::glob(&full_pattern_str)
-                })
-                .await
-                .map_err(|e| ToolError::InvalidInput(format!("glob task failed: {e}")))?;
+                // Apply timeout to the entire glob operation
+                let glob_future = async move {
+                    let paths = tokio::task::spawn_blocking(move || {
+                        glob::glob(&full_pattern_str)
+                    })
+                    .await
+                    .map_err(|e| ToolError::InvalidInput(format!("glob task failed: {e}")))?;
 
-                let mut results: Vec<String> = Vec::new();
-                let entries = paths.map_err(|e| {
-                    ToolError::InvalidInput(format!("invalid glob pattern: {e}"))
-                })?;
+                    let mut results: Vec<String> = Vec::new();
+                    let entries = paths.map_err(|e| {
+                        ToolError::InvalidInput(format!("invalid glob pattern: {e}"))
+                    })?;
 
-                for entry in entries {
-                    match entry {
-                        Ok(p) => results.push(p.to_string_lossy().into_owned()),
-                        Err(_) => continue,
+                    for entry in entries {
+                        match entry {
+                            Ok(p) => results.push(p.to_string_lossy().into_owned()),
+                            Err(_) => continue,
+                        }
                     }
+                    results.sort();
+                    Ok(results)
+                };
+
+                match tokio::time::timeout(timeout, glob_future).await {
+                    Ok(result) => result,
+                    Err(_) => Err(ToolError::CommandTimeout(timeout.as_secs())),
                 }
-                results.sort();
-                Ok(results)
             })
         };
 
         let handle = tokio::runtime::Handle::try_current();
-        let result = match handle {
+        match handle {
             Ok(h) => {
                 // Inside a tokio runtime — use block_in_place to allow block_on.
                 tokio::task::block_in_place(|| run(h))
@@ -493,22 +500,6 @@ impl ToolExecutor {
                 let rt = tokio::runtime::Runtime::new()
                     .map_err(ToolError::IoError)?;
                 run(rt.handle().clone())
-            }
-        };
-
-        // Apply timeout to the entire operation
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                handle.block_on(async {
-                    match tokio::time::timeout(timeout, async { result }).await {
-                        Ok(r) => r,
-                        Err(_) => Err(ToolError::CommandTimeout(timeout.as_secs())),
-                    }
-                })
-            }
-            Err(_) => {
-                // No runtime - result is already computed above, no timeout needed
-                result
             }
         }
     }
