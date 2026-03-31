@@ -456,18 +456,61 @@ impl ToolExecutor {
         let full_pattern = root.join(pattern);
         let full_pattern_str = full_pattern.to_string_lossy();
 
-        let mut results: Vec<String> = Vec::new();
-        let paths = glob::glob(&full_pattern_str).map_err(|e| {
-            ToolError::InvalidInput(format!("invalid glob pattern: {e}"))
-        })?;
-        for entry in paths {
-            match entry {
-                Ok(p) => results.push(p.to_string_lossy().into_owned()),
-                Err(_) => continue,
+        let timeout = self.command_timeout;
+
+        let run = move |rt: tokio::runtime::Handle| {
+            rt.block_on(async move {
+                let paths = tokio::task::spawn_blocking(move || {
+                    glob::glob(&full_pattern_str)
+                })
+                .await
+                .map_err(|e| ToolError::InvalidInput(format!("glob task failed: {e}")))?;
+
+                let mut results: Vec<String> = Vec::new();
+                let entries = paths.map_err(|e| {
+                    ToolError::InvalidInput(format!("invalid glob pattern: {e}"))
+                })?;
+
+                for entry in entries {
+                    match entry {
+                        Ok(p) => results.push(p.to_string_lossy().into_owned()),
+                        Err(_) => continue,
+                    }
+                }
+                results.sort();
+                Ok(results)
+            })
+        };
+
+        let handle = tokio::runtime::Handle::try_current();
+        let result = match handle {
+            Ok(h) => {
+                // Inside a tokio runtime — use block_in_place to allow block_on.
+                tokio::task::block_in_place(|| run(h))
+            }
+            Err(_) => {
+                // No runtime active — create a temporary one.
+                let rt = tokio::runtime::Runtime::new()
+                    .map_err(ToolError::IoError)?;
+                run(rt.handle().clone())
+            }
+        };
+
+        // Apply timeout to the entire operation
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.block_on(async {
+                    match tokio::time::timeout(timeout, async { result }).await {
+                        Ok(r) => r,
+                        Err(_) => Err(ToolError::CommandTimeout(timeout.as_secs())),
+                    }
+                })
+            }
+            Err(_) => {
+                // No runtime - result is already computed above, no timeout needed
+                result
             }
         }
-        results.sort();
-        Ok(results)
     }
 
     /// Grep for `pattern` (regex) in files under `path`.
