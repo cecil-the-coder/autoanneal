@@ -295,6 +295,17 @@ impl ToolExecutor {
             }
         }
 
+        // Final validation: ensure resolved path is within working directory.
+        // This catches any edge cases where path resolution might have escaped.
+        // Use proper boundary check with path separator to prevent prefix attacks.
+        let wd_str = wd_canonical.to_string_lossy();
+        let resolved_str = resolved.to_string_lossy();
+        if resolved != wd_canonical && !resolved_str.starts_with(&format!("{}/", wd_str)) {
+            return Err(ToolError::InvalidInput(format!(
+                "path escapes working directory: {raw}"
+            )));
+        }
+
         Ok(resolved)
     }
 
