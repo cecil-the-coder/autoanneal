@@ -453,42 +453,67 @@ impl ToolExecutor {
             None => self.working_dir.clone(),
         };
 
-        let mut cmd = std::process::Command::new("grep");
-        cmd.arg("-rn"); // recursive, line numbers
-        if case_insensitive {
-            cmd.arg("-i");
+        let timeout = self.command_timeout;
+
+        let run = move |rt: tokio::runtime::Handle| {
+            rt.block_on(async move {
+                let mut cmd = tokio::process::Command::new("grep");
+                cmd.arg("-rn"); // recursive, line numbers
+                if case_insensitive {
+                    cmd.arg("-i");
+                }
+                cmd.arg("-E");
+
+                // File type filter via --include.
+                if let Some(ft) = file_type {
+                    cmd.arg("--include").arg(format!("*.{ft}"));
+                }
+
+                // -- separates options from pattern, preventing patterns starting
+                // with '-' from being interpreted as flags.
+                cmd.arg("--").arg(pattern).arg(&search_dir);
+                cmd.stdout(std::process::Stdio::piped());
+                cmd.stderr(std::process::Stdio::piped());
+
+                let result = tokio::time::timeout(timeout, cmd.output()).await;
+
+                match result {
+                    Ok(Ok(output)) => {
+                        // grep exits 1 when no matches – that is not an error for us.
+                        if !output.status.success() && output.status.code() != Some(1) {
+                            return Err(ToolError::CommandFailed {
+                                code: output.status.code().unwrap_or(-1),
+                                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                            });
+                        }
+
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let lines: Vec<String> = stdout
+                            .lines()
+                            .filter(|l| !l.is_empty())
+                            .map(|l| l.to_string())
+                            .collect();
+                        Ok(lines)
+                    }
+                    Ok(Err(e)) => Err(ToolError::IoError(e)),
+                    Err(_) => Err(ToolError::CommandTimeout(timeout.as_secs())),
+                }
+            })
+        };
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                // Inside a tokio runtime — use block_in_place to allow block_on.
+                tokio::task::block_in_place(|| run(handle))
+            }
+            Err(_) => {
+                // No runtime active — create a temporary one.
+                let rt = tokio::runtime::Runtime::new()
+                    .map_err(ToolError::IoError)?;
+                run(rt.handle().clone())
+            }
         }
-        cmd.arg("-E");
-
-        // File type filter via --include.
-        if let Some(ft) = file_type {
-            cmd.arg("--include").arg(format!("*.{ft}"));
-        }
-
-        // -- separates options from pattern, preventing patterns starting
-        // with '-' from being interpreted as flags.
-        cmd.arg("--").arg(pattern).arg(&search_dir);
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-
-        let output = cmd.output()?;
-
-        // grep exits 1 when no matches – that is not an error for us.
-        if !output.status.success() && output.status.code() != Some(1) {
-            return Err(ToolError::CommandFailed {
-                code: output.status.code().unwrap_or(-1),
-                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let lines: Vec<String> = stdout
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(|l| l.to_string())
-            .collect();
-        Ok(lines)
     }
 
     /// Run an arbitrary shell command inside `working_dir`.
