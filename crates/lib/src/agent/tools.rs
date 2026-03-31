@@ -454,6 +454,9 @@ impl ToolExecutor {
         };
 
         let timeout = self.command_timeout;
+        // Clone pattern and file_type to owned strings to avoid lifetime issues in the closure
+        let pattern_owned = pattern.to_owned();
+        let file_type_owned = file_type.map(|ft| ft.to_owned());
 
         let run = move |rt: tokio::runtime::Handle| {
             rt.block_on(async move {
@@ -465,13 +468,13 @@ impl ToolExecutor {
                 cmd.arg("-E");
 
                 // File type filter via --include.
-                if let Some(ft) = file_type {
+                if let Some(ft) = file_type_owned {
                     cmd.arg("--include").arg(format!("*.{ft}"));
                 }
 
                 // -- separates options from pattern, preventing patterns starting
                 // with '-' from being interpreted as flags.
-                cmd.arg("--").arg(pattern).arg(&search_dir);
+                cmd.arg("--").arg(&pattern_owned).arg(&search_dir);
                 cmd.stdout(std::process::Stdio::piped());
                 cmd.stderr(std::process::Stdio::piped());
 
