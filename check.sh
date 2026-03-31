@@ -1,4 +1,3 @@
 #!/bin/bash
-# Run cargo check to find compilation errors
-cd "$(dirname "$0")"
-CARGO_BUILD_JOBS=1 cargo check 2>&1 | head -100
+cd /tmp/autoanneal-1774945207-1/.worktree-ci-fix-79
+cargo check 2>&1 | head -100
