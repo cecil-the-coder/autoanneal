@@ -1102,7 +1102,7 @@ mod tests {
         })]);
         let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "Hi").await;
+        let result = run(&sender, &mut executor, &default_config(), "Hi").await;
 
         assert!(matches!(result.stop_reason, StopReason::Error(_)));
         assert_eq!(sender.call_count.load(Ordering::SeqCst), 1);
@@ -1122,7 +1122,7 @@ mod tests {
         let mut config = default_config();
         config.max_turns = 1;
 
-        let result = run(&sender, &executor, &config, "Once").await;
+        let result = run(&sender, &mut executor, &config, "Once").await;
 
         // Turn 1 succeeds (tool_use), then loop tries turn 2 → hits max_turns
         assert!(matches!(result.stop_reason, StopReason::MaxTurns));
@@ -1136,7 +1136,7 @@ mod tests {
         ))]);
         let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "Hi").await;
+        let result = run(&sender, &mut executor, &default_config(), "Hi").await;
 
         assert!(matches!(result.stop_reason, StopReason::Error(_)));
         if let StopReason::Error(msg) = &result.stop_reason {
@@ -1152,7 +1152,7 @@ mod tests {
         let sender = MockSender::new(vec![Ok(resp)]);
         let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "Hi").await;
+        let result = run(&sender, &mut executor, &default_config(), "Hi").await;
 
         assert!(matches!(result.stop_reason, StopReason::Error(_)));
         if let StopReason::Error(msg) = &result.stop_reason {
@@ -1188,7 +1188,7 @@ mod tests {
             ("file contents".to_string(), false),
         ]);
 
-        let result = run(&sender, &executor, &default_config(), "go").await;
+        let result = run(&sender, &mut executor, &default_config(), "go").await;
 
         let calls = executor.recorded_calls().await;
         assert_eq!(calls.len(), 1);
@@ -1208,7 +1208,7 @@ mod tests {
         ]);
         let executor = MockToolHandler::new(vec![]);
 
-        let result = run(&sender, &executor, &default_config(), "write a lot").await;
+        let result = run(&sender, &mut executor, &default_config(), "write a lot").await;
 
         assert_eq!(result.text, "part1\npart2\npart3\npart4");
         assert_eq!(result.turns, 4);
