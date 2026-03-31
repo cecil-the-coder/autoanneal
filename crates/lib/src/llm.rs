@@ -90,16 +90,14 @@ pub(crate) async fn get_dir_context(working_dir: &Path) -> String {
     });
 
     // Wait with timeout and kill the process if it exceeds.
-    let result = tokio::time::timeout(Duration::from_secs(30), async {
-        let status = child.wait().await;
-        let stdout_buf = stdout_task.await.unwrap_or_default();
-        let stderr_buf = stderr_task.await.unwrap_or_default();
-        (status, stdout_buf, stderr_buf)
-    })
-    .await;
+    let timeout_result = tokio::time::timeout(Duration::from_secs(30), child.wait()).await;
 
-    let (status, stdout, stderr) = match result {
-        Ok((status, stdout, stderr)) => (status, stdout, stderr),
+    let (status, stdout, stderr) = match timeout_result {
+        Ok(status) => {
+            let stdout_buf = stdout_task.await.unwrap_or_default();
+            let stderr_buf = stderr_task.await.unwrap_or_default();
+            (status, stdout_buf, stderr_buf)
+        }
         Err(_) => {
             // Timeout: kill the child process.
             warn!("find command timed out after 30 seconds, killing process");
