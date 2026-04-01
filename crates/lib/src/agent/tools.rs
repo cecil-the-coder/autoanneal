@@ -123,6 +123,67 @@ impl ToolExecutor {
 
     // -- path helpers -------------------------------------------------------
 
+    /// Find the deepest existing ancestor of a path and reconstruct the path,
+    /// verifying it stays within the working directory bounds.
+    fn find_deepest_existing_ancestor(
+        candidate: &Path,
+        wd_canonical: &Path,
+        raw: &str,
+    ) -> Result<PathBuf, ToolError> {
+        let mut ancestor = candidate.to_path_buf();
+        let mut tail_parts: Vec<OsString> = Vec::new();
+        loop {
+            // Attempt to canonicalize; if it succeeds, we've found our
+            // deepest existing ancestor atomically without a separate
+            // existence check (avoiding a TOCTOU race).
+            match ancestor.canonicalize() {
+                Ok(canonical_ancestor) => {
+                    // Re-verify the ancestor is still the same path component
+                    // by checking it hasn't been swapped with a symlink.
+                    // Use Path::starts_with which compares path components, not string prefixes.
+                    if !canonical_ancestor.starts_with(wd_canonical) {
+                        return Err(ToolError::InvalidInput(format!(
+                            "path escapes working directory: {raw}"
+                        )));
+                    }
+                    let mut base = canonical_ancestor;
+                    for part in tail_parts.into_iter().rev() {
+                        base = base.join(part);
+                    }
+                    // Re-verify the reconstructed path is still within bounds.
+                    // This protects against symlink attacks during the reconstruction.
+                    if !base.starts_with(wd_canonical) {
+                        return Err(ToolError::InvalidInput(format!(
+                            "path escapes working directory: {raw}"
+                        )));
+                    }
+                    return Ok(base);
+                }
+                Err(_) => {
+                    // Ancestor doesn't exist or isn't accessible yet.
+                    // Walk up one level.
+                    match ancestor.file_name() {
+                        Some(part) => {
+                            tail_parts.push(part.to_os_string());
+                            ancestor = ancestor
+                                .parent()
+                                .ok_or_else(|| {
+                                    ToolError::InvalidInput("no parent directory".into())
+                                })?
+                                .to_path_buf();
+                        }
+                        None => {
+                            // Reached root without finding an existing ancestor.
+                            return Err(ToolError::InvalidInput(format!(
+                                "cannot canonicalize path: no existing ancestor for {raw}"
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Resolve `raw` against `working_dir` and ensure it stays inside.
     fn safe_path(&mut self, raw: &str) -> Result<PathBuf, ToolError> {
         if raw.is_empty() {
@@ -158,58 +219,13 @@ impl ToolExecutor {
             }
             canonical
         } else {
-            let mut ancestor = candidate.clone();
-            let mut tail_parts: Vec<OsString> = Vec::new();
-            loop {
-                // Attempt to canonicalize; if it succeeds, we've found our
-                // deepest existing ancestor atomically without a separate
-                // existence check (avoiding a TOCTOU race).
-                match ancestor.canonicalize() {
-                    Ok(canonical_ancestor) => {
-                        // Re-verify the ancestor is still the same path component
-                        // by checking it hasn't been swapped with a symlink.
-                        // Use Path::starts_with which compares path components, not string prefixes.
-                        if !canonical_ancestor.starts_with(&wd_canonical) {
-                            return Err(ToolError::InvalidInput(format!(
-                                "path escapes working directory: {raw}"
-                            )));
-                        }
-                        let mut base = canonical_ancestor;
-                        for part in tail_parts.into_iter().rev() {
-                            base = base.join(part);
-                        }
-                        // Re-verify the reconstructed path is still within bounds.
-                        // This protects against symlink attacks during the reconstruction.
-                        if !base.starts_with(&wd_canonical) {
-                            return Err(ToolError::InvalidInput(format!(
-                                "path escapes working directory: {raw}"
-                            )));
-                        }
-                        break base;
-                    }
-                    Err(_) => {
-                        // Ancestor doesn't exist or isn't accessible yet.
-                        // Walk up one level.
-                        match ancestor.file_name() {
-                            Some(part) => {
-                                tail_parts.push(part.to_os_string());
-                                ancestor = ancestor
-                                    .parent()
-                                    .ok_or_else(|| {
-                                        ToolError::InvalidInput("no parent directory".into())
-                                    })?
-                                    .to_path_buf();
-                            }
-                            None => {
-                                // Reached root without finding an existing ancestor.
-                                return Err(ToolError::InvalidInput(format!(
-                                    "cannot canonicalize path: no existing ancestor for {raw}"
-                                )));
-                            }
-                        }
-                    }
-                }
-            }
+            // For non-existent paths, walk up to find deepest existing ancestor.
+            let resolved_path = find_deepest_existing_ancestor(
+                &candidate,
+                &wd_canonical,
+                raw,
+            )?;
+            resolved_path
         };
 
         // In the non-canonical case, the tail may contain symlinks created
