@@ -160,7 +160,7 @@ impl ToolExecutor {
         } else {
             let mut ancestor = candidate.clone();
             let mut tail_parts: Vec<OsString> = Vec::new();
-            let resolved_else = loop {
+            resolved = loop {
                 // Attempt to canonicalize; if it succeeds, we've found our
                 // deepest existing ancestor atomically without a separate
                 // existence check (avoiding a TOCTOU race).
@@ -210,7 +210,6 @@ impl ToolExecutor {
                     }
                 }
             };
-            resolved_else
         };
 
         // In the non-canonical case, the tail may contain symlinks created
