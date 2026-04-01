@@ -148,7 +148,7 @@ impl ToolExecutor {
         // across the check, which would prevent calling `working_dir_canonicalize()`.
         let canonical_result = candidate.canonicalize();
         let path_existed = canonical_result.is_ok();
-        let resolved = if let Ok(canonical) = canonical_result {
+        let mut resolved = if let Ok(canonical) = canonical_result {
             // Verify the canonical path is within working directory before accepting it.
             // Use Path::starts_with which compares path components, not string prefixes.
             if !canonical.starts_with(&wd_canonical) {
