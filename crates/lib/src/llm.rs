@@ -91,8 +91,10 @@ pub(crate) async fn get_dir_context(working_dir: &Path) -> String {
 
     // Wait with timeout and kill the process if it exceeds.
     // Use tokio::select! pattern like in tools.rs to keep child accessible.
+    // Pre-bind the wait future to avoid borrow issues in select!.
+    let child_wait = child.wait();
     let status_result = tokio::select! {
-        status = child.wait() => status,
+        status = child_wait => status,
         _ = tokio::time::sleep(Duration::from_secs(30)) => {
             // Timeout: kill the child process.
             warn!("find command timed out after 30 seconds, killing process");
