@@ -220,7 +220,7 @@ impl ToolExecutor {
             canonical
         } else {
             // For non-existent paths, walk up to find deepest existing ancestor.
-            let resolved_path = find_deepest_existing_ancestor(
+            let resolved_path = Self::find_deepest_existing_ancestor(
                 &candidate,
                 &wd_canonical,
                 raw,
