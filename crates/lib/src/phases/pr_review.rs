@@ -622,7 +622,7 @@ Output a JSON code block:
     );
     let invocation = LlmInvocation {
         prompt: critic_prompt,
-        system_prompt: Some("You are a code reviewer re-evaluating a PR after automated fixes. Output only JSON.".to_string()),
+        system_prompt: Some("You are a code reviewer re-evaluating a PR after automated fixes. You MUST respond with ONLY a JSON code block. No reasoning, no analysis, no explanation — just the JSON. Any text outside the JSON block will cause a parse failure.".to_string()),
         model: model.to_string(),
         max_turns: 1,
         effort: "high",
@@ -631,7 +631,7 @@ Output a JSON code block:
         working_dir: clone_dir.to_path_buf(),
         context_window,
         provider_hint: None,
-        max_tokens_per_turn: Some(4096),
+        max_tokens_per_turn: Some(16384),
         ci_context: None,
         exa_max_searches: 0,
     };
