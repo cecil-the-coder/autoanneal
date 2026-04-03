@@ -25,8 +25,7 @@ data:
     {{- toYaml .Values.defaults | nindent 6 }}
     repos:
     {{- range .Values.repos }}
-      - name: {{ .name }}
-        repo: {{ .repo }}
+      - {{- omit . "schedule" "enabled" | toYaml | nindent 8 }}
         {{- if .schedule }}
         schedule: "{{ .schedule }}"
         {{- end }}
