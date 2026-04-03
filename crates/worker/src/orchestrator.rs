@@ -694,6 +694,7 @@ fn collect_work_items(
                 has_fixing_label: false,
                 has_merge_conflicts: ext_pr.has_merge_conflicts,
                 files: Vec::new(),
+                autoanneal_commit_count: ext_pr.autoanneal_commit_count,
             };
             items.push(WorkItem {
                 kind: WorkItemKind::CiFix {
@@ -714,7 +715,9 @@ fn collect_work_items(
                 in_flight_prs
                     .iter()
                     .filter(|pr| {
-                        pr.ci_status == autoanneal_lib::models::CiStatus::Failing && !pr.has_fixing_label
+                        pr.ci_status == autoanneal_lib::models::CiStatus::Failing
+                            && !pr.has_fixing_label
+                            && pr.autoanneal_commit_count < config.max_pr_fix_attempts as u64
                     }),
             );
         }

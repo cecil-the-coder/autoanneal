@@ -161,6 +161,8 @@ pub struct InFlightPr {
     pub has_fixing_label: bool,
     pub has_merge_conflicts: bool,
     pub files: Vec<String>,
+    /// Number of autoanneal: commits on this PR (for CI fix attempt limiting).
+    pub autoanneal_commit_count: u64,
 }
 
 /// Status of a single implementation task.

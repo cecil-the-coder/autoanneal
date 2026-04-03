@@ -333,6 +333,13 @@ async fn process_in_flight_pr(
         })
         .unwrap_or_default();
 
+    // Count autoanneal commits for failing PRs to enforce attempt limits.
+    let autoanneal_commit_count = if ci_status == CiStatus::Failing {
+        count_autoanneal_commits(repo_slug, number).await
+    } else {
+        0
+    };
+
     Some(InFlightPr {
         number,
         title,
@@ -342,6 +349,7 @@ async fn process_in_flight_pr(
         has_fixing_label,
         has_merge_conflicts,
         files,
+        autoanneal_commit_count,
     })
 }
 
