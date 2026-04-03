@@ -857,6 +857,12 @@ async fn invoke_critic<T: serde::de::DeserializeOwned + Send + 'static>(
             if let Ok(parsed) = serde_json::from_str::<T>(&sanitized) {
                 return Ok((parsed, response.cost_usd));
             }
+
+            // Fix missing colons between keys and values (e.g. "reasoning "The...")
+            let colon_fixed = fix_missing_colons(&sanitized);
+            if let Ok(parsed) = serde_json::from_str::<T>(&colon_fixed) {
+                return Ok((parsed, response.cost_usd));
+            }
         }
     }
 
@@ -919,6 +925,71 @@ fn sanitize_json(input: &str) -> String {
         } else {
             result.push(ch);
         }
+    }
+
+    result
+}
+
+/// Fix missing colons between JSON keys and values.
+/// LLMs sometimes produce `"key" "value"` instead of `"key": "value"`.
+/// Scans for a closing `"` followed by whitespace and then `"`, `{`, `[`, or
+/// a digit/letter (start of a value) without an intervening `:`, and inserts one.
+fn fix_missing_colons(input: &str) -> String {
+    let mut result = String::with_capacity(input.len() + 32);
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    let mut in_string = false;
+    let mut prev_was_escape = false;
+
+    while i < chars.len() {
+        let ch = chars[i];
+
+        if prev_was_escape {
+            prev_was_escape = false;
+            result.push(ch);
+            i += 1;
+            continue;
+        }
+
+        if ch == '\\' && in_string {
+            prev_was_escape = true;
+            result.push(ch);
+            i += 1;
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = !in_string;
+            result.push(ch);
+
+            // When we just closed a string (potential key), check if a colon is missing
+            // before the next value.
+            if !in_string {
+                // Scan ahead past whitespace
+                let mut j = i + 1;
+                while j < chars.len() && chars[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                // If the next non-whitespace char starts a value (not `:`, `,`, `}`, `]`)
+                // then a colon is missing.
+                if j < chars.len() {
+                    let next = chars[j];
+                    if next == '"' || next == '{' || next == '[' || next == 't' || next == 'f' || next == 'n' || next.is_ascii_digit() {
+                        // But only if there's no colon already
+                        let between: String = chars[i+1..j].iter().collect();
+                        if !between.contains(':') {
+                            result.push(':');
+                        }
+                    }
+                }
+            }
+
+            i += 1;
+            continue;
+        }
+
+        result.push(ch);
+        i += 1;
     }
 
     result
