@@ -10,7 +10,7 @@ data:
   manager.yaml: |
     manager:
       listen_addr: "0.0.0.0:8080"
-      global_concurrency: {{ .Values.defaults.concurrency }}
+      global_concurrency: {{ .Values.manager.globalConcurrency | default (len .Values.repos) }}
       docker_mode: {{ .Values.manager.dockerMode }}
       namespace: "{{ .Values.manager.namespace }}"
       worker_image: "{{ .Values.manager.workerImage | default (printf "%s:%s" .Values.image.repository (include "autoanneal.imageTag" .)) }}"
