@@ -23,6 +23,9 @@ pub struct PrReviewOutput {
     pub cost_usd: f64,
 }
 
+/// Maximum fix→re-review cycles before giving up.
+const MAX_FIX_PASSES: u32 = 3;
+
 pub async fn run(
     pr: &ExternalPr,
     repo_slug: &str,
@@ -32,6 +35,7 @@ pub async fn run(
     context_window: u64,
     critic_models: Option<&[String]>,
     default_branch: &str,
+    exa_max_searches: u32,
 ) -> Result<PrReviewOutput> {
     let dot = Path::new(".");
     let clone_dir = worktree_path.to_path_buf();
@@ -203,7 +207,7 @@ pub async fn run(
         });
     }
 
-    // 6. Score < fix_threshold -- the PR needs work. Try to fix it.
+    // 6. Score < fix_threshold -- try multi-pass fix cycles.
     // Don't attempt fixes on rejected PRs -- they shouldn't exist at all.
     if critic_output.verdict == "reject" {
         let comment = format!(
@@ -221,191 +225,201 @@ pub async fn run(
         });
     }
 
-    // 6a. Invoke LLM with fix prompt.
-    let fix_prompt = PR_REVIEW_FIX_PROMPT
-        .replace("{pr_number}", &pr.number.to_string())
-        .replace("{branch}", &pr.branch)
-        .replace("{score}", &critic_output.score.to_string())
-        .replace("{summary}", &critic_output.summary)
-        .replace("{diff}", &diff);
+    let initial_score = critic_output.score;
+    let initial_summary = critic_output.summary.clone();
+    let mut current_score = critic_output.score;
+    let mut current_summary = critic_output.summary.clone();
+    let mut current_verdict = critic_output.verdict.clone();
+    let mut any_fixes_applied = false;
+    let mut pass_summaries: Vec<String> = Vec::new();
 
-    let fix_invocation = LlmInvocation {
-        prompt: fix_prompt,
-        system_prompt: Some(pr_review_fix_system_prompt()),
-        model: model.to_string(),
-        max_turns: 100,
-        effort: "high",
-        tools: "Read,Glob,Grep,Bash,Edit,Write",
-        json_schema: None,
-        working_dir: clone_dir.clone(),
-        context_window,
-        provider_hint: None,
-        max_tokens_per_turn: None,
-        ci_context: None,
-        exa_max_searches: 0,
-    };
+    for pass in 0..MAX_FIX_PASSES {
+        info!(
+            pr_number = pr.number,
+            pass = pass + 1,
+            score = current_score,
+            "starting fix pass"
+        );
 
-    let fix_response: llm::LlmResponse<serde_json::Value> =
-        llm::invoke(&fix_invocation, Duration::from_secs(600)).await?;
+        // Snapshot before fix agent runs so guardrails only measure its changes.
+        let _ = tokio::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&clone_dir)
+            .output()
+            .await;
+        let _ = tokio::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "autoanneal: pre-fix snapshot"])
+            .current_dir(&clone_dir)
+            .output()
+            .await;
 
-    total_cost += fix_response.cost_usd;
+        // Get fresh diff for the fix prompt.
+        let current_diff = get_pr_diff(repo_slug, pr.number, &clone_dir).await
+            .unwrap_or_else(|_| diff.clone());
 
-    // 6b. Check for changes.
-    let has_changes = check_has_changes(&clone_dir).await;
+        let fix_prompt = PR_REVIEW_FIX_PROMPT
+            .replace("{pr_number}", &pr.number.to_string())
+            .replace("{branch}", &pr.branch)
+            .replace("{score}", &current_score.to_string())
+            .replace("{summary}", &current_summary)
+            .replace("{diff}", &current_diff);
 
-    if has_changes {
-        // Validate diff against guardrails before committing.
-        info!(pr_number = pr.number, "validating PR review fix diff against guardrails");
+        let fix_invocation = LlmInvocation {
+            prompt: fix_prompt,
+            system_prompt: Some(pr_review_fix_system_prompt()),
+            model: model.to_string(),
+            max_turns: 100,
+            effort: "high",
+            tools: "Read,Glob,Grep,Bash,Edit,Write,WebSearch,CheckVulnerability,CheckPackage,SearchIssues",
+            json_schema: None,
+            working_dir: clone_dir.clone(),
+            context_window,
+            provider_hint: None,
+            max_tokens_per_turn: None,
+            ci_context: None,
+            exa_max_searches,
+        };
+
+        let fix_response: llm::LlmResponse<serde_json::Value> =
+            llm::invoke(&fix_invocation, Duration::from_secs(600)).await?;
+
+        total_cost += fix_response.cost_usd;
+
+        let has_changes = check_has_changes(&clone_dir).await;
+        if !has_changes {
+            info!(pr_number = pr.number, pass = pass + 1, "fix pass made no changes, stopping");
+            // Undo the snapshot.
+            let _ = tokio::process::Command::new("git")
+                .args(["reset", "--soft", "HEAD~1"])
+                .current_dir(&clone_dir)
+                .output()
+                .await;
+            break;
+        }
+
+        // Validate guardrails.
+        info!(pr_number = pr.number, pass = pass + 1, "validating fix diff against guardrails");
         if let Err(violation) = guardrails::validate_diff(&clone_dir, &[], 500, false).await {
             warn!(
                 pr_number = pr.number,
+                pass = pass + 1,
                 violation = %violation,
-                "guardrail violation, discarding PR review fix changes"
+                "guardrail violation, discarding pass changes"
             );
-            // Discard fix agent changes and undo the snapshot commit.
             let _ = guardrails::discard_changes(&clone_dir).await;
             let _ = tokio::process::Command::new("git")
                 .args(["reset", "--soft", "HEAD~1"])
                 .current_dir(&clone_dir)
                 .output()
                 .await;
-            // Leave a comment so the PR author knows fixes were attempted but rejected.
-            let comment = format!(
-                "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes were generated but discarded due to safety guardrails ({}). Please review the suggestions above._",
-                critic_output.score, critic_output.verdict, critic_output.summary, violation
-            );
-            leave_comment(repo_slug, pr.number, &comment).await;
-            add_reviewed_label(repo_slug, pr.number).await;
+            break;
+        }
 
-            return Ok(PrReviewOutput {
-                pr_number: pr.number,
-                score: critic_output.score,
-                fixed: false,
-                commented: true,
-                cost_usd: total_cost,
-            });
-        } else {
-            // Stage and commit changes.
-            let commit_ok = commit_changes(&clone_dir).await.is_ok();
+        // Commit (amend the snapshot).
+        if commit_changes(&clone_dir).await.is_err() {
+            break;
+        }
 
-            if commit_ok {
-                // Try to push.
-                let push_ok = push_changes(&clone_dir, &pr.branch).await.is_ok();
+        // Push.
+        if push_changes(&clone_dir, &pr.branch).await.is_err() {
+            break;
+        }
 
-                if push_ok {
-                    // Re-review the fixed diff to get an updated score.
-                    let (final_score, final_verdict, final_summary) = {
-                        info!(pr_number = pr.number, "re-reviewing after fixes");
-                        match run_critic_review(
-                            &clone_dir, repo_slug, pr, model, context_window,
-                            critic_output.score, &critic_output.summary,
-                        ).await {
-                            Ok((output, cost)) => {
-                                total_cost += cost;
-                                info!(
-                                    pr_number = pr.number,
-                                    initial_score = critic_output.score,
-                                    new_score = output.score,
-                                    "re-review complete"
-                                );
-                                (output.score, output.verdict, output.summary)
-                            }
-                            Err(e) => {
-                                warn!(pr_number = pr.number, error = %e, "re-review failed, using initial score");
-                                (critic_output.score, critic_output.verdict.clone(), "Re-review could not be completed.".to_string())
-                            }
-                        }
-                    };
+        any_fixes_applied = true;
 
-                    // If the re-review scored lower, the fixes made things worse.
-                    // Revert and comment with just the initial review.
-                    if final_score < critic_output.score {
-                        warn!(
-                            pr_number = pr.number,
-                            initial_score = critic_output.score,
-                            final_score,
-                            "re-review scored lower after fixes, reverting"
-                        );
-                        // Revert: reset to the pre-fix snapshot's parent (the original PR HEAD).
-                        let _ = tokio::process::Command::new("git")
-                            .args(["reset", "--hard", "HEAD~1"])
-                            .current_dir(&clone_dir)
-                            .output()
-                            .await;
-                        let _ = push_changes(&clone_dir, &pr.branch).await;
+        // Re-review anchored to current score.
+        info!(pr_number = pr.number, pass = pass + 1, "re-reviewing after fixes");
+        match run_critic_review(
+            &clone_dir, repo_slug, pr, model, context_window,
+            current_score, &current_summary,
+        ).await {
+            Ok((output, cost)) => {
+                total_cost += cost;
+                info!(
+                    pr_number = pr.number,
+                    pass = pass + 1,
+                    prev_score = current_score,
+                    new_score = output.score,
+                    "re-review complete"
+                );
 
-                        let comment = format!(
-                            "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes were attempted but reverted (re-review scored {}/10, lower than the original {}/10)._",
-                            critic_output.score, critic_output.verdict, critic_output.summary,
-                            final_score, critic_output.score,
-                        );
-                        leave_comment(repo_slug, pr.number, &comment).await;
-                        add_reviewed_label(repo_slug, pr.number).await;
-
-                        return Ok(PrReviewOutput {
-                            pr_number: pr.number,
-                            score: critic_output.score,
-                            fixed: false,
-                            commented: true,
-                            cost_usd: total_cost,
-                        });
-                    }
-
-                    let comment = format!(
-                        "## Autoanneal Review & Fix\n\n**Score:** {}/10 → {}/10\n**Verdict:** {} → {}\n\n### Issues Found\n{}\n\n### After Fix\n{}\n\n_Automated fixes have been pushed to this branch._",
-                        critic_output.score, final_score,
-                        critic_output.verdict, final_verdict,
-                        critic_output.summary, final_summary,
+                if output.score < current_score {
+                    // Score regressed — revert this pass.
+                    warn!(
+                        pr_number = pr.number,
+                        pass = pass + 1,
+                        prev_score = current_score,
+                        new_score = output.score,
+                        "re-review scored lower, reverting pass"
                     );
-                    leave_comment(repo_slug, pr.number, &comment).await;
-                    add_reviewed_label(repo_slug, pr.number).await;
-                    if final_score >= 10 {
-                        add_ready_to_merge_label(repo_slug, pr.number).await;
-                    }
-
-                    return Ok(PrReviewOutput {
-                        pr_number: pr.number,
-                        score: final_score,
-                        fixed: true,
-                        commented: true,
-                        cost_usd: total_cost,
-                    });
-                } else {
-                    // Push failed (no permission / protected branch). Leave review comment.
-                    let comment = format!(
-                        "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}\n\n_Automated fixes were prepared but could not be pushed (insufficient permissions or protected branch). Please review the suggestions above._",
-                        critic_output.score, critic_output.verdict, critic_output.summary
-                    );
-                    leave_comment(repo_slug, pr.number, &comment).await;
-                    add_reviewed_label(repo_slug, pr.number).await;
-
-                    return Ok(PrReviewOutput {
-                        pr_number: pr.number,
-                        score: critic_output.score,
-                        fixed: false,
-                        commented: true,
-                        cost_usd: total_cost,
-                    });
+                    let _ = tokio::process::Command::new("git")
+                        .args(["reset", "--hard", "HEAD~1"])
+                        .current_dir(&clone_dir)
+                        .output()
+                        .await;
+                    let _ = push_changes(&clone_dir, &pr.branch).await;
+                    pass_summaries.push(format!("Pass {}: reverted (score dropped to {})", pass + 1, output.score));
+                    break;
                 }
+
+                pass_summaries.push(format!("Pass {}: {} → {}", pass + 1, current_score, output.score));
+                current_score = output.score;
+                current_verdict = output.verdict;
+                current_summary = output.summary;
+
+                // If we reached 10 or the score didn't improve, stop.
+                if current_score >= 10 {
+                    info!(pr_number = pr.number, "reached perfect score, stopping");
+                    break;
+                }
+            }
+            Err(e) => {
+                warn!(pr_number = pr.number, pass = pass + 1, error = %e, "re-review failed");
+                pass_summaries.push(format!("Pass {}: re-review failed", pass + 1));
+                break;
             }
         }
     }
 
-    // 6c. No changes made. Leave review comment.
-    let comment = format!(
-        "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}",
-        critic_output.score, critic_output.verdict, critic_output.summary
-    );
-    leave_comment(repo_slug, pr.number, &comment).await;
-    add_reviewed_label(repo_slug, pr.number).await;
+    // Build the final comment.
+    if any_fixes_applied {
+        let passes_text = pass_summaries.join("\n");
+        let comment = format!(
+            "## Autoanneal Review & Fix\n\n**Score:** {}/10 → {}/10\n**Verdict:** {} → {}\n\n### Issues Found\n{}\n\n### Fix Passes\n{}\n\n### After Fix\n{}\n\n_Automated fixes have been pushed to this branch._",
+            initial_score, current_score,
+            critic_output.verdict, current_verdict,
+            initial_summary, passes_text, current_summary,
+        );
+        leave_comment(repo_slug, pr.number, &comment).await;
+        add_reviewed_label(repo_slug, pr.number).await;
+        if current_score >= 10 {
+            add_ready_to_merge_label(repo_slug, pr.number).await;
+        }
 
-    Ok(PrReviewOutput {
-        pr_number: pr.number,
-        score: critic_output.score,
-        fixed: false,
-        commented: true,
-        cost_usd: total_cost,
-    })
+        Ok(PrReviewOutput {
+            pr_number: pr.number,
+            score: current_score,
+            fixed: true,
+            commented: true,
+            cost_usd: total_cost,
+        })
+    } else {
+        // No fixes applied (no changes, guardrail violations, or all passes reverted).
+        let comment = format!(
+            "## Autoanneal Review\n\n**Score:** {}/10\n**Verdict:** {}\n\n{}",
+            critic_output.score, critic_output.verdict, critic_output.summary
+        );
+        leave_comment(repo_slug, pr.number, &comment).await;
+        add_reviewed_label(repo_slug, pr.number).await;
+
+        Ok(PrReviewOutput {
+            pr_number: pr.number,
+            score: critic_output.score,
+            fixed: false,
+            commented: true,
+            cost_usd: total_cost,
+        })
+    }
 }
 
 /// Check if the working tree has uncommitted changes.
@@ -534,6 +548,18 @@ async fn add_reviewed_label(repo_slug: &str, pr_number: u64) {
     {
         warn!(pr_number, error = %e, "failed to add autoanneal:reviewed label (non-fatal)");
     }
+}
+
+/// Get the current PR diff.
+async fn get_pr_diff(repo_slug: &str, pr_number: u64, clone_dir: &Path) -> Result<String> {
+    let output = tokio::process::Command::new("gh")
+        .args(["pr", "diff", &pr_number.to_string(), "-R", repo_slug])
+        .current_dir(clone_dir)
+        .output()
+        .await
+        .context("failed to get PR diff")?;
+    let diff = String::from_utf8_lossy(&output.stdout);
+    Ok(llm::truncate_to_char_boundary(&diff, MAX_DIFF_CHARS))
 }
 
 async fn add_ready_to_merge_label(repo_slug: &str, pr_number: u64) {

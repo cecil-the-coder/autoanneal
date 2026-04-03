@@ -949,7 +949,7 @@ fn spawn_work_item(
                     Ok(wt) => {
                         let r = phases::pr_review::run(
                             &pr, &repo_slug, &wt, &model, fix_threshold, context_window,
-                            critic_models.as_deref(), &default_branch,
+                            critic_models.as_deref(), &default_branch, exa_searches,
                         )
                         .await;
                         if let Err(e) = mgr.remove(&wt).await {
