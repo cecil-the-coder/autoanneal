@@ -255,7 +255,7 @@ impl Scheduler {
                     }
                     Err(e) => {
                         if attempt < MAX_LAUNCH_RETRIES {
-                            let backoff = Duration::from_secs(5u64 * 3u64.pow(attempt));
+                            let backoff = Duration::from_secs(5u64 * 3u64.saturating_pow(attempt));
                             warn!(
                                 repo = %repo_name,
                                 attempt = attempt + 1,
