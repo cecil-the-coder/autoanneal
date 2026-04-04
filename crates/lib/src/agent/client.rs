@@ -3,6 +3,10 @@ use super::conversation::{ApiError as ConvApiError, MessageSender};
 use super::provider::Provider;
 use std::time::Duration;
 
+/// Maximum allowed value for `max_retries`. Values above this are silently
+/// capped to prevent excessive API calls and costs.
+pub const MAX_RETRIES_LIMIT: u32 = 5;
+
 pub struct ApiClient {
     base_url: String,
     api_key: String,
@@ -42,6 +46,12 @@ impl ApiClient {
             http: reqwest::Client::new(),
             max_retries: 3,
         }
+    }
+
+    /// Set a custom `max_retries` value, capped to [`MAX_RETRIES_LIMIT`].
+    pub fn with_max_retries(mut self, max_retries: u32) -> Self {
+        self.max_retries = max_retries.min(MAX_RETRIES_LIMIT);
+        self
     }
 
     /// Classify an HTTP status code and response into an ApiError.
@@ -448,5 +458,38 @@ mod tests {
         // (1 initial + 3 retries).
         let client = ApiClient::new("https://api.example.com".to_string(), "key".to_string(), Provider::Anthropic, false);
         assert_eq!(client.max_retries, 3);
+    }
+
+    #[test]
+    fn test_with_max_retries_within_limit() {
+        let client = ApiClient::new("https://api.example.com".to_string(), "key".to_string(), Provider::Anthropic, false)
+            .with_max_retries(4);
+        assert_eq!(client.max_retries, 4);
+    }
+
+    #[test]
+    fn test_with_max_retries_at_limit() {
+        let client = ApiClient::new("https://api.example.com".to_string(), "key".to_string(), Provider::Anthropic, false)
+            .with_max_retries(MAX_RETRIES_LIMIT);
+        assert_eq!(client.max_retries, MAX_RETRIES_LIMIT);
+    }
+
+    #[test]
+    fn test_with_max_retries_exceeds_limit_capped() {
+        let client = ApiClient::new("https://api.example.com".to_string(), "key".to_string(), Provider::Anthropic, false)
+            .with_max_retries(100);
+        assert_eq!(client.max_retries, MAX_RETRIES_LIMIT);
+    }
+
+    #[test]
+    fn test_with_max_retries_zero() {
+        let client = ApiClient::new("https://api.example.com".to_string(), "key".to_string(), Provider::Anthropic, false)
+            .with_max_retries(0);
+        assert_eq!(client.max_retries, 0);
+    }
+
+    #[test]
+    fn test_max_retries_limit_is_five() {
+        assert_eq!(MAX_RETRIES_LIMIT, 5);
     }
 }

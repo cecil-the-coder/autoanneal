@@ -61,7 +61,10 @@ impl<'de> serde::Deserialize<'de> for Severity {
             "minor" | "low" => Ok(Severity::Minor),
             "moderate" | "medium" => Ok(Severity::Moderate),
             "major" | "high" | "critical" => Ok(Severity::Major),
-            _ => Ok(Severity::Minor), // default to minor for unknown values
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["minor", "low", "moderate", "medium", "major", "high", "critical"],
+            )),
         }
     }
 }
@@ -89,7 +92,18 @@ impl<'de> serde::Deserialize<'de> for Category {
             "testing" | "test" | "tests" => Ok(Category::Testing),
             "docs" | "documentation" => Ok(Category::Docs),
             "error_handling" | "error handling" | "error" => Ok(Category::ErrorHandling),
-            _ => Ok(Category::Quality), // default
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &[
+                    "bug", "bug_fix", "bugfix",
+                    "performance", "perf",
+                    "security",
+                    "quality", "code_quality", "refactor",
+                    "testing", "test", "tests",
+                    "docs", "documentation",
+                    "error_handling", "error handling", "error",
+                ],
+            )),
         }
     }
 }
@@ -109,7 +123,10 @@ impl<'de> serde::Deserialize<'de> for Risk {
             "low" | "minor" => Ok(Risk::Low),
             "medium" | "moderate" => Ok(Risk::Medium),
             "high" | "major" | "critical" => Ok(Risk::High),
-            _ => Ok(Risk::Low), // default
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["low", "minor", "medium", "moderate", "high", "major", "critical"],
+            )),
         }
     }
 }
