@@ -16,18 +16,22 @@ pub struct CiFixOutput {
 }
 
 /// Drop guard that removes the autoanneal:fixing label when dropped.
+/// Uses tokio::task::block_in_place to run blocking cleanup in a way that
+/// ensures completion before the async runtime is dropped.
 struct FixingLabelGuard {
     pr_number: u64,
     repo_slug: String,
 }
 
-impl Drop for FixingLabelGuard {
-    fn drop(&mut self) {
+impl FixingLabelGuard {
+    /// Performs the label removal. Must be called from within a tokio runtime.
+    fn remove_label(&self) {
         info!(
             pr_number = self.pr_number,
             "removing autoanneal:fixing label"
         );
-        let _ = std::process::Command::new("gh")
+        
+        let output = std::process::Command::new("gh")
             .args([
                 "pr",
                 "edit",
@@ -38,6 +42,42 @@ impl Drop for FixingLabelGuard {
                 &self.repo_slug,
             ])
             .output();
+
+        match output {
+            Ok(o) if o.status.success() => {
+                info!(pr_number = self.pr_number, "removed autoanneal:fixing label");
+            }
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                warn!(
+                    pr_number = self.pr_number,
+                    stderr = %stderr,
+                    "failed to remove autoanneal:fixing label"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    pr_number = self.pr_number,
+                    error = %e,
+                    "failed to run gh pr edit to remove label"
+                );
+            }
+        }
+    }
+}
+
+impl Drop for FixingLabelGuard {
+    fn drop(&mut self) {
+        // Use block_in_place to run blocking cleanup synchronously within the current
+        // thread pool, ensuring the label removal completes before this thread returns.
+        // This avoids the race condition of detached threads and limits resource usage
+        // compared to spawning unbounded OS threads.
+        if let Ok(_handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| self.remove_label());
+        } else {
+            // Fallback if no tokio runtime is available
+            self.remove_label();
+        }
     }
 }
 
