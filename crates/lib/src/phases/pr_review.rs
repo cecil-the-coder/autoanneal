@@ -324,76 +324,7 @@ pub async fn run(
                 continue;
             }
 
-            // Build verification (up to 2 attempts).
-            let build_ok = if let Some(cmd) = build_command {
-                let mut build_passed = false;
-                for build_attempt in 0..MAX_BUILD_ATTEMPTS {
-                    match run_build_check(&clone_dir, cmd).await {
-                        Ok(()) => {
-                            build_passed = true;
-                            break;
-                        }
-                        Err(build_err) => {
-                            if build_attempt + 1 >= MAX_BUILD_ATTEMPTS {
-                                warn!(
-                                    pr_number = pr.number,
-                                    deduction = ded_idx + 1,
-                                    error = %build_err,
-                                    "build failed after retries, discarding deduction changes"
-                                );
-                                break;
-                            }
-                            // Let the fix agent see the error and try again.
-                            info!(
-                                pr_number = pr.number,
-                                deduction = ded_idx + 1,
-                                attempt = build_attempt + 1,
-                                "build failed, invoking fix agent with build error"
-                            );
-                            let build_fix_prompt = format!(
-                                "The build command `{cmd}` failed after your changes. Fix the build error:\n\n```\n{build_err}\n```\n\nMake minimal changes to resolve the build failure.",
-                            );
-                            let build_fix_invocation = LlmInvocation {
-                                prompt: build_fix_prompt,
-                                system_prompt: Some(pr_review_fix_system_prompt()),
-                                model: model.to_string(),
-                                max_turns: 15,
-                                effort: "high",
-                                tools: "Read,Glob,Grep,Bash,Edit,Write",
-                                json_schema: None,
-                                working_dir: clone_dir.clone(),
-                                context_window,
-                                provider_hint: None,
-                                max_tokens_per_turn: None,
-                                ci_context: None,
-                                exa_max_searches: 0,
-                            };
-                            match llm::invoke::<serde_json::Value>(&build_fix_invocation, Duration::from_secs(300)).await {
-                                Ok(resp) => { total_cost += resp.cost_usd; }
-                                Err(e) => {
-                                    warn!(error = %e, "build fix invocation failed");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                build_passed
-            } else {
-                true // No build command configured, skip verification.
-            };
-
-            if !build_ok {
-                let _ = guardrails::discard_changes(&clone_dir).await;
-                let _ = tokio::process::Command::new("git")
-                    .args(["reset", "--soft", "HEAD~1"])
-                    .current_dir(&clone_dir)
-                    .output()
-                    .await;
-                continue;
-            }
-
-            // Validate guardrails.
+            // Validate guardrails (build verification runs once after all deductions).
             if let Err(violation) = guardrails::validate_diff(&clone_dir, &[], 500, false).await {
                 warn!(
                     pr_number = pr.number,
@@ -430,6 +361,85 @@ pub async fn run(
                 "no deductions were fixed this pass, stopping"
             );
             break;
+        }
+
+        // Build verification after all deductions (one build, not per-deduction).
+        if let Some(cmd) = build_command {
+            let mut build_passed = false;
+            for build_attempt in 0..MAX_BUILD_ATTEMPTS {
+                match run_build_check(&clone_dir, cmd).await {
+                    Ok(()) => {
+                        build_passed = true;
+                        break;
+                    }
+                    Err(build_err) => {
+                        if build_attempt + 1 >= MAX_BUILD_ATTEMPTS {
+                            warn!(
+                                pr_number = pr.number,
+                                pass = pass + 1,
+                                error = %build_err,
+                                "build failed after retries, reverting all deduction commits"
+                            );
+                            break;
+                        }
+                        info!(
+                            pr_number = pr.number,
+                            pass = pass + 1,
+                            attempt = build_attempt + 1,
+                            "build failed, invoking fix agent with build error"
+                        );
+                        let build_fix_prompt = format!(
+                            "The build command `{cmd}` failed after automated fixes. Fix the build error:\n\n```\n{build_err}\n```\n\nMake minimal changes to resolve the build failure.",
+                        );
+                        let build_fix_invocation = LlmInvocation {
+                            prompt: build_fix_prompt,
+                            system_prompt: Some(pr_review_fix_system_prompt()),
+                            model: model.to_string(),
+                            max_turns: 15,
+                            effort: "high",
+                            tools: "Read,Glob,Grep,Bash,Edit,Write",
+                            json_schema: None,
+                            working_dir: clone_dir.clone(),
+                            context_window,
+                            provider_hint: None,
+                            max_tokens_per_turn: None,
+                            ci_context: None,
+                            exa_max_searches: 0,
+                        };
+                        match llm::invoke::<serde_json::Value>(&build_fix_invocation, Duration::from_secs(300)).await {
+                            Ok(resp) => {
+                                total_cost += resp.cost_usd;
+                                // Stage and amend the build fix into the last deduction commit.
+                                let _ = tokio::process::Command::new("git")
+                                    .args(["add", "-A"])
+                                    .current_dir(&clone_dir)
+                                    .output()
+                                    .await;
+                                let _ = tokio::process::Command::new("git")
+                                    .args(["commit", "--amend", "--no-edit"])
+                                    .current_dir(&clone_dir)
+                                    .output()
+                                    .await;
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "build fix invocation failed");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if !build_passed {
+                // Revert all deduction commits from this pass.
+                let reset_target = format!("HEAD~{deductions_fixed}");
+                let _ = tokio::process::Command::new("git")
+                    .args(["reset", "--hard", &reset_target])
+                    .current_dir(&clone_dir)
+                    .output()
+                    .await;
+                pass_summaries.push(format!("Pass {}: reverted (build failed)", pass + 1));
+                break;
+            }
         }
 
         // Push all deduction commits at once.
