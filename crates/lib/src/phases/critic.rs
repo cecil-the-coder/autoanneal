@@ -23,6 +23,7 @@ const CRITIC_SCHEMA: &str = r#"{
 }"#;
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct CriticOutput {
     pub score: u32,
     pub verdict: String,

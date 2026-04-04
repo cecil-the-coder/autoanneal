@@ -617,7 +617,6 @@ mod tests {
     fn minimal_config(repo: &str) -> Config {
         Config {
             repo: repo.to_string(),
-            max_budget: 5.0,
             timeout: "30m".to_string(),
             model: "sonnet".to_string(),
             model_recon: None,
@@ -641,13 +640,13 @@ mod tests {
             improve_docs: true,
             doc_critic_threshold: 7,
             review_prs: false,
+            force_review: false,
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,
-            issue_budget: 3.0,
             max_open_prs: 5,
             context_window: 128_000,
             max_pr_fix_attempts: 3,

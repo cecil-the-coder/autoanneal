@@ -1182,7 +1182,6 @@ mod tests {
             temp_path,
             "main",
             &[], // empty models list
-            1.0,
             8192,
             false,
             0,
