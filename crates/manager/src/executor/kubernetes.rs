@@ -330,6 +330,7 @@ impl Executor for KubernetesExecutor {
 
 /// Parse a timeout string like "30m" or "1h" into seconds.
 /// Uses checked arithmetic to prevent overflow and caps at 24 hours (86400 seconds).
+/// Logs distinct warnings for overflow vs. invalid input to aid debugging.
 fn parse_timeout(timeout: &str) -> i64 {
     const MAX_TIMEOUT_SECS: i64 = 24 * 3600; // 24 hours
     const DEFAULT_MINUTES: i64 = 30 * 60;
@@ -338,28 +339,52 @@ fn parse_timeout(timeout: &str) -> i64 {
 
     let timeout = timeout.trim();
 
-    // Track which suffix was detected for default value selection
-    let (secs, detected_suffix) = if let Some(mins) = timeout.strip_suffix('m') {
-        (mins.parse::<i64>().ok().and_then(|m| m.checked_mul(60)), Some('m'))
-    } else if let Some(hours) = timeout.strip_suffix('h') {
-        (hours.parse::<i64>().ok().and_then(|h| h.checked_mul(3600)), Some('h'))
-    } else if let Some(secs) = timeout.strip_suffix('s') {
-        (secs.parse::<i64>().ok(), Some('s'))
-    } else {
-        (timeout.parse::<i64>().ok(), None)
+    /// Helper to select the suffix-specific default.
+    fn default_for_suffix(suffix: Option<char>) -> i64 {
+        match suffix {
+            Some('m') => DEFAULT_MINUTES,
+            Some('h') => DEFAULT_HOURS,
+            _ => DEFAULT_SECS,
+        }
+    }
+
+    // Parse the numeric portion and apply a multiplier depending on the suffix.
+    // Each arm returns (parsed_raw, multiplier, detected_suffix) so we can
+    // distinguish parse failures from overflow in the multiplication step.
+    let (raw, multiplier, detected_suffix): (Option<i64>, i64, Option<char>) =
+        if let Some(mins) = timeout.strip_suffix('m') {
+            (mins.parse::<i64>().ok(), 60, Some('m'))
+        } else if let Some(hours) = timeout.strip_suffix('h') {
+            (hours.parse::<i64>().ok(), 3600, Some('h'))
+        } else if let Some(secs) = timeout.strip_suffix('s') {
+            (secs.parse::<i64>().ok(), 1, Some('s'))
+        } else {
+            (timeout.parse::<i64>().ok(), 1, None)
+        };
+
+    let secs = match raw {
+        None => {
+            warn!(timeout = %timeout, "failed to parse timeout value as integer, using default");
+            return default_for_suffix(detected_suffix);
+        }
+        Some(r) => r,
     };
 
-    // Use the parsed value if valid, otherwise use defaults based on detected suffix
-    let secs = match secs {
-        Some(s) => s,
-        None => {
-            warn!(timeout = %timeout, "overflow or parse error, using suffix-specific default");
-            match detected_suffix {
-                Some('m') => DEFAULT_MINUTES,
-                Some('h') => DEFAULT_HOURS,
-                _ => DEFAULT_SECS,
+    // Apply the multiplier with overflow checking (includes seconds where multiplier == 1).
+    let secs = match multiplier {
+        1 => secs,
+        _ => match secs.checked_mul(multiplier) {
+            Some(s) => s,
+            None => {
+                warn!(
+                    timeout = %timeout,
+                    raw_value = %secs,
+                    multiplier = %multiplier,
+                    "overflow computing timeout from value, using default"
+                );
+                return default_for_suffix(detected_suffix);
             }
-        }
+        },
     };
 
     // Cap at the maximum to prevent excessive timeouts
