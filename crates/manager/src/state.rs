@@ -174,13 +174,21 @@ mod tests {
     #[test]
     fn test_concurrent_access() {
         use std::sync::Arc;
+        use std::sync::Barrier;
+
         let store = Arc::new(StateStore::new(100));
+        let num_writers = 10;
+        let num_readers = 10;
+        let total = num_writers * 2 + num_readers;
+        let barrier = Arc::new(Barrier::new(total));
         let mut handles = vec![];
 
         // Spawn writers for active runs
-        for i in 0..10 {
+        for i in 0..num_writers {
             let s = store.clone();
+            let b = barrier.clone();
             handles.push(std::thread::spawn(move || {
+                b.wait();
                 let run = ActiveRun {
                     run_id: format!("run-{i}"),
                     repo_name: format!("repo-{i}"),
@@ -192,26 +200,35 @@ mod tests {
         }
 
         // Spawn writers for history
-        for i in 0..10 {
+        for i in 0..num_writers {
             let s = store.clone();
+            let b = barrier.clone();
             handles.push(std::thread::spawn(move || {
+                b.wait();
                 s.record_completed(make_run_record(&format!("hist-{i}"), i));
             }));
         }
 
         // Spawn readers
-        for _ in 0..10 {
+        for _ in 0..num_readers {
             let s = store.clone();
+            let b = barrier.clone();
             handles.push(std::thread::spawn(move || {
+                b.wait();
                 let _ = s.active_count();
                 let _ = s.recent_runs();
                 let _ = s.is_active("repo-0");
             }));
         }
 
-        for h in handles {
-            h.join().unwrap();
+        // Collect join errors gracefully instead of panicking on the first failure
+        let mut join_errors = Vec::new();
+        for (i, h) in handles.into_iter().enumerate() {
+            if let Err(_e) = h.join() {
+                join_errors.push(i);
+            }
         }
+        assert!(join_errors.is_empty(), "Threads at indices {:?} panicked", join_errors);
 
         assert_eq!(store.active_count(), 10);
         assert_eq!(store.recent_runs().len(), 10);

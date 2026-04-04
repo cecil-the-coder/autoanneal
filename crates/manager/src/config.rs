@@ -481,7 +481,7 @@ mod tests {
         let args = entry.to_worker_args(&defaults);
 
         // Overridden values
-        let model_idx = args.iter().position(|a| a == "--model").unwrap();
+        let model_idx = args.iter().position(|a| a == "--model").expect("--model flag should always be present in generated worker args");
         assert_eq!(args[model_idx + 1], "opus");
 
         let check = |flag: &str, val: &str| {

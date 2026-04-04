@@ -108,11 +108,15 @@ impl WorktreeManager {
             let _ = tokio::fs::remove_dir_all(worktree_path).await;
         }
 
-        let _ = tokio::process::Command::new("git")
-            .args(["worktree", "prune"])
-            .current_dir(&self.repo_dir)
-            .output()
-            .await;
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            tokio::process::Command::new("git")
+                .args(["worktree", "prune"])
+                .current_dir(&self.repo_dir)
+                .output(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("git worktree prune timed out after 30s"))??;
 
         info!(path = %worktree_path.display(), "removed git worktree");
         Ok(())
