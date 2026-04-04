@@ -43,6 +43,7 @@ pub async fn run(
     default_branch: &str,
     exa_max_searches: u32,
     build_command: Option<&str>,
+    max_deductions_per_pass: usize,
 ) -> Result<PrReviewOutput> {
     let dot = Path::new(".");
     let clone_dir = worktree_path.to_path_buf();
@@ -257,9 +258,10 @@ pub async fn run(
         }
 
         let mut deductions_fixed = 0u32;
+        let max_deductions = max_deductions_per_pass.min(deductions.len());
 
         // Process each deduction individually (per-deduction fix loop).
-        for (ded_idx, deduction) in deductions.iter().enumerate() {
+        for (ded_idx, deduction) in deductions.iter().take(max_deductions).enumerate() {
             info!(
                 pr_number = pr.number,
                 pass = pass + 1,

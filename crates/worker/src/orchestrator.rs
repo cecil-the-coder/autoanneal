@@ -66,6 +66,7 @@ enum WorkItemKind {
         default_branch: String,
         critic_models: Option<Vec<String>>,
         build_command: Option<String>,
+        max_deductions_per_pass: usize,
     },
     IssueInvestigation {
         issue: GithubIssue,
@@ -751,6 +752,7 @@ fn collect_work_items(
                     default_branch: repo_info.default_branch.clone(),
                     critic_models: config.critic_model_list(),
                     build_command: stack_info.build_commands.first().cloned(),
+                    max_deductions_per_pass: config.max_deductions_per_pass,
                 },
                 context_window,
                 exa_searches: config.exa_searches,
@@ -778,6 +780,7 @@ fn collect_work_items(
                         default_branch: repo_info.default_branch.clone(),
                         critic_models: config.critic_model_list(),
                         build_command: stack_info.build_commands.first().cloned(),
+                        max_deductions_per_pass: config.max_deductions_per_pass,
                     },
                     context_window,
                     exa_searches: config.exa_searches,
@@ -946,14 +949,14 @@ fn spawn_work_item(
                     Err(e) => Err(e),
                 }
             }
-            WorkItemKind::PrReview { pr, fix_threshold, default_branch, critic_models, build_command } => {
+            WorkItemKind::PrReview { pr, fix_threshold, default_branch, critic_models, build_command, max_deductions_per_pass } => {
                 let wt_name = format!("review-{}", pr.number);
                 match mgr.create_at_branch(&wt_name, &pr.branch).await {
                     Ok(wt) => {
                         let r = phases::pr_review::run(
                             &pr, &repo_slug, &wt, &model, fix_threshold, context_window,
                             critic_models.as_deref(), &default_branch, exa_searches,
-                            build_command.as_deref(),
+                            build_command.as_deref(), max_deductions_per_pass,
                         )
                         .await;
                         if let Err(e) = mgr.remove(&wt).await {

@@ -122,6 +122,10 @@ pub struct Config {
     #[arg(long, default_value = "7")]
     pub review_fix_threshold: u32,
 
+    /// Maximum deductions to fix per review pass. 0 = unlimited.
+    #[arg(long, default_value = "5")]
+    pub max_deductions_per_pass: usize,
+
     /// Maximum concurrent work items.
     #[arg(long, default_value = "3")]
     pub concurrency: usize,
@@ -386,6 +390,7 @@ mod tests {
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
+            max_deductions_per_pass: 5,
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,
@@ -429,6 +434,7 @@ mod tests {
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
+            max_deductions_per_pass: 5,
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,
@@ -472,6 +478,7 @@ mod tests {
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
+            max_deductions_per_pass: 5,
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,
@@ -515,6 +522,7 @@ mod tests {
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
+            max_deductions_per_pass: 5,
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,
@@ -558,6 +566,7 @@ mod tests {
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
+            max_deductions_per_pass: 5,
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,
@@ -601,6 +610,7 @@ mod tests {
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
+            max_deductions_per_pass: 5,
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,
@@ -644,6 +654,7 @@ mod tests {
             fix_external_ci: false,
             review_filter: "all".to_string(),
             review_fix_threshold: 7,
+            max_deductions_per_pass: 5,
             concurrency: 3,
             investigate_issues: "".to_string(),
             max_issues: 2,

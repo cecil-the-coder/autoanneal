@@ -152,6 +152,8 @@ pub struct WorkerDefaults {
     pub review_filter: String,
     #[serde(default = "default_review_fix_threshold")]
     pub review_fix_threshold: u32,
+    #[serde(default = "default_max_deductions_per_pass")]
+    pub max_deductions_per_pass: usize,
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
     #[serde(default = "default_max_open_prs")]
@@ -192,6 +194,7 @@ impl Default for WorkerDefaults {
             force_review: false,
             review_filter: default_review_filter(),
             review_fix_threshold: default_review_fix_threshold(),
+            max_deductions_per_pass: default_max_deductions_per_pass(),
             concurrency: default_concurrency(),
             max_open_prs: default_max_open_prs(),
             investigate_issues: String::new(),
@@ -211,6 +214,7 @@ fn default_cron_interval() -> u64 { 10 }
 fn default_doc_critic_threshold() -> u32 { 7 }
 fn default_review_filter() -> String { "all".into() }
 fn default_review_fix_threshold() -> u32 { 7 }
+fn default_max_deductions_per_pass() -> usize { 5 }
 fn default_max_open_prs() -> usize { 5 }
 fn default_max_issues() -> usize { 2 }
 fn default_context_window() -> u64 { 128000 }
@@ -276,6 +280,8 @@ pub struct RepoEntry {
     #[serde(default)]
     pub review_fix_threshold: Option<u32>,
     #[serde(default)]
+    pub max_deductions_per_pass: Option<usize>,
+    #[serde(default)]
     pub concurrency: Option<usize>,
     #[serde(default)]
     pub max_open_prs: Option<usize>,
@@ -303,6 +309,7 @@ impl RepoEntry {
             "--doc-critic-threshold".to_string(), self.doc_critic_threshold.unwrap_or(defaults.doc_critic_threshold).to_string(),
             "--review-filter".to_string(), self.review_filter.as_ref().unwrap_or(&defaults.review_filter).clone(),
             "--review-fix-threshold".to_string(), self.review_fix_threshold.unwrap_or(defaults.review_fix_threshold).to_string(),
+            "--max-deductions-per-pass".to_string(), self.max_deductions_per_pass.unwrap_or(defaults.max_deductions_per_pass).to_string(),
             "--concurrency".to_string(), self.concurrency.unwrap_or(defaults.concurrency).to_string(),
             "--max-open-prs".to_string(), self.max_open_prs.unwrap_or(defaults.max_open_prs).to_string(),
             "--max-issues".to_string(), self.max_issues.unwrap_or(defaults.max_issues).to_string(),
@@ -408,6 +415,7 @@ mod tests {
             force_review: None,
             review_filter: None,
             review_fix_threshold: None,
+            max_deductions_per_pass: None,
             concurrency: None,
             max_open_prs: None,
             investigate_issues: None,
