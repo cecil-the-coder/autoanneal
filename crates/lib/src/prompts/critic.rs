@@ -35,7 +35,13 @@ Output a JSON code block:
 }
 ```
 
-IMPORTANT: If your score is below 10, you MUST list specific, concrete deductions explaining what prevents a higher score. Each deduction should name the exact issue, not a vague concern. If there are no deductions, the score must be 10.
+IMPORTANT: If your score is below 10, you MUST list actionable deductions. Each deduction must:
+- Start with an action verb (Remove, Change, Add, Fix, Replace, Move, Rename, Update, etc.)
+- Name the specific file and what to change
+- Be concrete enough for an automated agent to implement
+Example: "Remove unused InvalidMetadata variant from task_repo.rs"
+Example: "Add unit test for the new timeout handling in scheduler.rs"
+If there are no deductions, the score must be 10.
 
 - Score 8-10 + "approve": Valuable changes, ready for human review
 - Score 5-7 + "needs_work": Valuable changes but have fixable issues

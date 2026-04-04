@@ -2,7 +2,7 @@ use crate::llm::{self, LlmInvocation};
 use crate::models::{CriticResult, ExternalPr};
 use crate::phases::critic::CriticOutput;
 use crate::prompts::critic::CRITIC_PROMPT;
-use crate::prompts::pr_review::PR_REVIEW_FIX_PROMPT;
+use crate::prompts::pr_review::PR_REVIEW_FIX_SINGLE_DEDUCTION_PROMPT;
 use crate::prompts::system::{critic_system_prompt, pr_review_fix_system_prompt};
 use crate::guardrails;
 use crate::retry::gh_command;
@@ -23,8 +23,14 @@ pub struct PrReviewOutput {
     pub cost_usd: f64,
 }
 
-/// Maximum fix→re-review cycles before giving up.
+/// Maximum fix->re-review cycles before giving up.
 const MAX_FIX_PASSES: u32 = 3;
+
+/// Maximum build verification attempts per deduction fix.
+const MAX_BUILD_ATTEMPTS: u32 = 2;
+
+/// Build check timeout.
+const BUILD_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub async fn run(
     pr: &ExternalPr,
@@ -36,6 +42,7 @@ pub async fn run(
     critic_models: Option<&[String]>,
     default_branch: &str,
     exa_max_searches: u32,
+    build_command: Option<&str>,
 ) -> Result<PrReviewOutput> {
     let dot = Path::new(".");
     let clone_dir = worktree_path.to_path_buf();
@@ -86,7 +93,7 @@ pub async fn run(
         });
     }
 
-    // 4. Run critic review — panel if configured, single critic otherwise.
+    // 4. Run critic review -- panel if configured, single critic otherwise.
     let critic_output: CriticOutput = if let Some(models) = critic_models {
         // Panel mode: skip Gate 1 (human PR, worthwhileness is assumed)
         // Pass the gh pr diff so the panel reviews the correct PR changes,
@@ -97,7 +104,7 @@ pub async fn run(
             default_branch,
             models,
             context_window,
-            true, // skip_gate1 — human PRs are assumed worthwhile
+            true, // skip_gate1 -- human PRs are assumed worthwhile
             0,    // no web searches for PR reviews
             Some(&diff),
         )
@@ -241,86 +248,191 @@ pub async fn run(
             "starting fix pass"
         );
 
-        // Snapshot before fix agent runs so guardrails only measure its changes.
-        let _ = tokio::process::Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(&clone_dir)
-            .output()
-            .await;
-        let _ = tokio::process::Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "autoanneal: pre-fix snapshot"])
-            .current_dir(&clone_dir)
-            .output()
-            .await;
+        // Parse deductions from the current summary.
+        let deductions = parse_deductions(&current_summary);
 
-        // Get fresh diff for the fix prompt.
-        let current_diff = get_pr_diff(repo_slug, pr.number, &clone_dir).await
-            .unwrap_or_else(|_| diff.clone());
-
-        let fix_prompt = PR_REVIEW_FIX_PROMPT
-            .replace("{pr_number}", &pr.number.to_string())
-            .replace("{branch}", &pr.branch)
-            .replace("{score}", &current_score.to_string())
-            .replace("{summary}", &current_summary)
-            .replace("{diff}", &current_diff);
-
-        let fix_invocation = LlmInvocation {
-            prompt: fix_prompt,
-            system_prompt: Some(pr_review_fix_system_prompt()),
-            model: model.to_string(),
-            max_turns: 100,
-            effort: "high",
-            tools: "Read,Glob,Grep,Bash,Edit,Write,WebSearch,CheckVulnerability,CheckPackage,SearchIssues",
-            json_schema: None,
-            working_dir: clone_dir.clone(),
-            context_window,
-            provider_hint: None,
-            max_tokens_per_turn: None,
-            ci_context: None,
-            exa_max_searches,
-        };
-
-        let fix_response: llm::LlmResponse<serde_json::Value> =
-            llm::invoke(&fix_invocation, Duration::from_secs(600)).await?;
-
-        total_cost += fix_response.cost_usd;
-
-        let has_changes = check_has_changes(&clone_dir).await;
-        if !has_changes {
-            info!(pr_number = pr.number, pass = pass + 1, "fix pass made no changes, stopping");
-            // Undo the snapshot.
-            let _ = tokio::process::Command::new("git")
-                .args(["reset", "--soft", "HEAD~1"])
-                .current_dir(&clone_dir)
-                .output()
-                .await;
+        if deductions.is_empty() {
+            info!(pr_number = pr.number, pass = pass + 1, "no deductions found, stopping");
             break;
         }
 
-        // Validate guardrails.
-        info!(pr_number = pr.number, pass = pass + 1, "validating fix diff against guardrails");
-        if let Err(violation) = guardrails::validate_diff(&clone_dir, &[], 500, false).await {
-            warn!(
+        let mut deductions_fixed = 0u32;
+
+        // Process each deduction individually (per-deduction fix loop).
+        for (ded_idx, deduction) in deductions.iter().enumerate() {
+            info!(
                 pr_number = pr.number,
                 pass = pass + 1,
-                violation = %violation,
-                "guardrail violation, discarding pass changes"
+                deduction_index = ded_idx + 1,
+                total_deductions = deductions.len(),
+                deduction = %deduction,
+                "fixing deduction"
             );
-            let _ = guardrails::discard_changes(&clone_dir).await;
+
+            // Snapshot before fix agent runs so guardrails only measure its changes.
             let _ = tokio::process::Command::new("git")
-                .args(["reset", "--soft", "HEAD~1"])
+                .args(["add", "-A"])
                 .current_dir(&clone_dir)
                 .output()
                 .await;
+            let _ = tokio::process::Command::new("git")
+                .args(["commit", "--allow-empty", "-m", "autoanneal: pre-fix snapshot"])
+                .current_dir(&clone_dir)
+                .output()
+                .await;
+
+            // Get fresh diff for context.
+            let current_diff = get_pr_diff(repo_slug, pr.number, &clone_dir).await
+                .unwrap_or_else(|_| diff.clone());
+
+            let fix_prompt = PR_REVIEW_FIX_SINGLE_DEDUCTION_PROMPT
+                .replace("{pr_number}", &pr.number.to_string())
+                .replace("{branch}", &pr.branch)
+                .replace("{deduction}", deduction)
+                .replace("{diff}", &current_diff);
+
+            let fix_invocation = LlmInvocation {
+                prompt: fix_prompt,
+                system_prompt: Some(pr_review_fix_system_prompt()),
+                model: model.to_string(),
+                max_turns: 30,
+                effort: "high",
+                tools: "Read,Glob,Grep,Bash,Edit,Write,WebSearch,CheckVulnerability,CheckPackage,SearchIssues",
+                json_schema: None,
+                working_dir: clone_dir.clone(),
+                context_window,
+                provider_hint: None,
+                max_tokens_per_turn: None,
+                ci_context: None,
+                exa_max_searches,
+            };
+
+            let fix_response: llm::LlmResponse<serde_json::Value> =
+                llm::invoke(&fix_invocation, Duration::from_secs(600)).await?;
+
+            total_cost += fix_response.cost_usd;
+
+            let has_changes = check_has_changes(&clone_dir).await;
+            if !has_changes {
+                info!(pr_number = pr.number, deduction = ded_idx + 1, "deduction fix made no changes, skipping");
+                // Undo the snapshot.
+                let _ = tokio::process::Command::new("git")
+                    .args(["reset", "--soft", "HEAD~1"])
+                    .current_dir(&clone_dir)
+                    .output()
+                    .await;
+                continue;
+            }
+
+            // Build verification (up to 2 attempts).
+            let build_ok = if let Some(cmd) = build_command {
+                let mut build_passed = false;
+                for build_attempt in 0..MAX_BUILD_ATTEMPTS {
+                    match run_build_check(&clone_dir, cmd).await {
+                        Ok(()) => {
+                            build_passed = true;
+                            break;
+                        }
+                        Err(build_err) => {
+                            if build_attempt + 1 >= MAX_BUILD_ATTEMPTS {
+                                warn!(
+                                    pr_number = pr.number,
+                                    deduction = ded_idx + 1,
+                                    error = %build_err,
+                                    "build failed after retries, discarding deduction changes"
+                                );
+                                break;
+                            }
+                            // Let the fix agent see the error and try again.
+                            info!(
+                                pr_number = pr.number,
+                                deduction = ded_idx + 1,
+                                attempt = build_attempt + 1,
+                                "build failed, invoking fix agent with build error"
+                            );
+                            let build_fix_prompt = format!(
+                                "The build command `{cmd}` failed after your changes. Fix the build error:\n\n```\n{build_err}\n```\n\nMake minimal changes to resolve the build failure.",
+                            );
+                            let build_fix_invocation = LlmInvocation {
+                                prompt: build_fix_prompt,
+                                system_prompt: Some(pr_review_fix_system_prompt()),
+                                model: model.to_string(),
+                                max_turns: 15,
+                                effort: "high",
+                                tools: "Read,Glob,Grep,Bash,Edit,Write",
+                                json_schema: None,
+                                working_dir: clone_dir.clone(),
+                                context_window,
+                                provider_hint: None,
+                                max_tokens_per_turn: None,
+                                ci_context: None,
+                                exa_max_searches: 0,
+                            };
+                            match llm::invoke::<serde_json::Value>(&build_fix_invocation, Duration::from_secs(300)).await {
+                                Ok(resp) => { total_cost += resp.cost_usd; }
+                                Err(e) => {
+                                    warn!(error = %e, "build fix invocation failed");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                build_passed
+            } else {
+                true // No build command configured, skip verification.
+            };
+
+            if !build_ok {
+                let _ = guardrails::discard_changes(&clone_dir).await;
+                let _ = tokio::process::Command::new("git")
+                    .args(["reset", "--soft", "HEAD~1"])
+                    .current_dir(&clone_dir)
+                    .output()
+                    .await;
+                continue;
+            }
+
+            // Validate guardrails.
+            if let Err(violation) = guardrails::validate_diff(&clone_dir, &[], 500, false).await {
+                warn!(
+                    pr_number = pr.number,
+                    deduction = ded_idx + 1,
+                    violation = %violation,
+                    "guardrail violation, discarding deduction changes"
+                );
+                let _ = guardrails::discard_changes(&clone_dir).await;
+                let _ = tokio::process::Command::new("git")
+                    .args(["reset", "--soft", "HEAD~1"])
+                    .current_dir(&clone_dir)
+                    .output()
+                    .await;
+                continue;
+            }
+
+            // Commit with a per-deduction message.
+            let commit_msg = format!(
+                "autoanneal: fix deduction {}: {}",
+                ded_idx + 1,
+                truncate_str(deduction, 72)
+            );
+            if commit_deduction(&clone_dir, &commit_msg).await.is_err() {
+                continue;
+            }
+
+            deductions_fixed += 1;
+        }
+
+        if deductions_fixed == 0 {
+            info!(
+                pr_number = pr.number,
+                pass = pass + 1,
+                "no deductions were fixed this pass, stopping"
+            );
             break;
         }
 
-        // Commit (amend the snapshot).
-        if commit_changes(&clone_dir).await.is_err() {
-            break;
-        }
-
-        // Push.
+        // Push all deduction commits at once.
         if push_changes(&clone_dir, &pr.branch).await.is_err() {
             break;
         }
@@ -340,11 +452,13 @@ pub async fn run(
                     pass = pass + 1,
                     prev_score = current_score,
                     new_score = output.score,
+                    fixed = deductions_fixed,
+                    total_deductions = deductions.len(),
                     "re-review complete"
                 );
 
                 if output.score < current_score {
-                    // Score regressed — revert this pass.
+                    // Score regressed -- revert all deduction commits from this pass.
                     warn!(
                         pr_number = pr.number,
                         pass = pass + 1,
@@ -352,17 +466,24 @@ pub async fn run(
                         new_score = output.score,
                         "re-review scored lower, reverting pass"
                     );
+                    let reset_target = format!("HEAD~{deductions_fixed}");
                     let _ = tokio::process::Command::new("git")
-                        .args(["reset", "--hard", "HEAD~1"])
+                        .args(["reset", "--hard", &reset_target])
                         .current_dir(&clone_dir)
                         .output()
                         .await;
                     let _ = push_changes(&clone_dir, &pr.branch).await;
-                    pass_summaries.push(format!("Pass {}: reverted (score dropped to {})", pass + 1, output.score));
+                    pass_summaries.push(format!(
+                        "Pass {}: reverted (score dropped to {}, fixed {}/{} deductions)",
+                        pass + 1, output.score, deductions_fixed, deductions.len()
+                    ));
                     break;
                 }
 
-                pass_summaries.push(format!("Pass {}: {} → {}", pass + 1, current_score, output.score));
+                pass_summaries.push(format!(
+                    "Pass {}: {} -> {} (fixed {}/{} deductions)",
+                    pass + 1, current_score, output.score, deductions_fixed, deductions.len()
+                ));
                 current_score = output.score;
                 current_verdict = output.verdict;
                 current_summary = output.summary;
@@ -385,7 +506,7 @@ pub async fn run(
     if any_fixes_applied {
         let passes_text = pass_summaries.join("\n");
         let comment = format!(
-            "## Autoanneal Review & Fix\n\n**Score:** {}/10 → {}/10\n**Verdict:** {} → {}\n\n### Issues Found\n{}\n\n### Fix Passes\n{}\n\n### After Fix\n{}\n\n_Automated fixes have been pushed to this branch._",
+            "## Autoanneal Review & Fix\n\n**Score:** {}/10 -> {}/10\n**Verdict:** {} -> {}\n\n### Issues Found\n{}\n\n### Fix Passes\n{}\n\n### After Fix\n{}\n\n_Automated fixes have been pushed to this branch._",
             initial_score, current_score,
             critic_output.verdict, current_verdict,
             initial_summary, passes_text, current_summary,
@@ -439,8 +560,9 @@ async fn check_has_changes(clone_dir: &Path) -> bool {
     }
 }
 
-/// Stage all changes and create a commit.
-async fn commit_changes(clone_dir: &Path) -> Result<()> {
+/// Stage all changes and create a commit with a per-deduction message.
+/// Amends the pre-fix snapshot commit so the history stays clean.
+async fn commit_deduction(clone_dir: &Path, message: &str) -> Result<()> {
     let output = tokio::process::Command::new("git")
         .args(["add", "-A"])
         .current_dir(clone_dir)
@@ -454,10 +576,9 @@ async fn commit_changes(clone_dir: &Path) -> Result<()> {
         );
     }
 
-    // Amend the pre-fix snapshot commit so the PR gets a single clean commit
-    // instead of snapshot + fix.
+    // Amend the pre-fix snapshot commit so the PR gets one clean commit per deduction.
     let output = tokio::process::Command::new("git")
-        .args(["commit", "--amend", "-m", "autoanneal: fix issues found in PR review"])
+        .args(["commit", "--amend", "-m", message])
         .current_dir(clone_dir)
         .output()
         .await
@@ -470,6 +591,104 @@ async fn commit_changes(clone_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Parse deductions from a critic summary string.
+///
+/// Deductions appear in the summary as:
+/// ```text
+/// \nDeductions:\n- item 1\n- item 2
+/// ```
+/// or from the panel as numbered/bulleted lines after "Deductions:".
+fn parse_deductions(summary: &str) -> Vec<String> {
+    let mut deductions = Vec::new();
+    let mut in_deductions = false;
+
+    for line in summary.lines() {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("deductions:")
+            || trimmed.eq_ignore_ascii_case("## deductions")
+        {
+            in_deductions = true;
+            continue;
+        }
+        if in_deductions {
+            // Stop at next section header.
+            if trimmed.starts_with("## ") {
+                break;
+            }
+            // Parse bulleted items: "- item" or "* item" or "1. item" or "- -1: item"
+            let item = trimmed
+                .trim_start_matches('-')
+                .trim_start_matches('*')
+                .trim_start();
+            // Handle numbered items like "1. item"
+            let item = if let Some(rest) = item.strip_prefix(|c: char| c.is_ascii_digit()) {
+                rest.trim_start_matches(|c: char| c.is_ascii_digit())
+                    .trim_start_matches('.')
+                    .trim_start()
+            } else {
+                item
+            };
+            if !item.is_empty() {
+                deductions.push(item.to_string());
+            }
+        }
+    }
+    deductions
+}
+
+/// Format deductions as a numbered task list for the fix prompt.
+#[allow(dead_code)]
+fn format_tasks(deductions: &[String]) -> String {
+    if deductions.is_empty() {
+        return String::new();
+    }
+    let mut tasks = String::from("## Tasks to Complete\n\n");
+    for (i, d) in deductions.iter().enumerate() {
+        tasks.push_str(&format!("{}. {}\n", i + 1, d));
+    }
+    tasks
+}
+
+/// Run a build command and return Ok(()) on success or Err with the build output on failure.
+async fn run_build_check(clone_dir: &Path, build_cmd: &str) -> Result<(), String> {
+    let result = tokio::time::timeout(
+        BUILD_TIMEOUT,
+        tokio::process::Command::new("bash")
+            .args(["-c", build_cmd])
+            .current_dir(clone_dir)
+            .output(),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(output)) if output.status.success() => Ok(()),
+        Ok(Ok(output)) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let combined = if stderr.trim().is_empty() {
+                stdout.to_string()
+            } else {
+                format!("{}\n{}", stdout, stderr)
+            };
+            // Truncate to avoid huge error messages.
+            let truncated: String = combined.chars().take(3000).collect();
+            Err(truncated)
+        }
+        Ok(Err(e)) => Err(format!("failed to spawn build command: {e}")),
+        Err(_) => Err("build command timed out after 2 minutes".to_string()),
+    }
+}
+
+/// Truncate a string to at most `max_len` characters.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.chars().count() <= max_len {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_len.saturating_sub(3)).collect();
+        format!("{truncated}...")
+    }
 }
 
 /// Push changes to the remote branch.
@@ -648,7 +867,7 @@ Output a JSON code block:
     );
     let invocation = LlmInvocation {
         prompt: critic_prompt,
-        system_prompt: Some("You are a code reviewer re-evaluating a PR after automated fixes. You MUST respond with ONLY a JSON code block. No reasoning, no analysis, no explanation — just the JSON. Any text outside the JSON block will cause a parse failure.".to_string()),
+        system_prompt: Some("You are a code reviewer re-evaluating a PR after automated fixes. You MUST respond with ONLY a JSON code block. No reasoning, no analysis, no explanation -- just the JSON. Any text outside the JSON block will cause a parse failure.".to_string()),
         model: model.to_string(),
         max_turns: 1,
         effort: "high",

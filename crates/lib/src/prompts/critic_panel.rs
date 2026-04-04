@@ -72,7 +72,12 @@ Score guide:
 
 A clean refactoring that perfectly eliminates duplication deserves a 10. A critical bug fix with minor style issues deserves an 8. Score based on how well the change achieves its stated goal, not on the category of change.
 
-IMPORTANT: If your score is below 10, you MUST explain what specific issues prevent a higher score in the "deductions" field. Each deduction should name a concrete problem, not a vague concern.
+IMPORTANT: If your score is below 10, you MUST list actionable deductions. Each deduction must:
+- Start with an action verb (Remove, Change, Add, Fix, Replace, Move, Rename, Update, etc.)
+- Name the specific file and what to change
+- Be concrete enough for an automated agent to implement
+Example: "Remove unused InvalidMetadata variant from task_repo.rs"
+Example: "Add unit test for the new timeout handling in scheduler.rs"
 
 Output JSON:
 ```json
