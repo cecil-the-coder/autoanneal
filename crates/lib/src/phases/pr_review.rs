@@ -608,6 +608,9 @@ fn parse_deductions(summary: &str) -> Vec<String> {
         let trimmed = line.trim();
         if trimmed.eq_ignore_ascii_case("deductions:")
             || trimmed.eq_ignore_ascii_case("## deductions")
+            || trimmed.eq_ignore_ascii_case("## score deductions")
+            || trimmed.eq_ignore_ascii_case("## issues")
+            || trimmed.eq_ignore_ascii_case("issues:")
         {
             in_deductions = true;
             continue;
